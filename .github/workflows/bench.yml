@@ -1,0 +1,65 @@
+name: Bench
+
+# Manual only: a full run takes about half an hour of runner time and its
+# numbers go into the README by hand (python -m bench.readme --write).
+on:
+  workflow_dispatch:
+    inputs:
+      db:
+        description: Backend(s) to measure
+        type: choice
+        options: [both, postgres, sqlite]
+        default: both
+      scenarios:
+        description: Space-separated scenarios (empty = the ones the README shows)
+        type: string
+        default: ""
+      quick:
+        description: Smallest size, one repetition (trying the workflow out)
+        type: boolean
+        default: false
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: dsb
+          POSTGRES_PASSWORD: dsb
+          POSTGRES_DB: dsb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dsb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DSB_PG_HOST: localhost
+      DSB_PG_PORT: "5432"
+      DSB_PG_USER: dsb
+      DSB_PG_PASSWORD: dsb
+      DSB_PG_NAME: dsb
+      SCENARIOS: ${{ inputs.scenarios }}
+      QUICK: ${{ inputs.quick && '--quick' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+      - run: uv sync --locked --group bench
+      - run: uv run --no-sync python -c "import django, sqlalchemy; print('django', django.__version__, 'sqlalchemy', sqlalchemy.__version__)"
+      # The README shows every PostgreSQL scenario and SQLite's update, insert, read and lookup.
+      - name: bench (PostgreSQL)
+        if: inputs.db != 'sqlite'
+        run: uv run --no-sync python -m bench ${SCENARIOS} --db postgres --out results $QUICK
+      - name: bench (SQLite)
+        if: inputs.db != 'postgres' && !cancelled()
+        run: uv run --no-sync python -m bench ${SCENARIOS:-update insert read lookup} --db sqlite --out results $QUICK
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: bench-results-${{ github.run_id }}
+          path: results/*.json
+          if-no-files-found: error

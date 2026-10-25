@@ -121,6 +121,12 @@ def describe() -> dict:
         },
         "python_sqlite3": sqlite3.sqlite_version,
         "database": {"vendor": connection.vendor, "server": server},
+        # On GitHub Actions (.github/workflows/bench.yml), the run that measured it.
+        "ci_run": (
+            f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+            if os.environ.get("GITHUB_ACTIONS") == "true"
+            else None
+        ),
         "machine": {
             "os": platform.platform(),
             "cpu": _cpu(),
