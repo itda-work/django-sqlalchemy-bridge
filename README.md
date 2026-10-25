@@ -18,12 +18,13 @@ Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식
 - **값 변환은 Django 필드를 따릅니다.** 쓸 때는 `get_db_prep_value`, 읽을 때는 Django ORM이 쓰는 변환기를 거칩니다. 그래서 JSON·UUID·시간대가 있는 datetime·Decimal·Enum이 ORM과 똑같이 왕복합니다. (SQLAlchemy 타입 변환을 그대로 쓰면 SQLite에서 시간이 9시간 밀리거나 Enum이 값 대신 이름으로 저장되는 문제가 있어 피합니다.)
 - **경계를 드러냅니다.** 브리지로 쓴 내용은 Django signal을 발생시키지 않습니다. API 이름과 문서에 이 점을 분명히 적습니다.
 
-## 비동기 (검토 중)
+## 비동기
 
 Django의 async ORM(`aget()` 등)은 내부적으로 쿼리마다 `sync_to_async`로 스레드에 넘기는 구조이고, Django 문서도 "async 모드에서는 아직 트랜잭션이 동작하지 않는다"고 적고 있습니다.
 
-- **v0.1 방향(Django만으로):** 여러 쿼리와 `atomic()`을 묶어 스레드에 한 번만 넘기는 `atransaction()`·`aexecute()`를 제공합니다. 트랜잭션을 Django가 관리한다는 원칙을 지키면서 async 코드에서도 트랜잭션을 쓸 수 있게 합니다.
-- **검토 중인 대안:** SQLAlchemy `AsyncEngine`(별도 연결, 읽기 전용으로 명시적으로 켠 경우만)과 psycopg 3 비동기 연결 직접 사용. PostgreSQL 측정 결과를 보고 정합니다.
+- **v0.1은 `arun(fn)` 하나만 제공합니다.** 동기 함수 `fn`(여러 쿼리와 `atomic()`을 담은 작업 단위)을 `sync_to_async`로 **한 번에** 스레드에 넘겨 실행합니다. 트랜잭션은 그대로 Django가 관리하고, async 코드에서도 트랜잭션을 쓸 수 있습니다. 얻는 것은 스레드 위임 횟수가 줄어드는 것이지, 진짜 비동기 I/O는 아닙니다.
+- **`async with atomic()` 형태는 넣지 않습니다.** 같은 연결을 여러 코루틴이 동시에 쓰면 다른 코루틴의 쿼리가 그 트랜잭션에 섞여, 오류 없이 함께 롤백될 수 있기 때문입니다.
+- **SQLAlchemy 비동기 엔진(`AsyncEngine`)과 psycopg 3 비동기 연결 직접 사용은 채택하지 않습니다.** 둘 다 Django 밖에서 따로 연결을 열기 때문에 Django 트랜잭션·잠금·쿼리 집계(`execute_wrapper`, `assertNumQueries`) 밖에서 돕니다. "연결과 트랜잭션은 Django가 관리한다"는 원칙과 맞지 않습니다.
 
 ## 성능과 메모리 (측정 중)
 
