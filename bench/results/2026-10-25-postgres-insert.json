@@ -1,0 +1,478 @@
+{
+ "scenario": "insert",
+ "db": "postgres",
+ "date": "2026-10-25",
+ "quick": false,
+ "command": "python -m bench insert --db postgres",
+ "method": {
+  "repeat": 5,
+  "warmup": 1,
+  "time": "perf_counter around the measured call; best_s = min(times_s)",
+  "memory": "tracemalloc peak of one extra run, minus what was traced at its start"
+ },
+ "environment": {
+  "revision": "v0.0.1-10-gda2d034-dirty",
+  "python": "3.14.7",
+  "packages": {
+   "django-sqlalchemy-bridge": "0.0.1",
+   "django": "6.1.2",
+   "sqlalchemy": "2.1.6",
+   "psycopg": "3.3.6",
+   "psycopg-binary": "3.3.6",
+   "django-pgbulk": "3.3.0",
+   "django-cte": "4.0.0",
+   "asgiref": "3.13.0"
+  },
+  "python_sqlite3": "3.53.1",
+  "database": {
+   "vendor": "postgresql",
+   "server": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2)"
+  },
+  "machine": {
+   "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+   "cpu": "Apple M1 Pro",
+   "cpu_count": 10,
+   "memory_bytes": 34359738368
+  }
+ },
+ "elapsed_s": 323.5,
+ "load_average": {
+  "before": [
+   4.7978515625,
+   3.70703125,
+   4.2021484375
+  ],
+  "after": [
+   3.9814453125,
+   3.99658203125,
+   4.16943359375
+  ]
+ },
+ "scope": "Timed: the insert call alone. Untimed: building its input (model instances for Django and django-pgbulk, dicts for the bridge and SQLAlchemy) and the transaction, rolled back after each run (the table is empty before every run).",
+ "cases": [
+  {
+   "n": 20000,
+   "variants": {
+    "django_bulk_create": {
+     "note": "batch_size=None (default); sets each object's pk (RETURNING id on both backends)",
+     "warmup_s": [
+      0.26720429211854935
+     ],
+     "times_s": [
+      0.27064991649240255,
+      0.26220470760017633,
+      0.2646536249667406,
+      0.2644983744248748,
+      0.2637233743444085
+     ],
+     "best_s": 0.26220470760017633,
+     "median_s": 0.2644983744248748,
+     "prepare_s": [
+      0.07188358251005411,
+      0.0729455417022109,
+      0.07210258394479752,
+      0.0708358334377408,
+      0.0728687085211277
+     ],
+     "tracemalloc_peak_bytes": 17333538
+    },
+    "django_bulk_create_batch1000": {
+     "note": "batch_size=1000",
+     "warmup_s": [
+      0.28062524925917387
+     ],
+     "times_s": [
+      0.2901252908632159,
+      0.2804915839806199,
+      0.2798239579424262,
+      0.27932750061154366,
+      0.2810791665688157
+     ],
+     "best_s": 0.27932750061154366,
+     "median_s": 0.2804915839806199,
+     "prepare_s": [
+      0.07253187522292137,
+      0.07214595843106508,
+      0.07164095807820559,
+      0.07097583450376987,
+      0.07116037514060736
+     ],
+     "tracemalloc_peak_bytes": 5996004
+    },
+    "pgbulk_copy": {
+     "note": "pgbulk.copy(NewItem, objs) (COPY FROM STDIN, text); returns no ids",
+     "warmup_s": [
+      0.13101333286613226
+     ],
+     "times_s": [
+      0.1285815415903926,
+      0.12714487500488758,
+      0.12810329161584377,
+      0.1286172904074192,
+      0.13000941555947065
+     ],
+     "best_s": 0.12714487500488758,
+     "median_s": 0.1285815415903926,
+     "prepare_s": [
+      0.0703497501090169,
+      0.07094970904290676,
+      0.0708848750218749,
+      0.07049808371812105,
+      0.07040074933320284
+     ],
+     "tracemalloc_peak_bytes": 45271
+    },
+    "pgbulk_copy_binary": {
+     "note": "pgbulk.copy(NewItem, objs, binary=True)",
+     "warmup_s": [
+      0.11636812519282103
+     ],
+     "times_s": [
+      0.11126583348959684,
+      0.1117328330874443,
+      0.11181987542659044,
+      0.11195354163646698,
+      0.1134122908115387
+     ],
+     "best_s": 0.11126583348959684,
+     "median_s": 0.11181987542659044,
+     "prepare_s": [
+      0.07219550013542175,
+      0.07024579215794802,
+      0.07056874968111515,
+      0.07185591664165258,
+      0.07148524932563305
+     ],
+     "tracemalloc_peak_bytes": 45055
+    },
+    "bridge_bulk_insert": {
+     "note": "PostgreSQL: one INSERT ... SELECT * FROM unnest(...); SQLite: executemany",
+     "warmup_s": [
+      0.19420579075813293
+     ],
+     "times_s": [
+      0.19712299946695566,
+      0.1966797923669219,
+      0.19089045841246843,
+      0.195718583650887,
+      0.20478858333081007
+     ],
+     "best_s": 0.19089045841246843,
+     "median_s": 0.1966797923669219,
+     "prepare_s": [
+      0.02136425022035837,
+      0.021912249736487865,
+      0.02021716721355915,
+      0.020725250244140625,
+      0.021385209634900093
+     ],
+     "tracemalloc_peak_bytes": 16887969
+    },
+    "bridge_bulk_insert_returning": {
+     "note": "returning=['id']; SQLite: multi-row VALUES in batches of bulk_batch_size()",
+     "warmup_s": [
+      0.20511695835739374
+     ],
+     "times_s": [
+      0.1973207499831915,
+      0.19920679181814194,
+      0.19756824988871813,
+      0.19664704240858555,
+      0.19651995785534382
+     ],
+     "best_s": 0.19651995785534382,
+     "median_s": 0.1973207499831915,
+     "prepare_s": [
+      0.018453792668879032,
+      0.018291166983544827,
+      0.018013667315244675,
+      0.01806754246354103,
+      0.017956584692001343
+     ],
+     "tracemalloc_peak_bytes": 16888207
+    },
+    "bridge_execute_executemany": {
+     "note": "execute(insert(table), [dicts]) -> cursor.executemany",
+     "warmup_s": [
+      0.6160194156691432
+     ],
+     "times_s": [
+      0.7472815830260515,
+      0.6585779581218958,
+      0.6792466249316931,
+      0.6073533752933145,
+      0.5992519995197654
+     ],
+     "best_s": 0.5992519995197654,
+     "median_s": 0.6585779581218958,
+     "prepare_s": [
+      0.018326416611671448,
+      0.018569541163742542,
+      0.018461291678249836,
+      0.01874225027859211,
+      0.017776000313460827
+     ],
+     "tracemalloc_peak_bytes": 4387773
+    },
+    "sqlalchemy_core_insert": {
+     "note": "Connection.execute(insert(table), [dicts]) (insertmanyvalues); own engine, not the bridge",
+     "warmup_s": [
+      0.28040337562561035
+     ],
+     "times_s": [
+      0.278310957364738,
+      0.27510866709053516,
+      0.2814827086403966,
+      0.27814504131674767,
+      0.27710104174911976
+     ],
+     "best_s": 0.27510866709053516,
+     "median_s": 0.27814504131674767,
+     "prepare_s": [
+      0.018196708522737026,
+      0.01835641637444496,
+      0.017746000550687313,
+      0.01836999971419573,
+      0.017753458581864834
+     ],
+     "tracemalloc_peak_bytes": 11312638
+    },
+    "sqlalchemy_core_insert_returning": {
+     "note": "as above with .returning(id), rows fetched",
+     "warmup_s": [
+      0.40423054061830044
+     ],
+     "times_s": [
+      0.4057170422747731,
+      0.40232058335095644,
+      0.4732315829023719,
+      0.4049093332141638,
+      0.40780479181557894
+     ],
+     "best_s": 0.40232058335095644,
+     "median_s": 0.4057170422747731,
+     "prepare_s": [
+      0.01890441682189703,
+      0.018279249779880047,
+      0.018335542641580105,
+      0.01840791665017605,
+      0.017762500792741776
+     ],
+     "tracemalloc_peak_bytes": 17433952
+    }
+   }
+  },
+  {
+   "n": 200000,
+   "variants": {
+    "django_bulk_create": {
+     "note": "batch_size=None (default); sets each object's pk (RETURNING id on both backends)",
+     "warmup_s": [
+      2.954435625113547
+     ],
+     "times_s": [
+      2.924501500092447,
+      2.9032941246405244,
+      2.924557000398636,
+      2.970186749473214,
+      2.9055960420519114
+     ],
+     "best_s": 2.9032941246405244,
+     "median_s": 2.924501500092447,
+     "prepare_s": [
+      0.7879639994353056,
+      0.7898553339764476,
+      0.7901211669668555,
+      0.7851860830560327,
+      0.8060649996623397
+     ],
+     "tracemalloc_peak_bytes": 170371216
+    },
+    "django_bulk_create_batch1000": {
+     "note": "batch_size=1000",
+     "warmup_s": [
+      3.0622388748452067
+     ],
+     "times_s": [
+      3.0523855835199356,
+      2.953407541848719,
+      3.149783625267446,
+      3.027873625047505,
+      2.9237613333389163
+     ],
+     "best_s": 2.9237613333389163,
+     "median_s": 3.027873625047505,
+     "prepare_s": [
+      0.8131468342617154,
+      0.8055561669170856,
+      0.8107297075912356,
+      0.8269002921879292,
+      0.7982558328658342
+     ],
+     "tracemalloc_peak_bytes": 58616096
+    },
+    "pgbulk_copy": {
+     "note": "pgbulk.copy(NewItem, objs) (COPY FROM STDIN, text); returns no ids",
+     "warmup_s": [
+      1.2556286249309778
+     ],
+     "times_s": [
+      1.2522862497717142,
+      1.251296291127801,
+      1.2528897505253553,
+      1.2526940423995256,
+      1.251296916976571
+     ],
+     "best_s": 1.251296291127801,
+     "median_s": 1.2522862497717142,
+     "prepare_s": [
+      0.8029347080737352,
+      0.8024017494171858,
+      0.8000080408528447,
+      0.7998800417408347,
+      0.8032619161531329
+     ],
+     "tracemalloc_peak_bytes": 45925
+    },
+    "pgbulk_copy_binary": {
+     "note": "pgbulk.copy(NewItem, objs, binary=True)",
+     "warmup_s": [
+      1.139585291966796
+     ],
+     "times_s": [
+      1.1241779597476125,
+      1.1187693756073713,
+      1.1196151655167341,
+      1.1177610838785768,
+      1.1057494161650538
+     ],
+     "best_s": 1.1057494161650538,
+     "median_s": 1.1187693756073713,
+     "prepare_s": [
+      0.849841708317399,
+      0.8173097092658281,
+      0.7998155411332846,
+      0.8086450835689902,
+      0.8103403747081757
+     ],
+     "tracemalloc_peak_bytes": 44807
+    },
+    "bridge_bulk_insert": {
+     "note": "PostgreSQL: one INSERT ... SELECT * FROM unnest(...); SQLite: executemany",
+     "warmup_s": [
+      2.1740915831178427
+     ],
+     "times_s": [
+      2.056818916462362,
+      2.01600141543895,
+      2.037161458283663,
+      2.0240893326699734,
+      2.036030708812177
+     ],
+     "best_s": 2.01600141543895,
+     "median_s": 2.036030708812177,
+     "prepare_s": [
+      0.24129862524569035,
+      0.2308880416676402,
+      0.23517683427780867,
+      0.23186987545341253,
+      0.23135737515985966
+     ],
+     "tracemalloc_peak_bytes": 167093727
+    },
+    "bridge_bulk_insert_returning": {
+     "note": "returning=['id']; SQLite: multi-row VALUES in batches of bulk_batch_size()",
+     "warmup_s": [
+      2.1126675000414252
+     ],
+     "times_s": [
+      2.0881630005314946,
+      2.0882352497428656,
+      2.072897375561297,
+      2.0835737911984324,
+      2.0890170000493526
+     ],
+     "best_s": 2.072897375561297,
+     "median_s": 2.0881630005314946,
+     "prepare_s": [
+      0.26572208385914564,
+      0.2687013326212764,
+      0.26900737546384335,
+      0.2658352917060256,
+      0.26783729065209627
+     ],
+     "tracemalloc_peak_bytes": 167093965
+    },
+    "bridge_execute_executemany": {
+     "note": "execute(insert(table), [dicts]) -> cursor.executemany",
+     "warmup_s": [
+      6.405896749347448
+     ],
+     "times_s": [
+      6.436395042575896,
+      6.133173583075404,
+      6.093095583841205,
+      6.044912708923221,
+      6.042167625389993
+     ],
+     "best_s": 6.042167625389993,
+     "median_s": 6.093095583841205,
+     "prepare_s": [
+      0.2871537497267127,
+      0.2712597921490669,
+      0.2625105418264866,
+      0.2632116246968508,
+      0.261547707952559
+     ],
+     "tracemalloc_peak_bytes": 41633492
+    },
+    "sqlalchemy_core_insert": {
+     "note": "Connection.execute(insert(table), [dicts]) (insertmanyvalues); own engine, not the bridge",
+     "warmup_s": [
+      2.8003707081079483
+     ],
+     "times_s": [
+      2.794127875007689,
+      2.799358459189534,
+      2.813149374909699,
+      2.811151790432632,
+      2.8343557501211762
+     ],
+     "best_s": 2.794127875007689,
+     "median_s": 2.811151790432632,
+     "prepare_s": [
+      0.26047079265117645,
+      0.2635943749919534,
+      0.2698658751323819,
+      0.26377162523567677,
+      0.2796137500554323
+     ],
+     "tracemalloc_peak_bytes": 112144903
+    },
+    "sqlalchemy_core_insert_returning": {
+     "note": "as above with .returning(id), rows fetched",
+     "warmup_s": [
+      4.717086999677122
+     ],
+     "times_s": [
+      4.689640708267689,
+      4.743046415969729,
+      4.689068458043039,
+      4.839181666262448,
+      4.736712249927223
+     ],
+     "best_s": 4.689068458043039,
+     "median_s": 4.736712249927223,
+     "prepare_s": [
+      0.22012383304536343,
+      0.21828041691333055,
+      0.21875562518835068,
+      0.21927858237177134,
+      0.21653808280825615
+     ],
+     "tracemalloc_peak_bytes": 147208328
+    }
+   }
+  }
+ ]
+}

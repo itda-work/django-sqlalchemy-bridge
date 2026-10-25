@@ -30,6 +30,11 @@ dependencies = [
 Repository = "https://github.com/itda-work/django-sqlalchemy-bridge"
 
 [dependency-groups]
+bench = [
+    "django-cte>=4.0.0",
+    "django-pgbulk>=3.3.0",
+    "psutil>=7.2.2",
+]
 dev = [
     "psycopg[binary]>=3.2",
     "pytest>=8",

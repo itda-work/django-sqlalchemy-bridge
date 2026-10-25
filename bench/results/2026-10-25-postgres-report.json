@@ -1,0 +1,204 @@
+{
+ "scenario": "report",
+ "db": "postgres",
+ "date": "2026-10-25",
+ "quick": false,
+ "command": "python -m bench report --db postgres",
+ "method": {
+  "repeat": 5,
+  "warmup": 1,
+  "time": "perf_counter around the measured call; best_s = min(times_s)",
+  "memory": "tracemalloc peak of one extra run, minus what was traced at its start"
+ },
+ "environment": {
+  "revision": "v0.0.1-10-gda2d034-dirty",
+  "python": "3.14.7",
+  "packages": {
+   "django-sqlalchemy-bridge": "0.0.1",
+   "django": "6.1.2",
+   "sqlalchemy": "2.1.6",
+   "psycopg": "3.3.6",
+   "psycopg-binary": "3.3.6",
+   "django-pgbulk": "3.3.0",
+   "django-cte": "4.0.0",
+   "asgiref": "3.13.0"
+  },
+  "python_sqlite3": "3.53.1",
+  "database": {
+   "vendor": "postgresql",
+   "server": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2)"
+  },
+  "machine": {
+   "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+   "cpu": "Apple M1 Pro",
+   "cpu_count": 10,
+   "memory_bytes": 34359738368
+  }
+ },
+ "elapsed_s": 1.9,
+ "load_average": {
+  "before": [
+   4.0205078125,
+   4.20654296875,
+   4.2294921875
+  ],
+  "after": [
+   4.0205078125,
+   4.20654296875,
+   4.2294921875
+  ]
+ },
+ "scope": "Timed: building the query, running it and fetching every row as tuples. No transaction. tracemalloc counts what the call allocates.",
+ "cases": [
+  {
+   "n": 20000,
+   "query": "rank",
+   "variants": {
+    "django_cte": {
+     "note": "django-cte CTE() + with_cte()",
+     "warmup_s": [
+      0.005863749422132969
+     ],
+     "times_s": [
+      0.004877208732068539,
+      0.004848708398640156,
+      0.004684332758188248,
+      0.004540834575891495,
+      0.004541999660432339
+     ],
+     "best_s": 0.004540834575891495,
+     "median_s": 0.004684332758188248,
+     "prepare_s": [
+      5.420297384262085e-07,
+      4.172325134277344e-07,
+      2.905726432800293e-07,
+      4.153698682785034e-07,
+      2.086162567138672e-07
+     ],
+     "tracemalloc_peak_bytes": 197050
+    },
+    "django_window_no_cte": {
+     "note": "values().annotate(Sum, Count, Window(Rank(), order_by=Sum desc)): no CTE needed",
+     "warmup_s": [
+      0.004454500041902065
+     ],
+     "times_s": [
+      0.004773749969899654,
+      0.004430792294442654,
+      0.004603084176778793,
+      0.004679917357861996,
+      0.004616416059434414
+     ],
+     "best_s": 0.004430792294442654,
+     "median_s": 0.004616416059434414,
+     "prepare_s": [
+      2.9243528842926025e-07,
+      3.334134817123413e-07,
+      2.905726432800293e-07,
+      2.076849341392517e-07,
+      2.905726432800293e-07
+     ],
+     "tracemalloc_peak_bytes": 190871
+    },
+    "bridge": {
+     "note": "select(...).cte() + func.rank().over()",
+     "warmup_s": [
+      0.004925291985273361
+     ],
+     "times_s": [
+      0.0045196255668997765,
+      0.004298999905586243,
+      0.004470249637961388,
+      0.004133874550461769,
+      0.00437687523663044
+     ],
+     "best_s": 0.004133874550461769,
+     "median_s": 0.00437687523663044,
+     "prepare_s": [
+      2.915039658546448e-07,
+      2.086162567138672e-07,
+      3.334134817123413e-07,
+      4.153698682785034e-07,
+      3.3248215913772583e-07
+     ],
+     "tracemalloc_peak_bytes": 159059
+    },
+    "raw_cursor": {
+     "note": "the same SQL on a Django cursor",
+     "warmup_s": [
+      0.004316540434956551
+     ],
+     "times_s": [
+      0.004179582931101322,
+      0.004245041869580746,
+      0.004535166546702385,
+      0.004307624883949757,
+      0.004126541316509247
+     ],
+     "best_s": 0.004126541316509247,
+     "median_s": 0.004245041869580746,
+     "prepare_s": [
+      3.7532299757003784e-07,
+      2.915039658546448e-07,
+      3.7439167499542236e-07,
+      2.4959444999694824e-07,
+      2.505257725715637e-07
+     ],
+     "tracemalloc_peak_bytes": 225955
+    }
+   }
+  },
+  {
+   "n": 20000,
+   "query": "running",
+   "variants": {
+    "django_window": {
+     "note": "annotate(Window(Sum, partition_by))",
+     "warmup_s": [
+      0.0313065005466342
+     ],
+     "times_s": [
+      0.03247095923870802,
+      0.030826708301901817,
+      0.031218750402331352,
+      0.03093841578811407,
+      0.030848583206534386
+     ],
+     "best_s": 0.030826708301901817,
+     "median_s": 0.03093841578811407,
+     "prepare_s": [
+      9.592622518539429e-07,
+      2.9243528842926025e-07,
+      2.915039658546448e-07,
+      2.9243528842926025e-07,
+      2.905726432800293e-07
+     ],
+     "tracemalloc_peak_bytes": 9196712
+    },
+    "bridge": {
+     "note": "func.sum().over(partition_by=...)",
+     "warmup_s": [
+      0.02459000051021576
+     ],
+     "times_s": [
+      0.0239033754914999,
+      0.023955749347805977,
+      0.024080291390419006,
+      0.024259082973003387,
+      0.023885708302259445
+     ],
+     "best_s": 0.023885708302259445,
+     "median_s": 0.023955749347805977,
+     "prepare_s": [
+      5.00120222568512e-07,
+      2.9243528842926025e-07,
+      3.7532299757003784e-07,
+      5.00120222568512e-07,
+      2.4959444999694824e-07
+     ],
+     "tracemalloc_peak_bytes": 7581205
+    }
+   }
+  }
+ ]
+}

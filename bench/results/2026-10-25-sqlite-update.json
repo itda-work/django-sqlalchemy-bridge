@@ -1,0 +1,263 @@
+{
+ "scenario": "update",
+ "db": "sqlite",
+ "date": "2026-10-25",
+ "quick": false,
+ "command": "python -m bench update --db sqlite",
+ "method": {
+  "repeat": 5,
+  "warmup": 1,
+  "time": "perf_counter around the measured call; best_s = min(times_s)",
+  "memory": "tracemalloc peak of one extra run, minus what was traced at its start"
+ },
+ "environment": {
+  "revision": "v0.0.1-10-gda2d034-dirty",
+  "python": "3.14.7",
+  "packages": {
+   "django-sqlalchemy-bridge": "0.0.1",
+   "django": "6.1.2",
+   "sqlalchemy": "2.1.6",
+   "psycopg": "3.3.6",
+   "psycopg-binary": "3.3.6",
+   "django-pgbulk": "3.3.0",
+   "django-cte": "4.0.0",
+   "asgiref": "3.13.0"
+  },
+  "python_sqlite3": "3.53.1",
+  "database": {
+   "vendor": "sqlite",
+   "server": "SQLite 3.53.1"
+  },
+  "machine": {
+   "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+   "cpu": "Apple M1 Pro",
+   "cpu_count": 10,
+   "memory_bytes": 34359738368
+  }
+ },
+ "elapsed_s": 210.7,
+ "load_average": {
+  "before": [
+   4.0205078125,
+   4.20654296875,
+   4.2294921875
+  ],
+  "after": [
+   3.79443359375,
+   4.00927734375,
+   4.14013671875
+  ]
+ },
+ "scope": "Timed: the update call alone. Untimed: building its input (model instances for Django and django-pgbulk, dicts for the bridge and SQLAlchemy) and the transaction, rolled back after each run.",
+ "columns_set": [
+  "label",
+  "amount",
+  "price"
+ ],
+ "cases": [
+  {
+   "n": 5000,
+   "variants": {
+    "django_bulk_update": {
+     "note": "batch_size=None (default: the backend's parameter limit, no limit on PostgreSQL)",
+     "error": "OperationalError: too many SQL variables",
+     "timeout_s": 120
+    },
+    "django_bulk_update_batch1000": {
+     "note": "batch_size=1000",
+     "warmup_s": [
+      1.1073358338326216
+     ],
+     "times_s": [
+      1.0549775827676058,
+      1.0579331256449223,
+      1.0576357496902347,
+      1.0505231656134129,
+      1.0522696254774928
+     ],
+     "best_s": 1.0505231656134129,
+     "median_s": 1.0549775827676058,
+     "prepare_s": [
+      0.014518708921968937,
+      0.01425333321094513,
+      0.014335124753415585,
+      0.014355499297380447,
+      0.01472820807248354
+     ],
+     "tracemalloc_peak_bytes": 24502748
+    },
+    "bridge_bulk_update": {
+     "note": "PostgreSQL: one UPDATE ... FROM unnest(...); SQLite: executemany",
+     "warmup_s": [
+      0.0655989171937108
+     ],
+     "times_s": [
+      0.06592829246073961,
+      0.0600337078794837,
+      0.057395417243242264,
+      0.056244916282594204,
+      0.05251683387905359
+     ],
+     "best_s": 0.05251683387905359,
+     "median_s": 0.057395417243242264,
+     "prepare_s": [
+      0.0025711245834827423,
+      0.0026164595037698746,
+      0.0026239175349473953,
+      0.0025728754699230194,
+      0.002489292062819004
+     ],
+     "tracemalloc_peak_bytes": 811514
+    },
+    "bridge_execute_executemany": {
+     "note": "execute(update(...).where(id == bindparam), [params, ...]) -> cursor.executemany",
+     "warmup_s": [
+      0.08013520762324333
+     ],
+     "times_s": [
+      0.07869720831513405,
+      0.07813654188066721,
+      0.08196816686540842,
+      0.08517112489789724,
+      0.07423679251223803
+     ],
+     "best_s": 0.07423679251223803,
+     "median_s": 0.07869720831513405,
+     "prepare_s": [
+      0.0025586672127246857,
+      0.0026022912934422493,
+      0.0025569582358002663,
+      0.002537832595407963,
+      0.0026622088626027107
+     ],
+     "tracemalloc_peak_bytes": 1458606
+    },
+    "sqlalchemy_orm_bulk_update": {
+     "note": "Session.execute(update(SAItem), [dicts]): ORM bulk UPDATE by primary key; own engine, not the bridge",
+     "warmup_s": [
+      0.06643937528133392
+     ],
+     "times_s": [
+      0.0668510403484106,
+      0.051626624539494514,
+      0.0557243749499321,
+      0.054567791521549225,
+      0.05626658443361521
+     ],
+     "best_s": 0.051626624539494514,
+     "median_s": 0.0557243749499321,
+     "prepare_s": [
+      0.0027453331276774406,
+      0.0026631243526935577,
+      0.002472999505698681,
+      0.0025869160890579224,
+      0.0024929167702794075
+     ],
+     "tracemalloc_peak_bytes": 5744560
+    }
+   }
+  },
+  {
+   "n": 50000,
+   "variants": {
+    "django_bulk_update": {
+     "note": "batch_size=None (default: the backend's parameter limit, no limit on PostgreSQL)",
+     "error": "OperationalError: too many SQL variables",
+     "timeout_s": 120
+    },
+    "django_bulk_update_batch1000": {
+     "note": "batch_size=1000",
+     "warmup_s": [
+      11.74777845852077
+     ],
+     "times_s": [
+      12.208667499944568,
+      11.9521997096017,
+      11.811698499135673,
+      11.732882416807115,
+      12.051893125288188
+     ],
+     "best_s": 11.732882416807115,
+     "median_s": 11.9521997096017,
+     "prepare_s": [
+      0.14645924977958202,
+      0.1453794576227665,
+      0.1463608331978321,
+      0.14857479184865952,
+      0.14746083412319422
+     ],
+     "tracemalloc_peak_bytes": 175584996
+    },
+    "bridge_bulk_update": {
+     "note": "PostgreSQL: one UPDATE ... FROM unnest(...); SQLite: executemany",
+     "warmup_s": [
+      0.15681570768356323
+     ],
+     "times_s": [
+      0.15600387565791607,
+      0.15481233410537243,
+      0.1542737502604723,
+      0.1534864166751504,
+      0.1544588329270482
+     ],
+     "best_s": 0.1534864166751504,
+     "median_s": 0.1544588329270482,
+     "prepare_s": [
+      0.028746875002980232,
+      0.02985483407974243,
+      0.029952124692499638,
+      0.02840533386915922,
+      0.02897974941879511
+     ],
+     "tracemalloc_peak_bytes": 9411320
+    },
+    "bridge_execute_executemany": {
+     "note": "execute(update(...).where(id == bindparam), [params, ...]) -> cursor.executemany",
+     "warmup_s": [
+      0.36886500008404255
+     ],
+     "times_s": [
+      0.3694804171100259,
+      0.3675125828012824,
+      0.37049887515604496,
+      0.37080545723438263,
+      0.37092320807278156
+     ],
+     "best_s": 0.3675125828012824,
+     "median_s": 0.37049887515604496,
+     "prepare_s": [
+      0.027814083732664585,
+      0.030408041551709175,
+      0.02839750051498413,
+      0.029478957876563072,
+      0.02845399919897318
+     ],
+     "tracemalloc_peak_bytes": 14547160
+    },
+    "sqlalchemy_orm_bulk_update": {
+     "note": "Session.execute(update(SAItem), [dicts]): ORM bulk UPDATE by primary key; own engine, not the bridge",
+     "warmup_s": [
+      0.2308820839971304
+     ],
+     "times_s": [
+      0.23278545774519444,
+      0.23467962443828583,
+      0.23615387454628944,
+      0.23435541708022356,
+      0.23565254174172878
+     ],
+     "best_s": 0.23278545774519444,
+     "median_s": 0.23467962443828583,
+     "prepare_s": [
+      0.027676749974489212,
+      0.027467500418424606,
+      0.028084082528948784,
+      0.029606333933770657,
+      0.027781374752521515
+     ],
+     "tracemalloc_peak_bytes": 57436352
+    }
+   }
+  }
+ ]
+}

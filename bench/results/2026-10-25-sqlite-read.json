@@ -1,0 +1,408 @@
+{
+ "scenario": "read",
+ "db": "sqlite",
+ "date": "2026-10-25",
+ "quick": false,
+ "command": "python -m bench read --db sqlite",
+ "method": {
+  "repeat": 5,
+  "warmup": 1,
+  "time": "perf_counter around the measured call; best_s = min(times_s)",
+  "memory": "tracemalloc peak of one extra run, minus what was traced at its start"
+ },
+ "environment": {
+  "revision": "v0.0.1-10-gda2d034-dirty",
+  "python": "3.14.7",
+  "packages": {
+   "django-sqlalchemy-bridge": "0.0.1",
+   "django": "6.1.2",
+   "sqlalchemy": "2.1.6",
+   "psycopg": "3.3.6",
+   "psycopg-binary": "3.3.6",
+   "django-pgbulk": "3.3.0",
+   "django-cte": "4.0.0",
+   "asgiref": "3.13.0"
+  },
+  "python_sqlite3": "3.53.1",
+  "database": {
+   "vendor": "sqlite",
+   "server": "SQLite 3.53.1"
+  },
+  "machine": {
+   "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+   "cpu": "Apple M1 Pro",
+   "cpu_count": 10,
+   "memory_bytes": 34359738368
+  }
+ },
+ "elapsed_s": 52.6,
+ "load_average": {
+  "before": [
+   3.455078125,
+   3.64306640625,
+   3.9326171875
+  ],
+  "after": [
+   3.09814453125,
+   3.5234375,
+   3.87109375
+  ]
+ },
+ "scope": "Timed: running the query and building the full result (list of objects, dicts, tuples or rows), or for the streamed variants walking every row without keeping it. No transaction. tracemalloc counts what the call allocates; rss_* is measured in a fresh child process (see bench/child.py).",
+ "cases": [
+  {
+   "n": 20000,
+   "variants": {
+    "django_models": {
+     "note": "list(Item.objects.all())",
+     "warmup_s": [
+      0.09767800010740757
+     ],
+     "times_s": [
+      0.09321854170411825,
+      0.09899441711604595,
+      0.09702716674655676,
+      0.09756949916481972,
+      0.09519524965435266
+     ],
+     "best_s": 0.09321854170411825,
+     "median_s": 0.09702716674655676,
+     "prepare_s": [
+      3.7439167499542236e-07,
+      2.505257725715637e-07,
+      5.830079317092896e-07,
+      1.6670674085617065e-07,
+      1.2479722499847412e-07
+     ],
+     "kept": true,
+     "tracemalloc_peak_bytes": 17519180,
+     "rss_runs": [
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 16924672,
+       "maxrss_delta_bytes": 16924672
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 16728064,
+       "maxrss_delta_bytes": 16728064
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 16973824,
+       "maxrss_delta_bytes": 16973824
+      }
+     ],
+     "rss_delta_bytes_median": 16924672,
+     "maxrss_delta_bytes_median": 16924672
+    },
+    "django_values": {
+     "note": "list(Item.objects.values())",
+     "warmup_s": [
+      0.05917674954980612
+     ],
+     "times_s": [
+      0.05887224990874529,
+      0.06096583418548107,
+      0.05889829155057669,
+      0.060245790518820286,
+      0.05904729105532169
+     ],
+     "best_s": 0.05887224990874529,
+     "median_s": 0.05904729105532169,
+     "prepare_s": [
+      1.2479722499847412e-07,
+      1.2479722499847412e-07,
+      3.7532299757003784e-07,
+      2.915039658546448e-07,
+      1.6577541828155518e-07
+     ],
+     "kept": true,
+     "tracemalloc_peak_bytes": 14959168,
+     "rss_runs": [
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 17530880,
+       "maxrss_delta_bytes": 17530880
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 17678336,
+       "maxrss_delta_bytes": 17678336
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 17678336,
+       "maxrss_delta_bytes": 17678336
+      }
+     ],
+     "rss_delta_bytes_median": 17678336,
+     "maxrss_delta_bytes_median": 17678336
+    },
+    "django_values_list": {
+     "note": "list(...values_list())",
+     "warmup_s": [
+      0.05676037538796663
+     ],
+     "times_s": [
+      0.05386208277195692,
+      0.05482370965182781,
+      0.053321124985814095,
+      0.0552847096696496,
+      0.05365058407187462
+     ],
+     "best_s": 0.053321124985814095,
+     "median_s": 0.05386208277195692,
+     "prepare_s": [
+      1.257285475730896e-07,
+      2.915039658546448e-07,
+      2.086162567138672e-07,
+      1.2479722499847412e-07,
+      2.905726432800293e-07
+     ],
+     "kept": true,
+     "tracemalloc_peak_bytes": 11598496,
+     "rss_runs": [
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 14417920,
+       "maxrss_delta_bytes": 14417920
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 14303232,
+       "maxrss_delta_bytes": 14303232
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 14450688,
+       "maxrss_delta_bytes": 14450688
+      }
+     ],
+     "rss_delta_bytes_median": 14417920,
+     "maxrss_delta_bytes_median": 14417920
+    },
+    "bridge_execute_tuples": {
+     "note": "execute(select(...)) -> list of tuples",
+     "warmup_s": [
+      0.05310658272355795
+     ],
+     "times_s": [
+      0.052856708876788616,
+      0.0529124578461051,
+      0.052779290825128555,
+      0.054441582411527634,
+      0.054324583150446415
+     ],
+     "best_s": 0.052779290825128555,
+     "median_s": 0.0529124578461051,
+     "prepare_s": [
+      3.3248215913772583e-07,
+      2.4959444999694824e-07,
+      2.086162567138672e-07,
+      3.334134817123413e-07,
+      1.257285475730896e-07
+     ],
+     "kept": true,
+     "tracemalloc_peak_bytes": 11583941,
+     "rss_runs": [
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 13844480,
+       "maxrss_delta_bytes": 13844480
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 13942784,
+       "maxrss_delta_bytes": 13942784
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 13729792,
+       "maxrss_delta_bytes": 13729792
+      }
+     ],
+     "rss_delta_bytes_median": 13844480,
+     "maxrss_delta_bytes_median": 13844480
+    },
+    "bridge_execute_result_rows": {
+     "note": "execute_result(select(...)).all() -> SQLAlchemy Row objects",
+     "warmup_s": [
+      0.05532687529921532
+     ],
+     "times_s": [
+      0.058093792758882046,
+      0.05652287509292364,
+      0.05658616591244936,
+      0.0573726249858737,
+      0.05666637513786554
+     ],
+     "best_s": 0.05652287509292364,
+     "median_s": 0.05666637513786554,
+     "prepare_s": [
+      1.2479722499847412e-07,
+      2.086162567138672e-07,
+      2.505257725715637e-07,
+      2.076849341392517e-07,
+      8.288770914077759e-08
+     ],
+     "kept": true,
+     "tracemalloc_peak_bytes": 11583941,
+     "rss_runs": [
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 14024704,
+       "maxrss_delta_bytes": 14024704
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 13975552,
+       "maxrss_delta_bytes": 13975552
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 13795328,
+       "maxrss_delta_bytes": 13795328
+      }
+     ],
+     "rss_delta_bytes_median": 13975552,
+     "maxrss_delta_bytes_median": 13975552
+    },
+    "sqlalchemy_core_rows": {
+     "note": "Connection.execute(select(...)).all(); own engine, not the bridge",
+     "warmup_s": [
+      0.03215929213911295
+     ],
+     "times_s": [
+      0.029394375160336494,
+      0.029634833335876465,
+      0.028990874998271465,
+      0.029449583031237125,
+      0.029225332662463188
+     ],
+     "best_s": 0.028990874998271465,
+     "median_s": 0.029394375160336494,
+     "prepare_s": [
+      1.2479722499847412e-07,
+      1.2479722499847412e-07,
+      8.288770914077759e-08,
+      3.3248215913772583e-07,
+      1.6577541828155518e-07
+     ],
+     "kept": true,
+     "tracemalloc_peak_bytes": 13083912,
+     "rss_runs": [
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 15663104,
+       "maxrss_delta_bytes": 15663104
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 15630336,
+       "maxrss_delta_bytes": 15630336
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 15777792,
+       "maxrss_delta_bytes": 15777792
+      }
+     ],
+     "rss_delta_bytes_median": 15663104,
+     "maxrss_delta_bytes_median": 15663104
+    },
+    "sqlalchemy_orm_objects": {
+     "note": "Session.scalars(select(SAItem)).all(); own engine, not the bridge",
+     "warmup_s": [
+      0.07141495775431395
+     ],
+     "times_s": [
+      0.06875899992883205,
+      0.07052387483417988,
+      0.07528966572135687,
+      0.07035841699689627,
+      0.07157699950039387
+     ],
+     "best_s": 0.06875899992883205,
+     "median_s": 0.07052387483417988,
+     "prepare_s": [
+      1.2479722499847412e-07,
+      1.6577541828155518e-07,
+      1.2479722499847412e-07,
+      2.915039658546448e-07,
+      1.2479722499847412e-07
+     ],
+     "kept": true,
+     "tracemalloc_peak_bytes": 29834224,
+     "rss_runs": [
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 34291712,
+       "maxrss_delta_bytes": 34291712
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 33980416,
+       "maxrss_delta_bytes": 33980416
+      },
+      {
+       "rows": 20000,
+       "rss_delta_bytes": 34455552,
+       "maxrss_delta_bytes": 34455552
+      }
+     ],
+     "rss_delta_bytes_median": 34291712,
+     "maxrss_delta_bytes_median": 34291712
+    },
+    "django_iterator": {
+     "note": "values_list().iterator(chunk_size=2000), rows not kept",
+     "warmup_s": [
+      0.051030625589191914
+     ],
+     "times_s": [
+      0.05211258307099342,
+      0.051195042207837105,
+      0.05054074991494417,
+      0.05114766675978899,
+      0.05083374958485365
+     ],
+     "best_s": 0.05054074991494417,
+     "median_s": 0.05114766675978899,
+     "prepare_s": [
+      2.9243528842926025e-07,
+      2.915039658546448e-07,
+      2.9243528842926025e-07,
+      2.505257725715637e-07,
+      2.9243528842926025e-07
+     ],
+     "kept": false,
+     "tracemalloc_peak_bytes": 1211828
+    },
+    "bridge_stream": {
+     "note": "stream(select(...), chunk_size=2000), rows not kept",
+     "warmup_s": [
+      0.05288458243012428
+     ],
+     "times_s": [
+      0.0531373331323266,
+      0.055257583037018776,
+      0.05498145893216133,
+      0.05474641639739275,
+      0.055190457962453365
+     ],
+     "best_s": 0.0531373331323266,
+     "median_s": 0.05498145893216133,
+     "prepare_s": [
+      1.6670674085617065e-07,
+      1.6670674085617065e-07,
+      2.4959444999694824e-07,
+      2.4959444999694824e-07,
+      2.505257725715637e-07
+     ],
+     "kept": false,
+     "tracemalloc_peak_bytes": 1207615
+    }
+   }
+  }
+ ]
+}
