@@ -5,7 +5,7 @@ See README.md for the architecture.
 
 from importlib.metadata import PackageNotFoundError, version
 
-from django_sqlalchemy_bridge.execution import execute, execute_result
+from django_sqlalchemy_bridge.execution import execute, execute_result, stream
 from django_sqlalchemy_bridge.tables import (
     Difference,
     FieldType,
@@ -33,5 +33,6 @@ __all__ = [
     "execute_result",
     "forget_table",
     "metadata",
+    "stream",
     "table_for",
 ]
