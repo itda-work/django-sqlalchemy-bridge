@@ -2,7 +2,7 @@
 
 > ⚠️ **실험적 프로젝트입니다 (Experimental).** API·동작·지원 범위가 예고 없이 바뀔 수 있고, 운영 환경에서 쓰는 것을 권하지 않습니다.
 >
-> **상태: 설계 단계 (0.0.x).** 이름을 확보하고 설계를 공개한 버전입니다. 아직 공개 API가 없으니 의존하지 마세요.
+> **상태: 설계 단계 (0.0.x).** 이름을 확보하고 설계를 공개한 버전입니다. 저장소 `main`에 첫 API(모델 → `sa.Table`)가 들어가고 있지만 아직 릴리스되지 않았으니 의존하지 마세요.
 
 Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식(대량 DML, CTE, 윈도 함수, 복잡한 조인)을 쓰게 해 주는 라이브러리입니다.
 
@@ -17,6 +17,51 @@ Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식
 - **테이블 구조의 기준은 Django 모델 하나입니다.** `sa.Table`은 Django 모델에서 만들고, 마이그레이션은 Django가 맡습니다.
 - **값 변환은 Django 필드를 따릅니다.** 쓸 때는 `get_db_prep_value`, 읽을 때는 Django ORM이 쓰는 변환기를 거칩니다. 그래서 JSON·UUID·시간대가 있는 datetime·Decimal·Enum이 ORM과 똑같이 왕복합니다. (SQLAlchemy 타입 변환을 그대로 쓰면 SQLite에서 시간이 9시간 밀리거나 Enum이 값 대신 이름으로 저장되는 문제가 있어 피합니다.)
 - **경계를 드러냅니다.** 브리지로 쓴 내용은 Django signal을 발생시키지 않습니다. API 이름과 문서에 이 점을 분명히 적습니다.
+
+## 모델에서 테이블 만들기 (개발 중, 미릴리스)
+
+```python
+import sqlalchemy as sa
+from django_sqlalchemy_bridge import assert_table_matches, table_for
+
+from shop.models import Order
+
+orders = table_for(Order)  # 모델마다 한 번 만들고 캐시, 공용 MetaData 하나
+stmt = sa.select(orders.c.id).where(orders.c.status == "paid")
+
+# 테스트에서: 만든 테이블이 현재 모델·실제 DB 와 어긋나면 차이를 모두 나열하며 실패
+assert_table_matches(Order, check_db=True)
+```
+
+- 테이블명은 `db_table`, 컬럼명은 `db_column`(FK 는 `<이름>_id`)을 따르고, PK·nullable·FK 대상 컬럼을 반영합니다.
+- 각 `Column.info["django_field"]`에 원래 Django 필드가, `Table.info["django_model"]`에 모델이 들어 있습니다. SQLAlchemy 타입은 SQL 컴파일용이고, 값 변환은 Django 필드가 맡습니다(예정).
+- `compare_table(model, table=None, check_db=False)`는 차이를 `Difference(source, kind, column, expected, actual)` 리스트로 돌려줍니다. 모델과는 테이블명·컬럼·타입·nullable·PK·FK 를, 실제 DB 와는 컬럼 유무와 nullable 을 비교합니다(DB 타입 비교는 예정).
+- 다중 DB 는 아직 `default` 만 받습니다(`using` 인자 자리만 있음).
+
+### 지원 필드
+
+| Django 필드 (`get_internal_type()` 기준) | SQLAlchemy 타입 |
+|---|---|
+| `AutoField`, `IntegerField`, `PositiveIntegerField` | `Integer` |
+| `BigAutoField`, `BigIntegerField`, `PositiveBigIntegerField` | `BigInteger` |
+| `SmallAutoField`, `SmallIntegerField`, `PositiveSmallIntegerField` | `SmallInteger` |
+| `CharField`(`EmailField`·`URLField` 포함), `SlugField`, `FileField`(`ImageField` 포함), `FilePathField` | `String(max_length)` |
+| `GenericIPAddressField` | `String(39)` |
+| `TextField` | `Text` |
+| `BooleanField` | `Boolean` |
+| `DecimalField` | `Numeric(max_digits, decimal_places)` |
+| `FloatField` | `Float` |
+| `DateField` / `TimeField` | `Date` / `Time` |
+| `DateTimeField` | `DateTime(timezone=USE_TZ)` |
+| `DurationField` | `Interval` |
+| `UUIDField` | `Uuid` |
+| `JSONField` | `JSON` |
+| `BinaryField` | `LargeBinary` |
+| `ForeignKey`, `OneToOneField` | 대상 컬럼의 타입 + `ForeignKey` |
+
+- `choices`가 있는 필드는 바탕 필드의 타입을 그대로 씁니다.
+- `ManyToManyField`와 역관계는 컬럼이 아니므로 건너뜁니다(중간 테이블 모델은 따로 `table_for` 할 수 있습니다). 다중 테이블 상속의 자식 테이블에는 자기 컬럼과 `<부모>_ptr_id`만 들어갑니다. 복합 PK(`CompositePrimaryKey`)를 반영합니다.
+- 위 표에 없는 필드가 DB 컬럼을 가지면(예: PostgreSQL `ArrayField`, 직접 만든 필드) 조용히 넘기지 않고 `UnsupportedFieldError`를 냅니다.
 
 ## 비동기
 
