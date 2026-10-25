@@ -2,7 +2,7 @@
 
 > ⚠️ **실험적 프로젝트입니다 (Experimental).** API·동작·지원 범위가 예고 없이 바뀔 수 있고, 운영 환경에서 쓰는 것을 권하지 않습니다.
 >
-> **상태: 설계 단계 (0.0.x).** 이름을 확보하고 설계를 공개한 버전입니다. 저장소 `main`에 첫 API(모델 → `sa.Table`, `execute`, `stream`, `bulk_update`/`bulk_insert`)가 들어가고 있지만 아직 릴리스되지 않았으니 의존하지 마세요.
+> **상태: 설계 단계 (0.0.x).** 이름을 확보하고 설계를 공개한 버전입니다. 저장소 `main`에 첫 API(모델 → `sa.Table`, `execute`, `stream`, `bulk_update`/`bulk_insert`, `arun`)가 들어가고 있지만 아직 릴리스되지 않았으니 의존하지 마세요.
 
 Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식(대량 DML, CTE, 윈도 함수, 복잡한 조인)을 쓰게 해 주는 라이브러리입니다.
 
@@ -95,7 +95,7 @@ for row in result.mappings():
 - **값 변환은 Django 필드 기준**입니다. 컬럼과 비교(`==`, `!=`, `<`, `IN`, `BETWEEN` 등)하거나 INSERT/UPDATE로 넣는 값은 `field.get_db_prep_value()`를, 컬럼을 고른 결과(라벨·`max()`처럼 컬럼 타입을 그대로 잇는 식 포함)는 ORM과 같은 변환기(`connection.ops.get_db_converters()` + 필드 변환기)를 거칩니다. JSON·UUID·시간대 있는 datetime(SQLite에서도 UTC로 저장, 9시간 밀리지 않음)·Decimal·선택지(이름이 아니라 값)가 ORM과 똑같이 왕복합니다. `None`은 ORM `save()`처럼 SQL `NULL`입니다.
 - 컬럼으로 추적되지 않는 값(`LIKE` 패턴, 산술식, `count()` 같은 식, `sa.literal()`, `sa.text()`)은 변환 없이 그대로 오갑니다.
 - 리터럴 `%`는 그대로 써도 됩니다(`LIKE 'a%'`, `text("SELECT '100%'")`). 브리지가 `%s` 자리표시로 컴파일하고 `%`를 `%%`로 바꾼 뒤, 파라미터가 없어도 빈 튜플을 넘겨 백엔드가 되돌리게 합니다.
-- async 코드에서 직접 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. `sync_to_async`로 감싸세요.
+- async 코드에서 직접 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. 작업 단위를 동기 함수로 묶어 `arun`으로 부르세요(아래 "비동기").
 
 ### 쪼개 읽기: `stream`
 
@@ -147,10 +147,45 @@ ids = bulk_insert(orders, rows, returning=["id"])
 
 ## 비동기
 
-Django의 async ORM(`aget()` 등)은 내부적으로 쿼리마다 `sync_to_async`로 스레드에 넘기는 구조이고, Django 문서도 "async 모드에서는 아직 트랜잭션이 동작하지 않는다"고 적고 있습니다.
+Django의 async ORM(`aget()` 등)은 내부적으로 쿼리마다 `sync_to_async`로 스레드에 넘기는 구조이고, Django 문서도 "async 모드에서는 아직 트랜잭션이 동작하지 않는다"고 적고 있습니다. 브리지는 작업 단위 전체를 스레드에 **한 번** 넘기는 `arun` 하나만 제공합니다. 얻는 것은 스레드 위임 횟수가 줄고 async 코드에서도 트랜잭션을 쓸 수 있는 것이지, 진짜 비동기 I/O는 아닙니다.
 
-- **v0.1은 `arun(fn)` 하나만 제공합니다.** 동기 함수 `fn`(여러 쿼리와 `atomic()`을 담은 작업 단위)을 `sync_to_async`로 **한 번에** 스레드에 넘겨 실행합니다. 트랜잭션은 그대로 Django가 관리하고, async 코드에서도 트랜잭션을 쓸 수 있습니다. 얻는 것은 스레드 위임 횟수가 줄어드는 것이지, 진짜 비동기 I/O는 아닙니다.
-- **`async with atomic()` 형태는 넣지 않습니다.** 같은 연결을 여러 코루틴이 동시에 쓰면 다른 코루틴의 쿼리가 그 트랜잭션에 섞여, 오류 없이 함께 롤백될 수 있기 때문입니다.
+### `arun` (개발 중, 미릴리스)
+
+```python
+import sqlalchemy as sa
+from django.db import transaction
+from django_sqlalchemy_bridge import arun, execute, table_for
+
+from shop.models import Order
+
+orders = table_for(Order)
+
+
+def ship(order_ids):  # 동기 함수: 쿼리 여러 개와 atomic()을 담은 작업 단위
+    with transaction.atomic():
+        n = execute(sa.update(orders).where(orders.c.id.in_(order_ids)).values(status="shipped"))
+        transaction.on_commit(notify_shipping)
+        return n
+
+
+async def view(request):
+    n = await arun(ship, [1, 2, 3])
+```
+
+- `arun(fn, /, *args, **kwargs)`는 `fn(*args, **kwargs)`를 `sync_to_async(thread_sensitive=True)`로 한 번에 실행하고 반환값을 돌려줍니다. `fn`이 낸 예외도 그대로 올라옵니다. `fn` 안에서는 `execute`·`stream`·`bulk_*`·`atomic()`·`on_commit`·ORM을 동기 코드처럼 씁니다.
+- `fn`은 위치 전용 인자라 `fn`이나 `using`이라는 키워드 인자도 그대로 `fn`에 넘어갑니다. `arun`에는 `using`이 없습니다. 어느 DB를 쓸지는 `fn` 안의 `execute(..., using=...)`·`atomic(using=...)`이 정합니다.
+- 코루틴 함수를 넘기면 `TypeError`입니다(`await fn()`을 쓰세요). 동기 함수가 awaitable을 돌려줘도 `TypeError`입니다.
+- `arun` 여러 건을 `asyncio.gather`로 동시에 돌려도 서로 섞이지 않습니다. thread-sensitive 호출은 한 스레드에서 차례로 돌고, 각 `fn`의 트랜잭션은 그 `fn` 안에서 시작해 끝나므로 한쪽의 롤백이 다른 쪽의 커밋에 영향을 주지 않습니다(테스트로 확인).
+- **연결 수명.** `fn` 앞뒤로 Django `close_old_connections()`와 같은 정리를 합니다. 그 스레드의 연결 중 오류 뒤 쓸 수 없게 된 것, `CONN_MAX_AGE`가 지난 것을 닫습니다(Channels `database_sync_to_async`와 같은 동작). 요청 밖에서 오래 도는 코루틴(워커, consumer)은 Django의 요청 시작·끝 정리를 받지 못해, 서버가 끊은 연결이 그 스레드에서 계속 `connection is closed`로 실패하기 때문입니다. 이 정리가 있으면 끊긴 뒤 첫 호출만 실패하고 다음 호출은 새 연결을 씁니다. `CONN_HEALTH_CHECKS: True`면 첫 호출부터 새 연결을 씁니다(PostgreSQL에서 테스트로 확인).
+  - 그래서 `CONN_MAX_AGE: 0`(기본값)이면 `arun` 호출마다 연결을 새로 엽니다. 요청 하나에서 여러 번 부른다면 `CONN_MAX_AGE`를 주거나 PostgreSQL 연결 풀(`OPTIONS: {"pool": True}`)을 쓰세요.
+  - `atomic()` 블록 안에 있는 연결(예: 바깥 동기 코드가 연 트랜잭션, Django `TestCase`)은 닫지 않습니다.
+- async 코드에서 `execute`·`stream`·`bulk_*`를 `arun` 없이 바로 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. 이 안전장치는 우회하지 않습니다.
+
+**Django Channels.** thread-sensitive 호출은 Django ASGI 핸들러 안에서는 요청마다 스레드 하나를 쓰지만, Channels consumer에는 그런 구분이 없어 모든 consumer의 `arun`(그리고 `database_sync_to_async`)이 프로세스 전체에서 **스레드 하나로 줄을 섭니다.** DB 작업이 긴 consumer가 많으면 서로를 기다립니다. 브리지는 Channels에 의존하지 않습니다.
+
+### 넣지 않는 것
+
+- **`async with atomic()` 형태는 넣지 않습니다.** `atomic()`의 진입·종료를 따로 `sync_to_async`로 넘기면, 같은 스레드를 쓰는 코루틴들이 **연결 하나와 그 트랜잭션 상태를 함께 씁니다.** 먼저 연 코루틴의 트랜잭션 안에서 다른 코루틴의 `atomic()`은 savepoint가 되고, 트랜잭션이 없는 쓰기는 그 트랜잭션에 그대로 섞입니다. 그래서 정상 종료한 코루틴의 쓰기가 다른 코루틴의 실패와 함께 **예외 없이 롤백됩니다.** 이렇게 흉내 낸 구현을 `gather`로 두 건 돌려 SQLite·PostgreSQL 모두에서 재현했습니다(먼저 연 쪽이 실패하든, 정상 쪽이 먼저 블록을 나오든 정상 쪽의 행이 사라짐).
 - **SQLAlchemy 비동기 엔진(`AsyncEngine`)과 psycopg 3 비동기 연결 직접 사용은 채택하지 않습니다.** 둘 다 Django 밖에서 따로 연결을 열기 때문에 Django 트랜잭션·잠금·쿼리 집계(`execute_wrapper`, `assertNumQueries`) 밖에서 돕니다. "연결과 트랜잭션은 Django가 관리한다"는 원칙과 맞지 않습니다.
 
 ## 성능과 메모리 (측정 중)

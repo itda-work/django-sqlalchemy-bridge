@@ -5,6 +5,7 @@ See README.md for the architecture.
 
 from importlib.metadata import PackageNotFoundError, version
 
+from django_sqlalchemy_bridge.asynchronous import arun
 from django_sqlalchemy_bridge.bulk import bulk_insert, bulk_update
 from django_sqlalchemy_bridge.execution import execute, execute_result, stream
 from django_sqlalchemy_bridge.tables import (
@@ -28,6 +29,7 @@ __all__ = [
     "FieldType",
     "UnsupportedFieldError",
     "__version__",
+    "arun",
     "assert_table_matches",
     "bulk_insert",
     "bulk_update",
