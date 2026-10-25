@@ -20,7 +20,8 @@ classifiers = [
 ]
 dependencies = [
     "django>=5.2",
-    "sqlalchemy>=2.0,<3",
+    # <2.2: building a Result from external rows has no public constructor; widen only after CI checks the new minor.
+    "sqlalchemy>=2.0,<2.2",
 ]
 
 [project.urls]

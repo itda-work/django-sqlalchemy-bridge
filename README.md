@@ -36,7 +36,7 @@ Django의 async ORM(`aget()` 등)은 내부적으로 쿼리마다 `sync_to_async
 
 ## 첫 지원 대상 (계획)
 
-SQLite, PostgreSQL(psycopg 3) · Django 5.2 이상 · SQLAlchemy 2.0 이상 · Python 3.12 이상
+SQLite, PostgreSQL(psycopg 3) · Django 5.2 이상 · SQLAlchemy 2.0 이상 2.2 미만 · Python 3.12 이상
 
 ## 라이선스
 
