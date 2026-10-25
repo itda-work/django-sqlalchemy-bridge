@@ -39,10 +39,35 @@ __all__ = ["execute", "execute_result", "stream"]
 Params = Mapping[str, Any]
 
 
+class _ReturningCompiler(SQLCompiler):
+    """Note the columns the compiled top-level ``RETURNING`` clause returns.
+
+    The statement's own ``exported_columns`` (and ``effective_returning``, which
+    reads the same memo) can be stale: SQLAlchemy memoizes it without
+    registering the memo, so a statement derived with ``.returning()`` from one
+    whose columns were read keeps the old collection. The compiler is handed
+    the columns it renders.
+    """
+
+    returned_columns: list[sa.ColumnElement[Any]] | None = None
+
+    def returning_clause(self, stmt: Any, returning_cols: Any, *, populate_result_map: bool, **kw: Any) -> str:
+        if populate_result_map:
+            columns = [c for e in returning_cols for c in (e.c if isinstance(e, sa.FromClause) else [e])]
+            self.returned_columns = [c for c in columns if isinstance(c, sa.ColumnElement)]
+        return super().returning_clause(stmt, returning_cols, populate_result_map=populate_result_map, **kw)
+
+
 def _sqlite_dialect() -> Dialect:
     from sqlalchemy.dialects import sqlite
 
-    return sqlite.dialect(paramstyle="format")
+    dialect = sqlite.dialect(paramstyle="format")
+
+    class Compiler(_ReturningCompiler, dialect.statement_compiler):
+        pass
+
+    dialect.statement_compiler = Compiler
+    return dialect
 
 
 def _postgresql_dialect() -> Dialect:
@@ -54,7 +79,7 @@ def _postgresql_dialect() -> Dialect:
     # jsonb, so the casts would be wrong. Compile plain placeholders, as the ORM does.
     dialect.bind_typing = BindTyping.NONE
 
-    class Compiler(dialect.statement_compiler):
+    class Compiler(_ReturningCompiler, dialect.statement_compiler):
         def render_literal_value(self, value: Any, type_: sa.types.TypeEngine) -> str:
             # The PostgreSQL compiler doubles backslashes in literals until it has
             # connected and read standard_conforming_strings (SQLAlchemy 2.0 assumes
@@ -92,12 +117,14 @@ class Prepared:
     ``param_rows`` holds one positional tuple per execution: exactly one unless
     ``many``. ``converters`` has one entry per result column, ``None`` where the
     value is returned raw; it is empty when the statement's columns are unknown.
+    ``rowcount_only`` marks DML that compiled without ``RETURNING``.
     """
 
     sql: str
     param_rows: list[tuple[Any, ...]]
     many: bool
     converters: list[tuple[list[Any], Any] | None]
+    rowcount_only: bool = False
 
 
 def prepare(
@@ -111,15 +138,18 @@ def prepare(
     """
     many = params is not None and not isinstance(params, Mapping)
     rows: list[Params] = list(params) if many else [params or {}]
-    if many and _returns_rows(stmt):
-        raise ValueError("executemany cannot return rows; run a statement with RETURNING once per row")
-    if isinstance(stmt, sa.sql.dml.UpdateBase) and _returns_rows(stmt):
-        check_returning(connection)
-    if isinstance(stmt, sa.Insert) and not _returns_rows(stmt):
+    if isinstance(stmt, sa.Insert):
         # Otherwise PostgreSQL compiles an implicit "RETURNING id" for SQLAlchemy's
-        # inserted_primary_key, and the caller would get rows instead of a rowcount.
+        # inserted_primary_key when no RETURNING is given, and the caller would get
+        # rows instead of a rowcount. With an explicit RETURNING it changes nothing.
         stmt = stmt.inline()
     compiled = stmt.compile(dialect=dialect_for(connection), column_keys=list(rows[0]) if rows else None)
+    dml = isinstance(stmt, sa.sql.dml.UpdateBase)
+    columns = compiled.returned_columns if dml else getattr(stmt, "exported_columns", None)
+    if many and columns:
+        raise ValueError("executemany cannot return rows; run a statement with RETURNING once per row")
+    if dml and columns:
+        check_returning(connection)
     _check_python_defaults(compiled)
     sql = None
     param_rows = []
@@ -130,7 +160,8 @@ def prepare(
         elif state.statement != sql:
             raise ValueError("every executemany row must compile to the same SQL (check expanding IN lists)")
         param_rows.append(_positional(compiled, state, connection))
-    return Prepared(sql or compiled.string, param_rows, many, _converters(stmt, connection))
+    converters = [_field_converters(column.type, connection) for column in columns or ()]
+    return Prepared(sql or compiled.string, param_rows, many, converters, rowcount_only=dml and not columns)
 
 
 def check_returning(connection: BaseDatabaseWrapper) -> None:
@@ -162,10 +193,6 @@ def _check_python_defaults(compiled: Compiled) -> None:
     )
 
 
-def _returns_rows(stmt: sa.sql.ClauseElement) -> bool:
-    return bool(getattr(stmt, "exported_columns", ()))
-
-
 def _positional(compiled: Compiled, state: Any, connection: BaseDatabaseWrapper) -> tuple[Any, ...]:
     # Expanded IN parameters ("ids_1", "ids_2") take the type of the one they came from ("ids").
     origin = {name: original for original, names in state.parameter_expansion.items() for name in names}
@@ -191,13 +218,6 @@ def to_db(value: Any, type_: sa.types.TypeEngine | None, connection: BaseDatabas
     if value is None or not isinstance(type_, FieldType):
         return value
     return type_.field.get_db_prep_value(value, connection, prepared=False)
-
-
-def _converters(stmt: sa.sql.ClauseElement, connection: BaseDatabaseWrapper) -> list[tuple[list[Any], Any] | None]:
-    columns = getattr(stmt, "exported_columns", None)
-    if not columns:
-        return []
-    return [_field_converters(column.type, connection) for column in columns]
 
 
 def _field_converters(type_: sa.types.TypeEngine, connection: BaseDatabaseWrapper) -> tuple[list[Any], Any] | None:
@@ -232,9 +252,7 @@ def from_db(
     return out
 
 
-def _run(stmt: sa.sql.ClauseElement, params: Any, using: str) -> tuple[list[str] | None, list[tuple] | int]:
-    connection = connections[using]
-    prepared = prepare(stmt, params, connection)
+def _run(prepared: Prepared, connection: BaseDatabaseWrapper) -> tuple[list[str] | None, list[tuple] | int]:
     if prepared.many and not prepared.param_rows:
         return None, 0
     with connection.cursor() as cursor:
@@ -269,14 +287,17 @@ def execute(
     values convert. Like the ORM, this refuses to run from async code
     (``SynchronousOnlyOperation``).
     """
-    return _run(stmt, params, using)[1]
+    connection = connections[using]
+    return _run(prepare(stmt, params, connection), connection)[1]
 
 
-def _check_returns_rows(stmt: sa.sql.ClauseElement, params: Any, caller: str) -> None:
-    if isinstance(stmt, sa.sql.dml.UpdateBase) and not _returns_rows(stmt):
-        raise ValueError("statement returns no rows; use execute() for its rowcount")
+def _prepare_one(stmt: sa.sql.ClauseElement, params: Any, connection: BaseDatabaseWrapper, caller: str) -> Prepared:
     if params is not None and not isinstance(params, Mapping):
         raise TypeError(f"{caller}() runs one statement; pass a single mapping of params")
+    prepared = prepare(stmt, params, connection)
+    if prepared.rowcount_only:
+        raise ValueError("statement returns no rows; use execute() for its rowcount")
+    return prepared
 
 
 def execute_result(
@@ -293,8 +314,8 @@ def execute_result(
     without ``RETURNING`` raises ``ValueError`` before running, and a ``text()``
     statement that turns out to return none raises after it ran.
     """
-    _check_returns_rows(stmt, params, "execute_result")
-    keys, rows = _run(stmt, params, using)
+    connection = connections[using]
+    keys, rows = _run(_prepare_one(stmt, params, connection, "execute_result"), connection)
     if keys is None:
         raise ValueError("statement returned no rows; use execute() for its rowcount")
     return _sa_result.result_from_rows(keys, rows)
@@ -326,14 +347,14 @@ def stream(
     sequence of params are refused before anything runs; a ``text()``
     statement that returns no rows raises ``ValueError`` on the first ``next()``.
     """
-    _check_returns_rows(stmt, params, "stream")
+    connection = connections[using]
+    prepared = _prepare_one(stmt, params, connection, "stream")
     if chunk_size < 1:
         raise ValueError("chunk_size must be at least 1")
-    connection = connections[using]
     # PostgreSQL declares a server-side cursor only for SELECT or VALUES, so DML
     # with RETURNING takes a plain cursor (the driver then holds all its rows).
     chunked = not isinstance(stmt, sa.sql.dml.UpdateBase)
-    return _stream(connection, prepare(stmt, params, connection), chunk_size, chunked)
+    return _stream(connection, prepared, chunk_size, chunked)
 
 
 def _stream(
