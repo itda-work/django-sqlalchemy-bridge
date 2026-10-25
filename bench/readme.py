@@ -20,11 +20,13 @@ ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
 RESULTS = ROOT / "bench" / "results"
 
-DATE = "2026-10-25"
-
 
 def _file(db: str, scenario: str) -> str:
-    return f"bench/results/{DATE}-{db}-{scenario}.json"
+    """The newest full (not ``--quick``) result file of ``scenario`` on ``db``, by the date in its name."""
+    found = sorted(RESULTS.glob(f"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-{db}-{scenario}.json"))
+    if not found:
+        raise FileNotFoundError(f"no bench/results/<date>-{db}-{scenario}.json")
+    return f"bench/results/{found[-1].name}"
 
 
 UPDATE_ROWS = [

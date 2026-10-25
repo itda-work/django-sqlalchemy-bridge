@@ -229,7 +229,7 @@ uv sync --group bench
 DSB_PG_HOST=127.0.0.1 DSB_PG_PORT=55432 DSB_PG_USER=dsb DSB_PG_PASSWORD=dsb DSB_PG_NAME=dsb \
   uv run --group bench python -m bench --db postgres   # 시나리오 지정: python -m bench update read ...
 uv run --group bench python -m bench --db sqlite
-uv run python -m bench.readme --write                  # 결과 파일 날짜를 bench/readme.py 의 DATE 에 맞춘 뒤
+uv run python -m bench.readme --write                  # 시나리오·DB 마다 날짜가 가장 늦은 결과 파일로
 ```
 
 **측정 방법.**
