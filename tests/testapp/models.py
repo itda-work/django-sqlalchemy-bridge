@@ -61,3 +61,12 @@ class Specimen(models.Model):
 
     class Meta:
         db_table = "dsb_specimen"
+
+
+class Stamp(models.Model):
+    """Nullable columns a hand-built ``sa.Table`` gives SQLAlchemy defaults to, and a ``db_default``."""
+
+    name = models.CharField(max_length=50, null=True)
+    note = models.CharField(max_length=50, null=True)
+    at = models.DateTimeField(null=True)
+    kind = models.CharField(max_length=10, db_default="db")
