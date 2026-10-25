@@ -11,8 +11,8 @@
   "memory": "tracemalloc peak of one extra run, minus what was traced at its start"
  },
  "environment": {
-  "revision": "v0.0.1-10-gda2d034-dirty",
-  "python": "3.14.7",
+  "revision": "49ebe83",
+  "python": "3.12.3",
   "packages": {
    "django-sqlalchemy-bridge": "0.0.1",
    "django": "6.1.2",
@@ -23,29 +23,30 @@
    "django-cte": "4.0.0",
    "asgiref": "3.13.0"
   },
-  "python_sqlite3": "3.53.1",
+  "python_sqlite3": "3.45.1",
   "database": {
    "vendor": "sqlite",
-   "server": "SQLite 3.53.1"
+   "server": "SQLite 3.45.1"
   },
+  "ci_run": "https://github.com/itda-work/django-sqlalchemy-bridge/actions/runs/40244692406",
   "machine": {
-   "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
-   "cpu": "Apple M1 Pro",
-   "cpu_count": 10,
-   "memory_bytes": 34359738368
+   "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+   "cpu": "AMD EPYC 9V45 96-Core Processor",
+   "cpu_count": 4,
+   "memory_bytes": 16766414848
   }
  },
- "elapsed_s": 52.6,
+ "elapsed_s": 123.5,
  "load_average": {
   "before": [
-   3.455078125,
-   3.64306640625,
-   3.9326171875
+   1.0205078125,
+   1.02734375,
+   0.9091796875
   ],
   "after": [
-   3.09814453125,
-   3.5234375,
-   3.87109375
+   1.01123046875,
+   1.02490234375,
+   0.9267578125
   ]
  },
  "scope": "Timed: running the query and building the full result (list of objects, dicts, tuples or rows), or for the streamed variants walking every row without keeping it. No transaction. tracemalloc counts what the call allocates; rss_* is measured in a fresh child process (see bench/child.py).",
@@ -56,351 +57,351 @@
     "django_models": {
      "note": "list(Item.objects.all())",
      "warmup_s": [
-      0.09767800010740757
+      0.12101876299993819
      ],
      "times_s": [
-      0.09321854170411825,
-      0.09899441711604595,
-      0.09702716674655676,
-      0.09756949916481972,
-      0.09519524965435266
+      0.12218644199992923,
+      0.12079912100011825,
+      0.11966015699999843,
+      0.12841346799996245,
+      0.12214696499995625
      ],
-     "best_s": 0.09321854170411825,
-     "median_s": 0.09702716674655676,
+     "best_s": 0.11966015699999843,
+     "median_s": 0.12214696499995625,
      "prepare_s": [
-      3.7439167499542236e-07,
-      2.505257725715637e-07,
-      5.830079317092896e-07,
-      1.6670674085617065e-07,
-      1.2479722499847412e-07
+      9.020000106829684e-07,
+      1.1120000635855831e-06,
+      7.819999154889956e-07,
+      7.109999842214165e-07,
+      1.0310000106983352e-06
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 17519180,
+     "tracemalloc_peak_bytes": 16397856,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 16924672,
-       "maxrss_delta_bytes": 16924672
+       "rss_delta_bytes": 16044032,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 16728064,
-       "maxrss_delta_bytes": 16728064
+       "rss_delta_bytes": 16039936,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 16973824,
-       "maxrss_delta_bytes": 16973824
+       "rss_delta_bytes": 16035840,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 16924672,
-     "maxrss_delta_bytes_median": 16924672
+     "rss_delta_bytes_median": 16039936,
+     "maxrss_delta_bytes_median": 0
     },
     "django_values": {
      "note": "list(Item.objects.values())",
      "warmup_s": [
-      0.05917674954980612
+      0.0826953539999522
      ],
      "times_s": [
-      0.05887224990874529,
-      0.06096583418548107,
-      0.05889829155057669,
-      0.060245790518820286,
-      0.05904729105532169
+      0.08449324200000774,
+      0.08317973299995174,
+      0.08287734700002147,
+      0.08433994100005293,
+      0.08486869799980923
      ],
-     "best_s": 0.05887224990874529,
-     "median_s": 0.05904729105532169,
+     "best_s": 0.08287734700002147,
+     "median_s": 0.08433994100005293,
      "prepare_s": [
-      1.2479722499847412e-07,
-      1.2479722499847412e-07,
-      3.7532299757003784e-07,
-      2.915039658546448e-07,
-      1.6577541828155518e-07
+      1.151000105892308e-06,
+      1.0010001005866798e-06,
+      9.610000688553555e-07,
+      1.1820000054285629e-06,
+      1.2620000688912114e-06
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 14959168,
+     "tracemalloc_peak_bytes": 14478260,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 17530880,
-       "maxrss_delta_bytes": 17530880
+       "rss_delta_bytes": 16732160,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 17678336,
-       "maxrss_delta_bytes": 17678336
+       "rss_delta_bytes": 16695296,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 17678336,
-       "maxrss_delta_bytes": 17678336
+       "rss_delta_bytes": 16707584,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 17678336,
-     "maxrss_delta_bytes_median": 17678336
+     "rss_delta_bytes_median": 16707584,
+     "maxrss_delta_bytes_median": 0
     },
     "django_values_list": {
      "note": "list(...values_list())",
      "warmup_s": [
-      0.05676037538796663
+      0.07744137700001374
      ],
      "times_s": [
-      0.05386208277195692,
-      0.05482370965182781,
-      0.053321124985814095,
-      0.0552847096696496,
-      0.05365058407187462
+      0.11392109399980654,
+      0.07697020699993118,
+      0.07757047200016132,
+      0.07685164500003339,
+      0.07689771399986967
      ],
-     "best_s": 0.053321124985814095,
-     "median_s": 0.05386208277195692,
+     "best_s": 0.07685164500003339,
+     "median_s": 0.07697020699993118,
      "prepare_s": [
-      1.257285475730896e-07,
-      2.915039658546448e-07,
-      2.086162567138672e-07,
-      1.2479722499847412e-07,
-      2.905726432800293e-07
+      9.420000424142927e-07,
+      1.202000021294225e-06,
+      9.810000847210176e-07,
+      9.220000265486306e-07,
+      9.810000847210176e-07
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 11598496,
+     "tracemalloc_peak_bytes": 10958236,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 14417920,
-       "maxrss_delta_bytes": 14417920
+       "rss_delta_bytes": 13172736,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 14303232,
-       "maxrss_delta_bytes": 14303232
+       "rss_delta_bytes": 13168640,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 14450688,
-       "maxrss_delta_bytes": 14450688
+       "rss_delta_bytes": 13139968,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 14417920,
-     "maxrss_delta_bytes_median": 14417920
+     "rss_delta_bytes_median": 13168640,
+     "maxrss_delta_bytes_median": 0
     },
     "bridge_execute_tuples": {
      "note": "execute(select(...)) -> list of tuples",
      "warmup_s": [
-      0.05310658272355795
+      0.07522035699980734
      ],
      "times_s": [
-      0.052856708876788616,
-      0.0529124578461051,
-      0.052779290825128555,
-      0.054441582411527634,
-      0.054324583150446415
+      0.07509661999984019,
+      0.07660740000005717,
+      0.07544599000016206,
+      0.07611844400003065,
+      0.07388960499997665
      ],
-     "best_s": 0.052779290825128555,
-     "median_s": 0.0529124578461051,
+     "best_s": 0.07388960499997665,
+     "median_s": 0.07544599000016206,
      "prepare_s": [
-      3.3248215913772583e-07,
-      2.4959444999694824e-07,
-      2.086162567138672e-07,
-      3.334134817123413e-07,
-      1.257285475730896e-07
+      9.410000529896934e-07,
+      1.002000090011279e-06,
+      9.220000265486306e-07,
+      8.320000688399887e-07,
+      9.420000424142927e-07
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 11583941,
+     "tracemalloc_peak_bytes": 10943089,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 13844480,
-       "maxrss_delta_bytes": 13844480
+       "rss_delta_bytes": 12959744,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 13942784,
-       "maxrss_delta_bytes": 13942784
+       "rss_delta_bytes": 12967936,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 13729792,
-       "maxrss_delta_bytes": 13729792
+       "rss_delta_bytes": 12959744,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 13844480,
-     "maxrss_delta_bytes_median": 13844480
+     "rss_delta_bytes_median": 12959744,
+     "maxrss_delta_bytes_median": 0
     },
     "bridge_execute_result_rows": {
      "note": "execute_result(select(...)).all() -> SQLAlchemy Row objects",
      "warmup_s": [
-      0.05532687529921532
+      0.07693504299982123
      ],
      "times_s": [
-      0.058093792758882046,
-      0.05652287509292364,
-      0.05658616591244936,
-      0.0573726249858737,
-      0.05666637513786554
+      0.07450880700002926,
+      0.07523080499981916,
+      0.07325947300000735,
+      0.07422635099987929,
+      0.07586083499995766
      ],
-     "best_s": 0.05652287509292364,
-     "median_s": 0.05666637513786554,
+     "best_s": 0.07325947300000735,
+     "median_s": 0.07450880700002926,
      "prepare_s": [
-      1.2479722499847412e-07,
-      2.086162567138672e-07,
-      2.505257725715637e-07,
-      2.076849341392517e-07,
-      8.288770914077759e-08
+      8.110000635497272e-07,
+      7.210001058410853e-07,
+      6.709999524900923e-07,
+      6.909999683557544e-07,
+      1.1610000001383014e-06
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 11583941,
+     "tracemalloc_peak_bytes": 10943089,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 14024704,
-       "maxrss_delta_bytes": 14024704
+       "rss_delta_bytes": 13357056,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 13975552,
-       "maxrss_delta_bytes": 13975552
+       "rss_delta_bytes": 13312000,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 13795328,
-       "maxrss_delta_bytes": 13795328
+       "rss_delta_bytes": 13213696,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 13975552,
-     "maxrss_delta_bytes_median": 13975552
+     "rss_delta_bytes_median": 13312000,
+     "maxrss_delta_bytes_median": 0
     },
     "sqlalchemy_core_rows": {
      "note": "Connection.execute(select(...)).all(); own engine, not the bridge",
      "warmup_s": [
-      0.03215929213911295
+      0.037218034000034095
      ],
      "times_s": [
-      0.029394375160336494,
-      0.029634833335876465,
-      0.028990874998271465,
-      0.029449583031237125,
-      0.029225332662463188
+      0.034795583000004626,
+      0.0344230719999814,
+      0.03636848300016027,
+      0.07229368799994518,
+      0.03566746699993928
      ],
-     "best_s": 0.028990874998271465,
-     "median_s": 0.029394375160336494,
+     "best_s": 0.0344230719999814,
+     "median_s": 0.03566746699993928,
      "prepare_s": [
-      1.2479722499847412e-07,
-      1.2479722499847412e-07,
-      8.288770914077759e-08,
-      3.3248215913772583e-07,
-      1.6577541828155518e-07
+      7.210001058410853e-07,
+      6.610000582440989e-07,
+      6.210000265127746e-07,
+      8.309998520417139e-07,
+      1.3219998891145224e-06
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 13083912,
+     "tracemalloc_peak_bytes": 12443220,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 15663104,
-       "maxrss_delta_bytes": 15663104
+       "rss_delta_bytes": 14647296,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 15630336,
-       "maxrss_delta_bytes": 15630336
+       "rss_delta_bytes": 14692352,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 15777792,
-       "maxrss_delta_bytes": 15777792
+       "rss_delta_bytes": 14663680,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 15663104,
-     "maxrss_delta_bytes_median": 15663104
+     "rss_delta_bytes_median": 14663680,
+     "maxrss_delta_bytes_median": 0
     },
     "sqlalchemy_orm_objects": {
      "note": "Session.scalars(select(SAItem)).all(); own engine, not the bridge",
      "warmup_s": [
-      0.07141495775431395
+      0.09296054099991125
      ],
      "times_s": [
-      0.06875899992883205,
-      0.07052387483417988,
-      0.07528966572135687,
-      0.07035841699689627,
-      0.07157699950039387
+      0.10029711700008193,
+      0.09029330300018046,
+      0.08458726499998193,
+      0.0916851399999814,
+      0.09059361599997828
      ],
-     "best_s": 0.06875899992883205,
-     "median_s": 0.07052387483417988,
+     "best_s": 0.08458726499998193,
+     "median_s": 0.09059361599997828,
      "prepare_s": [
-      1.2479722499847412e-07,
-      1.6577541828155518e-07,
-      1.2479722499847412e-07,
-      2.915039658546448e-07,
-      1.2479722499847412e-07
+      4.910000370728085e-07,
+      1.34200013235386e-06,
+      4.910000370728085e-07,
+      6.30999920758768e-07,
+      3.010000000358559e-07
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 29834224,
+     "tracemalloc_peak_bytes": 26618988,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 34291712,
-       "maxrss_delta_bytes": 34291712
+       "rss_delta_bytes": 29442048,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 33980416,
-       "maxrss_delta_bytes": 33980416
+       "rss_delta_bytes": 29384704,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 34455552,
-       "maxrss_delta_bytes": 34455552
+       "rss_delta_bytes": 29454336,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 34291712,
-     "maxrss_delta_bytes_median": 34291712
+     "rss_delta_bytes_median": 29442048,
+     "maxrss_delta_bytes_median": 0
     },
     "django_iterator": {
      "note": "values_list().iterator(chunk_size=2000), rows not kept",
      "warmup_s": [
-      0.051030625589191914
+      0.05989238100005423
      ],
      "times_s": [
-      0.05211258307099342,
-      0.051195042207837105,
-      0.05054074991494417,
-      0.05114766675978899,
-      0.05083374958485365
+      0.05825025700005426,
+      0.06108586900018054,
+      0.06154761499988126,
+      0.07025639900007263,
+      0.06073840699991706
      ],
-     "best_s": 0.05054074991494417,
-     "median_s": 0.05114766675978899,
+     "best_s": 0.05825025700005426,
+     "median_s": 0.06108586900018054,
      "prepare_s": [
-      2.9243528842926025e-07,
-      2.915039658546448e-07,
-      2.9243528842926025e-07,
-      2.505257725715637e-07,
-      2.9243528842926025e-07
+      6.809998467360856e-07,
+      8.710001111467136e-07,
+      9.420000424142927e-07,
+      7.510000159527408e-07,
+      8.009999419300584e-07
      ],
      "kept": false,
-     "tracemalloc_peak_bytes": 1211828
+     "tracemalloc_peak_bytes": 1179242
     },
     "bridge_stream": {
      "note": "stream(select(...), chunk_size=2000), rows not kept",
      "warmup_s": [
-      0.05288458243012428
+      0.06134254700009478
      ],
      "times_s": [
-      0.0531373331323266,
-      0.055257583037018776,
-      0.05498145893216133,
-      0.05474641639739275,
-      0.055190457962453365
+      0.06044841999982964,
+      0.06176966999987599,
+      0.06281088900004761,
+      0.060306334999950195,
+      0.06176140800016583
      ],
-     "best_s": 0.0531373331323266,
-     "median_s": 0.05498145893216133,
+     "best_s": 0.060306334999950195,
+     "median_s": 0.06176140800016583,
      "prepare_s": [
-      1.6670674085617065e-07,
-      1.6670674085617065e-07,
-      2.4959444999694824e-07,
-      2.4959444999694824e-07,
-      2.505257725715637e-07
+      4.1099997361015994e-07,
+      7.010000899754232e-07,
+      6.509999366244301e-07,
+      9.010000212583691e-07,
+      1.1019999419659143e-06
      ],
      "kept": false,
-     "tracemalloc_peak_bytes": 1207615
+     "tracemalloc_peak_bytes": 1174719
     }
    }
   }
