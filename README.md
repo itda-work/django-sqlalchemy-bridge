@@ -2,7 +2,7 @@
 
 > ⚠️ **실험적 프로젝트입니다 (Experimental).** API·동작·지원 범위가 예고 없이 바뀔 수 있고, 운영 환경에서 쓰는 것을 권하지 않습니다.
 >
-> **상태: 설계 단계 (0.0.x).** 이름을 확보하고 설계를 공개한 버전입니다. 저장소 `main`에 첫 API(모델 → `sa.Table`, `execute`, `stream`)가 들어가고 있지만 아직 릴리스되지 않았으니 의존하지 마세요.
+> **상태: 설계 단계 (0.0.x).** 이름을 확보하고 설계를 공개한 버전입니다. 저장소 `main`에 첫 API(모델 → `sa.Table`, `execute`, `stream`, `bulk_update`/`bulk_insert`)가 들어가고 있지만 아직 릴리스되지 않았으니 의존하지 마세요.
 
 Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식(대량 DML, CTE, 윈도 함수, 복잡한 조인)을 쓰게 해 주는 라이브러리입니다.
 
@@ -118,6 +118,30 @@ for order_id, paid_at in stream(sa.select(orders.c.id, orders.c.paid_at), chunk_
 - 커서는 그 뒤 다른 트랜잭션이 커밋돼도 살아 있고, 만들 때의 결과를 그대로 줍니다. 닫지 않으면 연결이 닫힐 때까지 서버에 남습니다.
 - 반대로 `atomic()` 안에서 연 스트림은 그 트랜잭션이 끝나면 서버 커서가 사라집니다. 블록을 나온 뒤 계속 소비하면 `ProgrammingError: cursor ... does not exist`가 납니다. 블록 안에서 다 읽으세요.
 - PgBouncer를 transaction pooling 모드로 쓰면 트랜잭션이 끝난 뒤의 `FETCH`가 커서를 연 것과 다른 서버 연결로 갈 수 있으니, Django 문서대로 `DISABLE_SERVER_SIDE_CURSORS: True`를 설정해야 합니다. 그러면 `stream`도 일반 커서를 씁니다(드라이버가 결과를 한꺼번에 받습니다).
+
+### 대량 쓰기: `bulk_update`, `bulk_insert`
+
+```python
+from django_sqlalchemy_bridge import bulk_insert, bulk_update
+
+# PK(기본) 또는 지정한 키로 행마다 다른 값을 넣는 UPDATE. 반환은 rowcount
+bulk_update(orders, [{"id": 1, "status": "paid"}, {"id": 2, "status": "void"}])
+bulk_update(orders, rows, key="uid", columns=["status"])  # 키·설정 컬럼 지정, 복합 키는 key=("a", "b")
+
+# INSERT. returning 을 주면 행마다 튜플(필드 변환을 거친 값), rows 순서대로
+ids = bulk_insert(orders, rows, returning=["id"])
+```
+
+- `bulk_update(table, rows, *, key=None, columns=None, using="default")`, `bulk_insert(table, rows, *, returning=None, using="default")`. `table`은 `table_for()` 테이블이나 모델입니다. `rows`는 컬럼 이름(`db_column`, FK 는 `<이름>_id`)을 키로 한 매핑의 시퀀스입니다.
+- **PostgreSQL에서는 문장 하나입니다.** 컬럼마다 배열 파라미터 하나를 Django 컬럼 타입으로 캐스트하고(`(%s)::jsonb[]`, `(%s)::numeric[]` …) `unnest()`로 행을 만듭니다. UPDATE 는 `UPDATE t SET c = v.c FROM unnest(...) AS v(...) WHERE t.k = v.k`, INSERT 는 `INSERT INTO t (...) SELECT * FROM unnest(...)` 꼴로, Django `bulk_create`가 PostgreSQL에서 쓰는 방식과 같습니다. 캐스트에서는 길이·자릿수를 떼므로(`varchar(50)[]`가 아니라 `varchar[]`) 값이 잘리지 않고, 너무 긴 값은 ORM 쓰기처럼 컬럼에 넣을 때 오류가 납니다. `CaptureQueriesContext`에는 1건으로 잡힙니다.
+- **그 밖의 백엔드(SQLite)에서는 같은 호출이 `cursor.executemany()`입니다.** `returning`이 있는 INSERT 는 executemany 로 행을 받을 수 없어서 다중 `VALUES` 문장을 `connection.ops.bulk_batch_size()`(SQLite 변수 한도) 단위로 나눠 실행합니다. 결과는 PostgreSQL과 같습니다.
+- 값 변환은 `execute`와 같습니다. 행 값마다 `field.get_db_prep_value()`(`None`은 SQL `NULL`), `returning` 컬럼은 ORM 변환기를 거칩니다. 파라미터는 행마다 SQLAlchemy로 만들지 않고 컬럼마다 리스트 하나로 바로 만듭니다.
+- **빠진 값은 오류입니다.** 실행 전에 `ValueError`를 냅니다.
+  - `bulk_update`: 키나 설정할 컬럼이 없는 행, 키가 같은 두 행(PostgreSQL은 그중 아무 행 하나로, executemany 는 둘 다 차례로 갱신해 결과가 달라지므로 거부). `columns`를 생략하면 첫 행의 키 외 컬럼을 설정하고 모든 행이 같은 키를 가져야 합니다. `columns`를 주면 행의 다른 키는 무시합니다. 없는 키 값은 아무 행도 바꾸지 않고, rowcount 는 맞은 행만 셉니다.
+  - `bulk_insert`: 행끼리 키가 다르거나, 테이블 컬럼을 빠뜨린 경우. 자동 증가 PK 와 `db_default`가 있는 컬럼만 빠뜨릴 수 있습니다. Django 필드 `default`·`auto_now`를 채우지 않으므로 nullable 컬럼도 `None`을 직접 넣어야 합니다(잊은 컬럼이 조용히 `NULL`이 되지 않게).
+- 빈 `rows`는 쿼리를 실행하지 않고 `0`(또는 `returning`이면 `[]`)을 돌려줍니다.
+- **`RETURNING` 순서**: 결과는 `rows` 순서입니다(테스트로 고정). 다만 PostgreSQL·SQLite 모두 `RETURNING` 순서를 문서로 보장하지는 않으며, Django `bulk_create`가 PK 를 객체에 채울 때도 같은 동작에 기댑니다.
+- signal·`save()`를 거치지 않는 것은 다른 브리지 쓰기와 같습니다(아래).
 
 > ⚠️ **브리지로 쓴 내용은 모델 계층을 거치지 않습니다.** `save()`·`delete()`가 불리지 않고, `pre_save`/`post_save`/`pre_delete`/`post_delete` 등 **signal이 발생하지 않으며**, Django 필드의 `default`·`auto_now`도 채워지지 않습니다. 값은 모두 직접 넣어야 합니다.
 
