@@ -28,7 +28,7 @@ import sqlalchemy as sa
 from django.db import DEFAULT_DB_ALIAS, NotSupportedError, connections, models
 from django.db.backends.base.base import BaseDatabaseWrapper
 
-from django_sqlalchemy_bridge.execution import _field_converters, dialect_for, from_db
+from django_sqlalchemy_bridge.execution import _field_converters, check_returning, dialect_for, from_db
 from django_sqlalchemy_bridge.tables import FieldType, table_for
 
 __all__ = ["bulk_insert", "bulk_update"]
@@ -153,6 +153,8 @@ def bulk_insert(
 
     connection = connections[using]
     dialect_for(connection)  # refuses an unsupported backend
+    if returned is not None:
+        check_returning(connection)
     values = [_db_values(column, rows, connection) for column in given]
 
     qn = connection.ops.quote_name

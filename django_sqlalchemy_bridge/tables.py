@@ -18,6 +18,8 @@ from typing import Any
 import sqlalchemy as sa
 from django.conf import settings
 from django.db import connections, models
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import operators as pg_operators
 from sqlalchemy.sql import operators
 
 __all__ = [
@@ -58,6 +60,9 @@ _SAME_VALUE_OPERATORS = frozenset(
         operators.not_between_op,
         operators.is_distinct_from,
         operators.is_not_distinct_from,
+        # jsonb @> and <@ take a JSON document, as Django's contains/contained_by do.
+        pg_operators.CONTAINS,
+        pg_operators.CONTAINED_BY,
     }
 )
 
@@ -124,7 +129,10 @@ _TYPES = {
     "DateTimeField": lambda f: sa.DateTime(timezone=settings.USE_TZ),
     "DurationField": lambda f: sa.Interval(),
     "UUIDField": lambda f: sa.Uuid(),
-    "JSONField": lambda f: sa.JSON(),
+    # Django stores JSONField as jsonb on PostgreSQL. The comparator comes from the
+    # type an expression is built with, before any dialect is chosen, so JSONB has
+    # to be the base type for contains() and has_key() to exist; SQLite compiles JSON.
+    "JSONField": lambda f: postgresql.JSONB().with_variant(sa.JSON(), "sqlite"),
     "BinaryField": lambda f: sa.LargeBinary(),
 }
 

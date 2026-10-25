@@ -56,11 +56,12 @@ assert_table_matches(Order, check_db=True)
 | `DateTimeField` | `DateTime(timezone=USE_TZ)` |
 | `DurationField` | `Interval` |
 | `UUIDField` | `Uuid` |
-| `JSONField` | `JSON` |
+| `JSONField` | `postgresql.JSONB` (SQLite 에서는 `JSON` 으로 컴파일) |
 | `BinaryField` | `LargeBinary` |
 | `ForeignKey`, `OneToOneField` | 대상 컬럼의 타입 + `ForeignKey` |
 
 - `choices`가 있는 필드는 바탕 필드의 타입을 그대로 씁니다.
+- `JSONField`는 `postgresql.JSONB().with_variant(sa.JSON(), "sqlite")`입니다. 연산자(`contains()`·`has_key()` 등)는 dialect 를 고르기 전, 식을 만들 때의 타입에서 나오므로 기본 타입이 `JSONB`여야 PostgreSQL 연산자가 열립니다(`sa.JSON` 기본에 PostgreSQL 변형만 붙이면 `contains()`가 조용히 `LIKE`가 됩니다). 그래서 `compare_table`은 직접 만든 테이블의 `sa.JSON()` 컬럼을 타입 차이로 보고합니다.
 - `ManyToManyField`와 역관계는 컬럼이 아니므로 건너뜁니다(중간 테이블 모델은 따로 `table_for` 할 수 있습니다). 다중 테이블 상속의 자식 테이블에는 자기 컬럼과 `<부모>_ptr_id`만 들어갑니다. 복합 PK(`CompositePrimaryKey`)를 반영합니다.
 - 위 표에 없는 필드가 DB 컬럼을 가지면(예: PostgreSQL `ArrayField`, 직접 만든 필드) 조용히 넘기지 않고 `UnsupportedFieldError`를 냅니다.
 
@@ -93,7 +94,17 @@ for row in result.mappings():
 - **반환 형태**: 행을 돌려주는 문장(`SELECT`, `RETURNING`)은 튜플 리스트, 그 밖의 문장은 커서의 rowcount(정수)입니다. `params`에 매핑을 넘기면 `bindparam()` 값(그리고 `insert(table)`처럼 값이 없는 INSERT의 컬럼)을 채우고, 매핑의 시퀀스를 넘기면 `cursor.executemany()`로 실행합니다(이때 `RETURNING`은 받지 않습니다).
 - `execute_result(stmt, params=None, *, using="default")`는 같은 행을 SQLAlchemy `Result`로 줍니다(`row.name`, `row._mapping`, `.mappings()`, `.scalars()`). 행을 모두 가져와 변환한 뒤의 `Result`입니다. 외부 행으로 `Result`를 만드는 공개 API가 없어 이 부분만 `_sa_result.py` 한 곳에서 비공개 API를 씁니다.
 - **값 변환은 Django 필드 기준**입니다. 컬럼과 비교(`==`, `!=`, `<`, `IN`, `BETWEEN` 등)하거나 INSERT/UPDATE로 넣는 값은 `field.get_db_prep_value()`를, 컬럼을 고른 결과(라벨·`max()`처럼 컬럼 타입을 그대로 잇는 식 포함)는 ORM과 같은 변환기(`connection.ops.get_db_converters()` + 필드 변환기)를 거칩니다. JSON·UUID·시간대 있는 datetime(SQLite에서도 UTC로 저장, 9시간 밀리지 않음)·Decimal·선택지(이름이 아니라 값)가 ORM과 똑같이 왕복합니다. `None`은 ORM `save()`처럼 SQL `NULL`입니다.
-- 컬럼으로 추적되지 않는 값(`LIKE` 패턴, 산술식, `count()` 같은 식, `sa.literal()`, `sa.text()`)은 변환 없이 그대로 오갑니다.
+- 컬럼으로 추적되지 않는 값(`LIKE` 패턴, 산술식, `count()` 같은 식, `sa.literal()`, `sa.text()`)은 변환 없이 그대로 오갑니다. 예외는 JSON 키·경로(`meta["k"]`, `meta[0]`, `meta[("a", "b")]`)로, 값이 아니라 문법이라 dialect 표기(SQLite `'$."k"'`, PostgreSQL `'{a, b}'`)로 바꿔 넘깁니다.
+- **JSON 컬럼.** `meta["k"] == 1`(ORM `meta__k=1`), `meta[("a", "b")] == 1`, `meta["k"].as_string()`은 두 백엔드에서 동작합니다. PostgreSQL에서는 jsonb 연산자도 쓸 수 있고 결과가 ORM 조회와 같습니다(테스트로 확인).
+
+  | 브리지 (PostgreSQL) | ORM |
+  |---|---|
+  | `meta.contains({"k": 1})` (`@>`) | `meta__contains={"k": 1}` |
+  | `meta.contained_by({...})` (`<@`) | `meta__contained_by={...}` |
+  | `meta.has_key("k")` / `has_all([...])` / `has_any([...])` | `meta__has_key` / `meta__has_keys` / `meta__has_any_keys` |
+  | `meta["k"].astext == "1"` (`->>`) | `annotate(v=KT("meta__k")).filter(v="1")` |
+
+  `contains`·`contained_by`의 우변은 컬럼 값과 같게 `JSONField.get_db_prep_value()`로 jsonb 바인딩합니다. SQLite에는 이 연산자들이 없습니다. `contains`·`has_key`는 실행 시 `OperationalError`, `astext`(`->>`)는 SQLite 3.38+의 `->>`로 실행되지만 텍스트가 아니라 SQL 값을 돌려줘 `{"k": 1}`이 `'1'`과 같지 않습니다. SQLite에서 `meta["k"] == [1, 2]`처럼 구조 값과 비교하면 JSON 텍스트끼리 비교라 공백이 다르면 맞지 않습니다(ORM 은 `JSON()`으로 정규화). 스칼라 비교는 ORM 과 같습니다.
 - 리터럴 `%`는 그대로 써도 됩니다(`LIKE 'a%'`, `text("SELECT '100%'")`). 브리지가 `%s` 자리표시로 컴파일하고 `%`를 `%%`로 바꾼 뒤, 파라미터가 없어도 빈 튜플을 넘겨 백엔드가 되돌리게 합니다.
 - async 코드에서 직접 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. 작업 단위를 동기 함수로 묶어 `arun`으로 부르세요(아래 "비동기").
 
@@ -140,10 +151,19 @@ ids = bulk_insert(orders, rows, returning=["id"])
   - `bulk_update`: 키나 설정할 컬럼이 없는 행, 키가 같은 두 행(PostgreSQL은 그중 아무 행 하나로, executemany 는 둘 다 차례로 갱신해 결과가 달라지므로 거부). `columns`를 생략하면 첫 행의 키 외 컬럼을 설정하고 모든 행이 같은 키를 가져야 합니다. `columns`를 주면 행의 다른 키는 무시합니다. 없는 키 값은 아무 행도 바꾸지 않고, rowcount 는 맞은 행만 셉니다.
   - `bulk_insert`: 행끼리 키가 다르거나, 테이블 컬럼을 빠뜨린 경우. 자동 증가 PK 와 `db_default`가 있는 컬럼만 빠뜨릴 수 있습니다. Django 필드 `default`·`auto_now`를 채우지 않으므로 nullable 컬럼도 `None`을 직접 넣어야 합니다(잊은 컬럼이 조용히 `NULL`이 되지 않게).
 - 빈 `rows`는 쿼리를 실행하지 않고 `0`(또는 `returning`이면 `[]`)을 돌려줍니다.
-- **`RETURNING` 순서**: 결과는 `rows` 순서입니다(테스트로 고정). 다만 PostgreSQL·SQLite 모두 `RETURNING` 순서를 문서로 보장하지는 않으며, Django `bulk_create`가 PK 를 객체에 채울 때도 같은 동작에 기댑니다.
+- **`RETURNING` 순서**: 결과는 `rows` 순서입니다(테스트로 고정). 다만 PostgreSQL·SQLite 모두 `RETURNING` 순서를 문서로 보장하지는 않으며, Django `bulk_create`가 PK 를 객체에 채울 때도 같은 동작에 기댑니다. 아래 "제약"을 보세요.
 - signal·`save()`를 거치지 않는 것은 다른 브리지 쓰기와 같습니다(아래).
 
 > ⚠️ **브리지로 쓴 내용은 모델 계층을 거치지 않습니다.** `save()`·`delete()`가 불리지 않고, `pre_save`/`post_save`/`pre_delete`/`post_delete` 등 **signal이 발생하지 않으며**, Django 필드의 `default`·`auto_now`도 채워지지 않습니다. 값은 모두 직접 넣어야 합니다.
+
+## 제약
+
+브리지가 막지 않거나 막을 수 없는 것들입니다.
+
+- **RETURNING 은 그 DB 가 지원할 때만.** dialect 는 DB 에 연결하지 않고 컴파일하므로 어떤 SQLite 에도 `RETURNING`을 씁니다(SQLite 3.35 부터 지원, Django 5.2 는 3.31 부터 받음). 그래서 `RETURNING`이 있는 SQLAlchemy DML(`execute`·`execute_result`·`stream`, `bulk_insert(returning=...)`)은 실행 연결의 Django feature `can_return_columns_from_insert`가 거짓이면 **실행 전에** `django.db.NotSupportedError`를 냅니다. `sa.text("... RETURNING ...")`는 안을 볼 수 없어 검사하지 않고 DB 가 판단합니다.
+- **SQLAlchemy Python 측 컬럼 `default`/`onupdate`는 적용되지 않고, 그 컬럼에 `NULL`이 들어갑니다.** 직접 만든 `sa.Table`의 `Column(default=..., onupdate=...)` 값은 SQLAlchemy 실행 컨텍스트(`Engine`·`Connection`)가 채우는데 브리지는 Django 커서로 실행합니다. 컴파일러는 그 컬럼을 SQL 에 넣어 두므로(`INSERT ... (name, ...) VALUES (%s, ...)`, `UPDATE ... SET name=%s, ...`) 값이 `NULL`로 바인딩됩니다. NOT NULL 컬럼이면 `IntegrityError`, nullable 컬럼이면 **조용히 `NULL`이 저장되고, `onupdate`가 있는 컬럼은 UPDATE 마다 기존 값이 `NULL`로 덮입니다**(SQLite·PostgreSQL 에서 확인). 그런 테이블에는 값을 직접 넣으세요. `table_for()` 테이블에는 이런 default 가 없고, Django 필드 `default`·`auto_now`도 채우지 않습니다. DB 쪽 `server_default`·Django `db_default`는 DB 가 채웁니다.
+- **PostgreSQL `standard_conforming_strings=off` 서버는 지원하지 않습니다.** 브리지는 연결하지 않고 컴파일하므로 리터럴 백슬래시를 "on"(PostgreSQL 기본값, Django 가 지원하는 모든 버전의 기본)으로 렌더합니다. "off" 서버에서는 컴파일러가 직접 쓴 리터럴(`sa.literal(..., literal_execute=True)` 등)의 백슬래시가 이스케이프로 읽혀 `'a\tb'`가 탭 문자가 됩니다(세션에서 "off"로 바꿔 PostgreSQL 18 에서 확인). 바인딩 값에는 영향이 없습니다.
+- **`bulk_insert(returning=...)`의 행 순서는 DB 가 문서로 보장하지 않습니다.** PostgreSQL·SQLite 모두 지금은 입력 순서로 돌려주고 Django `bulk_create`도 같은 가정에 기대지만, 순서가 중요하면 행을 식별할 키(자연 키, `uid` 등)를 함께 `RETURNING`해서 그 값으로 짝지으세요. 예: `bulk_insert(books, rows, returning=["uid", "id"])`.
 
 ## 비동기
 

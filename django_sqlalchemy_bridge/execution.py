@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import sqlalchemy as sa
-from django.db import DEFAULT_DB_ALIAS, DatabaseError, connections
+from django.db import DEFAULT_DB_ALIAS, DatabaseError, NotSupportedError, connections
 from django.db.backends.base.base import BaseDatabaseWrapper
 from sqlalchemy.engine import BindTyping, Dialect
 from sqlalchemy.engine.interfaces import Compiled
@@ -111,6 +111,8 @@ def prepare(
     rows: list[Params] = list(params) if many else [params or {}]
     if many and _returns_rows(stmt):
         raise ValueError("executemany cannot return rows; run a statement with RETURNING once per row")
+    if isinstance(stmt, sa.sql.dml.UpdateBase) and _returns_rows(stmt):
+        check_returning(connection)
     if isinstance(stmt, sa.Insert) and not _returns_rows(stmt):
         # Otherwise PostgreSQL compiles an implicit "RETURNING id" for SQLAlchemy's
         # inserted_primary_key, and the caller would get rows instead of a rowcount.
@@ -126,6 +128,17 @@ def prepare(
             raise ValueError("every executemany row must compile to the same SQL (check expanding IN lists)")
         param_rows.append(_positional(compiled, state, connection))
     return Prepared(sql or compiled.string, param_rows, many, _converters(stmt, connection))
+
+
+def check_returning(connection: BaseDatabaseWrapper) -> None:
+    """Refuse ``RETURNING`` before it runs on a database that lacks it.
+
+    The dialects compile without connecting, so they render ``RETURNING`` for
+    any SQLite; it arrived in SQLite 3.35 for INSERT, UPDATE and DELETE alike,
+    and Django (5.2 runs on 3.31) reports it as ``can_return_columns_from_insert``.
+    """
+    if not connection.features.can_return_columns_from_insert:
+        raise NotSupportedError(f"database {connection.alias!r} ({connection.display_name}) does not support RETURNING")
 
 
 def _returns_rows(stmt: sa.sql.ClauseElement) -> bool:
@@ -146,8 +159,14 @@ def to_db(value: Any, type_: sa.types.TypeEngine | None, connection: BaseDatabas
     """Convert a value bound against ``type_`` the way Django writes its field.
 
     ``None`` stays SQL ``NULL`` (as ``Model.save()`` stores it, also for
-    ``JSONField``); values with no Django field behind them pass through.
+    ``JSONField``); values with no Django field behind them pass through,
+    except JSON keys and paths (``column["k"]``), which the dialect spells.
     """
+    if isinstance(type_, (sa.JSON.JSONIndexType, sa.JSON.JSONPathType)):
+        # A key or path is syntax, not data: SQLite wants '$."k"', PostgreSQL '{a, b}'.
+        dialect = dialect_for(connection)
+        process = type_.dialect_impl(dialect).bind_processor(dialect)
+        return process(value) if process is not None else value
     if value is None or not isinstance(type_, FieldType):
         return value
     return type_.field.get_db_prep_value(value, connection, prepared=False)
