@@ -7,6 +7,7 @@ from sqlalchemy.dialects import postgresql, sqlite
 
 from django_sqlalchemy_bridge import (
     Difference,
+    FieldType,
     UnsupportedFieldError,
     assert_table_matches,
     compare_table,
@@ -20,7 +21,9 @@ DIALECTS = {"sqlite": sqlite.dialect(), "postgresql": postgresql.dialect()}
 
 
 def type_repr(table, name):
-    return repr(table.c[name].type)
+    type_ = table.c[name].type
+    assert isinstance(type_, FieldType)
+    return repr(type_.impl)
 
 
 # --- model -> Table ---------------------------------------------------------
@@ -46,6 +49,18 @@ def test_columns_carry_their_django_field():
     assert table.c.label_text.info["django_field"] is Specimen._meta.get_field("label")
     assert table.c.writer.info["django_field"] is Specimen._meta.get_field("author")
     assert table.info["django_model"] is Specimen
+
+
+def test_column_types_carry_their_django_field():
+    table = table_for(Specimen)
+    for column in table.c:
+        assert isinstance(column.type, FieldType)
+        assert column.type.field is column.info["django_field"]
+    # Values compared with the column take its type; LIKE patterns and arithmetic do not.
+    assert (table.c.amount == 1).right.type is table.c.amount.type
+    assert table.c.uid.in_([1]).right.type is table.c.uid.type
+    assert not isinstance(table.c.label_text.like("a%").right.type, FieldType)
+    assert repr(table.c.writer.type) == "FieldType(BigInteger(), testapp.Specimen.author)"
 
 
 @pytest.mark.parametrize(

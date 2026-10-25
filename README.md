@@ -2,7 +2,7 @@
 
 > ⚠️ **실험적 프로젝트입니다 (Experimental).** API·동작·지원 범위가 예고 없이 바뀔 수 있고, 운영 환경에서 쓰는 것을 권하지 않습니다.
 >
-> **상태: 설계 단계 (0.0.x).** 이름을 확보하고 설계를 공개한 버전입니다. 저장소 `main`에 첫 API(모델 → `sa.Table`)가 들어가고 있지만 아직 릴리스되지 않았으니 의존하지 마세요.
+> **상태: 설계 단계 (0.0.x).** 이름을 확보하고 설계를 공개한 버전입니다. 저장소 `main`에 첫 API(모델 → `sa.Table`, `execute`)가 들어가고 있지만 아직 릴리스되지 않았으니 의존하지 마세요.
 
 Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식(대량 DML, CTE, 윈도 함수, 복잡한 조인)을 쓰게 해 주는 라이브러리입니다.
 
@@ -34,8 +34,8 @@ assert_table_matches(Order, check_db=True)
 ```
 
 - 테이블명은 `db_table`, 컬럼명은 `db_column`(FK 는 `<이름>_id`)을 따르고, PK·nullable·FK 대상 컬럼을 반영합니다.
-- 각 `Column.info["django_field"]`에 원래 Django 필드가, `Table.info["django_model"]`에 모델이 들어 있습니다. SQLAlchemy 타입은 SQL 컴파일용이고, 값 변환은 Django 필드가 맡습니다(예정).
-- `compare_table(model, table=None, check_db=False)`는 차이를 `Difference(source, kind, column, expected, actual)` 리스트로 돌려줍니다. 모델과는 테이블명·컬럼·타입·nullable·PK·FK 를, 실제 DB 와는 컬럼 유무와 nullable 을 비교합니다(DB 타입 비교는 예정).
+- 각 `Column.info["django_field"]`에 원래 Django 필드가, `Table.info["django_model"]`에 모델이 들어 있습니다. 컬럼 타입은 아래 표의 SQLAlchemy 타입을 감싼 `FieldType`(`TypeDecorator`)이고 `column.type.impl`이 표의 타입, `column.type.field`가 Django 필드입니다. SQLAlchemy 타입은 SQL 컴파일에만 쓰고, 값 변환은 Django 필드가 맡습니다(아래 "실행하기").
+- `compare_table(model, table=None, check_db=False)`는 차이를 `Difference(source, kind, column, expected, actual)` 리스트로 돌려줍니다. 모델과는 테이블명·컬럼·타입(`FieldType`이면 감싼 타입)·nullable·PK·FK 를, 실제 DB 와는 컬럼 유무와 nullable 을 비교합니다(DB 타입 비교는 예정).
 - 다중 DB 는 아직 `default` 만 받습니다(`using` 인자 자리만 있음).
 - `forget_table(model)`은 캐시와 공용 `MetaData`에서 테이블을 지웁니다. 테스트(`isolate_apps` 등)에서 동적 모델을 정리하는 용도입니다.
 
@@ -63,6 +63,41 @@ assert_table_matches(Order, check_db=True)
 - `choices`가 있는 필드는 바탕 필드의 타입을 그대로 씁니다.
 - `ManyToManyField`와 역관계는 컬럼이 아니므로 건너뜁니다(중간 테이블 모델은 따로 `table_for` 할 수 있습니다). 다중 테이블 상속의 자식 테이블에는 자기 컬럼과 `<부모>_ptr_id`만 들어갑니다. 복합 PK(`CompositePrimaryKey`)를 반영합니다.
 - 위 표에 없는 필드가 DB 컬럼을 가지면(예: PostgreSQL `ArrayField`, 직접 만든 필드) 조용히 넘기지 않고 `UnsupportedFieldError`를 냅니다.
+
+## 실행하기 (개발 중, 미릴리스)
+
+```python
+import sqlalchemy as sa
+from django.db import transaction
+from django_sqlalchemy_bridge import execute, execute_result, table_for
+
+from shop.models import Order
+
+orders = table_for(Order)
+
+with transaction.atomic():  # 브리지 쿼리도 이 트랜잭션 안에서 돈다
+    rows = execute(sa.select(orders.c.id, orders.c.paid_at).where(orders.c.status == "paid"))
+    # [(1, datetime.datetime(2026, 10, 25, 0, 30, tzinfo=datetime.timezone.utc)), ...]
+
+    n = execute(sa.update(orders).where(orders.c.id.in_([1, 2])).values(status="shipped"))  # rowcount
+
+    stmt = sa.update(orders).where(orders.c.id == sa.bindparam("pk")).values(status=sa.bindparam("s"))
+    execute(stmt, [{"pk": 1, "s": "paid"}, {"pk": 2, "s": "void"}])  # cursor.executemany
+
+result = execute_result(sa.select(orders.c.id, orders.c.status))  # SQLAlchemy Result (옵트인)
+for row in result.mappings():
+    ...
+```
+
+- `execute(stmt, params=None, *, using="default")`는 `connections[using]`의 vendor에 맞는 SQLAlchemy dialect(SQLite, PostgreSQL+psycopg)로 컴파일하고 **Django 커서로** 실행합니다. 그래서 `atomic()`·savepoint·`on_commit`·`execute_wrapper`·`CaptureQueriesContext`·`assertNumQueries`가 ORM 쿼리와 똑같이 적용됩니다.
+- **반환 형태**: 행을 돌려주는 문장(`SELECT`, `RETURNING`)은 튜플 리스트, 그 밖의 문장은 커서의 rowcount(정수)입니다. `params`에 매핑을 넘기면 `bindparam()` 값(그리고 `insert(table)`처럼 값이 없는 INSERT의 컬럼)을 채우고, 매핑의 시퀀스를 넘기면 `cursor.executemany()`로 실행합니다(이때 `RETURNING`은 받지 않습니다).
+- `execute_result(stmt, params=None, *, using="default")`는 같은 행을 SQLAlchemy `Result`로 줍니다(`row.name`, `row._mapping`, `.mappings()`, `.scalars()`). 행을 모두 가져와 변환한 뒤의 `Result`입니다. 외부 행으로 `Result`를 만드는 공개 API가 없어 이 부분만 `_sa_result.py` 한 곳에서 비공개 API를 씁니다.
+- **값 변환은 Django 필드 기준**입니다. 컬럼과 비교(`==`, `!=`, `<`, `IN`, `BETWEEN` 등)하거나 INSERT/UPDATE로 넣는 값은 `field.get_db_prep_value()`를, 컬럼을 고른 결과(라벨·`max()`처럼 컬럼 타입을 그대로 잇는 식 포함)는 ORM과 같은 변환기(`connection.ops.get_db_converters()` + 필드 변환기)를 거칩니다. JSON·UUID·시간대 있는 datetime(SQLite에서도 UTC로 저장, 9시간 밀리지 않음)·Decimal·선택지(이름이 아니라 값)가 ORM과 똑같이 왕복합니다. `None`은 ORM `save()`처럼 SQL `NULL`입니다.
+- 컬럼으로 추적되지 않는 값(`LIKE` 패턴, 산술식, `count()` 같은 식, `sa.literal()`, `sa.text()`)은 변환 없이 그대로 오갑니다.
+- 리터럴 `%`는 그대로 써도 됩니다(`LIKE 'a%'`, `text("SELECT '100%'")`). 브리지가 `%s` 자리표시로 컴파일하고 `%`를 `%%`로 바꾼 뒤, 파라미터가 없어도 빈 튜플을 넘겨 백엔드가 되돌리게 합니다.
+- async 코드에서 직접 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. `sync_to_async`로 감싸세요.
+
+> ⚠️ **브리지로 쓴 내용은 모델 계층을 거치지 않습니다.** `save()`·`delete()`가 불리지 않고, `pre_save`/`post_save`/`pre_delete`/`post_delete` 등 **signal이 발생하지 않으며**, Django 필드의 `default`·`auto_now`도 채워지지 않습니다. 값은 모두 직접 넣어야 합니다.
 
 ## 비동기
 
