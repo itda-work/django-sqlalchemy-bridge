@@ -14,6 +14,8 @@ column behind them (expressions, literals, ``text()``) pass through raw.
 
 Writes made here bypass the model layer: no ``save()``, no ``pre_save`` /
 ``post_save`` / ``pre_delete`` / ``post_delete`` signals, no field defaults.
+Nor SQLAlchemy's Python-side ``Column(default=...)`` / ``onupdate=...``: a
+statement that leaves such a column for them to fill is refused before it runs.
 """
 
 from __future__ import annotations
@@ -118,6 +120,7 @@ def prepare(
         # inserted_primary_key, and the caller would get rows instead of a rowcount.
         stmt = stmt.inline()
     compiled = stmt.compile(dialect=dialect_for(connection), column_keys=list(rows[0]) if rows else None)
+    _check_python_defaults(compiled)
     sql = None
     param_rows = []
     for row in rows:
@@ -139,6 +142,24 @@ def check_returning(connection: BaseDatabaseWrapper) -> None:
     """
     if not connection.features.can_return_columns_from_insert:
         raise NotSupportedError(f"database {connection.alias!r} ({connection.display_name}) does not support RETURNING")
+
+
+def _check_python_defaults(compiled: Compiled) -> None:
+    # A column left out of an INSERT or UPDATE whose Column(default=...) or
+    # Column(onupdate=...) is a Python value or callable is still compiled into
+    # the SQL; SQLAlchemy's execution context would fill its bind, Django's
+    # cursor binds NULL. SQL expression defaults compile into the statement and
+    # never land here.
+    prefetch = [*compiled.insert_prefetch, *compiled.update_prefetch]
+    if not prefetch:
+        return
+    # A multi-VALUES insert adds copies ("<key>_m2", ...) of the first row's columns.
+    columns = [column for column in prefetch if isinstance(column, sa.Column)]
+    names = ", ".join(dict.fromkeys(f"{column.table.name}.{column.key}" for column in columns))
+    raise ValueError(
+        f"SQLAlchemy Python-side default or onupdate of {names} cannot be applied: the bridge runs "
+        "on Django's cursor, which would store NULL there; pass the value in the statement or params"
+    )
 
 
 def _returns_rows(stmt: sa.sql.ClauseElement) -> bool:
