@@ -2,9 +2,11 @@
 
 The Django model is the single source of truth for the schema. The tables built
 here exist so SQLAlchemy can compile statements; the SQLAlchemy column types are
-generic and are not used to convert values. Each ``Column.info["django_field"]``
-holds the Django field the column came from, so value conversion can follow
-Django instead.
+generic and are not used to convert values. Each column's type is a
+:class:`FieldType` wrapping the generic type and the Django field the column came
+from (also in ``Column.info["django_field"]``), so value conversion can follow
+Django instead: a bound value compared with or assigned to the column carries
+that type, and so does a result column that selects it.
 """
 
 from __future__ import annotations
@@ -16,9 +18,11 @@ from typing import Any
 import sqlalchemy as sa
 from django.conf import settings
 from django.db import connections, models
+from sqlalchemy.sql import operators
 
 __all__ = [
     "Difference",
+    "FieldType",
     "UnsupportedFieldError",
     "assert_table_matches",
     "compare_table",
@@ -36,6 +40,56 @@ _lock = threading.RLock()
 
 class UnsupportedFieldError(TypeError):
     """A model field has a database column but no SQLAlchemy mapping here."""
+
+
+# Operators whose other side is a value of the column itself, so it converts like
+# the column. Others (LIKE, arithmetic, JSON paths) take the generic type's rule.
+_SAME_VALUE_OPERATORS = frozenset(
+    {
+        operators.eq,
+        operators.ne,
+        operators.lt,
+        operators.le,
+        operators.gt,
+        operators.ge,
+        operators.in_op,
+        operators.not_in_op,
+        operators.between_op,
+        operators.not_between_op,
+        operators.is_distinct_from,
+        operators.is_not_distinct_from,
+    }
+)
+
+
+class FieldType(sa.types.TypeDecorator):
+    """A column type that compiles as ``impl`` and remembers the Django ``field``.
+
+    The bridge never runs SQLAlchemy's bind or result processing; it reads
+    ``field`` off bound parameters and selected columns and converts values the
+    way Django does. ``impl`` is the generic SQLAlchemy type listed in the README.
+    """
+
+    impl = sa.types.NullType
+    cache_ok = True
+
+    def __init__(self, impl: sa.types.TypeEngine, field: models.Field) -> None:
+        super().__init__()
+        self.impl = impl
+        self.field = field
+
+    def coerce_compared_value(self, op: Any, value: Any) -> sa.types.TypeEngine:
+        if op in _SAME_VALUE_OPERATORS:
+            return self
+        return self.impl.coerce_compared_value(op, value)
+
+    def __repr__(self) -> str:
+        return f"FieldType({self.impl!r}, {self.field.model._meta.label}.{self.field.name})"
+
+
+def _generic_type(type_: sa.types.TypeEngine) -> sa.types.TypeEngine:
+    """The generic type under a :class:`FieldType`, or ``type_`` itself."""
+    return type_.impl if isinstance(type_, FieldType) else type_
 
 
 def _string(field: models.Field) -> sa.types.TypeEngine:
@@ -112,7 +166,7 @@ def _build(model: type[models.Model], target: sa.MetaData) -> sa.Table:
     pk_names = _primary_key_names(model)
     columns = []
     for field in _model_fields(model):
-        args: list[Any] = [_column_type(field, model)]
+        args: list[Any] = [FieldType(_column_type(field, model), field)]
         if _is_foreign_key(field):
             target_field = field.target_field
             args.append(sa.ForeignKey(f"{target_field.model._meta.db_table}.{target_field.column}"))
@@ -216,6 +270,11 @@ class Difference:
         return f"[{self.source}] {self.kind}{where}: expected {self.expected!r}, table has {self.actual!r}"
 
 
+def _type_repr(column: sa.Column) -> str:
+    # The field the type carries is not part of the schema; compare the generic type.
+    return repr(_generic_type(column.type))
+
+
 def _foreign_keys(column: sa.Column) -> list[str]:
     return sorted(fk.target_fullname for fk in column.foreign_keys)
 
@@ -228,10 +287,10 @@ def _compare_with_model(model: type[models.Model], table: sa.Table) -> list[Diff
     for want in fresh.c:
         have = table.c.get(want.name)
         if have is None:
-            diffs.append(Difference("model", "missing", want.name, repr(want.type), None))
+            diffs.append(Difference("model", "missing", want.name, _type_repr(want), None))
             continue
         for kind, get in (
-            ("type", lambda c: repr(c.type)),
+            ("type", _type_repr),
             ("nullable", lambda c: c.nullable),
             ("primary_key", lambda c: c.primary_key),
             ("foreign_key", _foreign_keys),
@@ -240,7 +299,7 @@ def _compare_with_model(model: type[models.Model], table: sa.Table) -> list[Diff
                 diffs.append(Difference("model", kind, want.name, get(want), get(have)))
     for have in table.c:
         if have.name not in fresh.c:
-            diffs.append(Difference("model", "unexpected", have.name, None, repr(have.type)))
+            diffs.append(Difference("model", "unexpected", have.name, None, _type_repr(have)))
     return diffs
 
 
@@ -266,7 +325,7 @@ def _compare_with_db(table: sa.Table, using: str) -> list[Difference]:
             diffs.append(Difference("db", "nullable", info.name, bool(info.null_ok), have.nullable))
     for have in table.c:
         if have.name not in in_db:
-            diffs.append(Difference("db", "unexpected", have.name, None, repr(have.type)))
+            diffs.append(Difference("db", "unexpected", have.name, None, _type_repr(have)))
     return diffs
 
 
