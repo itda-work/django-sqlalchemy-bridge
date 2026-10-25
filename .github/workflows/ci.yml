@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned exactly: setup-uv dropped its floating major tags in v8.
+      - uses: astral-sh/setup-uv@v10.0.1
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
+        django: ["5.2", "6.1"]
+        sqlalchemy: ["2.0", "2.1"]
+    name: test (py${{ matrix.python }}, django ${{ matrix.django }}, sqlalchemy ${{ matrix.sqlalchemy }})
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: dsb
+          POSTGRES_PASSWORD: dsb
+          POSTGRES_DB: dsb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dsb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      REQUIRE_PG: "1"
+      DSB_PG_HOST: localhost
+      DSB_PG_PORT: "5432"
+      DSB_PG_USER: dsb
+      DSB_PG_PASSWORD: dsb
+      DSB_PG_NAME: dsb
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      # The lock holds one version of each; the matrix overrides them in the synced venv.
+      - run: uv pip install "django~=${{ matrix.django }}.0" "sqlalchemy~=${{ matrix.sqlalchemy }}.0"
+      - run: uv run --no-sync python -c "import django, sqlalchemy; print('django', django.__version__, 'sqlalchemy', sqlalchemy.__version__)"
+      - name: pytest (SQLite)
+        run: uv run --no-sync pytest
+        env:
+          DSB_DB: sqlite
+      - name: pytest (PostgreSQL)
+        run: uv run --no-sync pytest
+        env:
+          DSB_DB: postgres
