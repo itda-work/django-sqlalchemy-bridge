@@ -197,7 +197,7 @@ async def view(request):
 - 코루틴 함수를 넘기면 `TypeError`입니다(`await fn()`을 쓰세요). 동기 함수가 awaitable을 돌려줘도 `TypeError`입니다.
 - `arun` 여러 건을 `asyncio.gather`로 동시에 돌려도 서로 섞이지 않습니다. thread-sensitive 호출은 한 스레드에서 차례로 돌고, 각 `fn`의 트랜잭션은 그 `fn` 안에서 시작해 끝나므로 한쪽의 롤백이 다른 쪽의 커밋에 영향을 주지 않습니다(테스트로 확인).
 - **연결 수명.** `fn` 앞뒤로 Django `close_old_connections()`와 같은 정리를 합니다. 그 스레드의 연결 중 오류 뒤 쓸 수 없게 된 것, `CONN_MAX_AGE`가 지난 것을 닫습니다(Channels `database_sync_to_async`와 같은 동작). 요청 밖에서 오래 도는 코루틴(워커, consumer)은 Django의 요청 시작·끝 정리를 받지 못해, 서버가 끊은 연결이 그 스레드에서 계속 `connection is closed`로 실패하기 때문입니다. 이 정리가 있으면 끊긴 뒤 첫 호출만 실패하고 다음 호출은 새 연결을 씁니다. `CONN_HEALTH_CHECKS: True`면 첫 호출부터 새 연결을 씁니다(PostgreSQL에서 테스트로 확인).
-  - 그래서 `CONN_MAX_AGE: 0`(기본값)이면 `arun` 호출마다 연결을 새로 엽니다. 요청 하나에서 여러 번 부른다면 `CONN_MAX_AGE`를 주거나 PostgreSQL 연결 풀(`OPTIONS: {"pool": True}`)을 쓰세요.
+  - 그래서 `CONN_MAX_AGE: 0`(기본값)이면 `arun` 호출마다 연결을 새로 엽니다. 요청 하나에서 여러 번 부른다면 `CONN_MAX_AGE`를 주거나 PostgreSQL 연결 풀(`OPTIONS: {"pool": True}`)을 쓰세요. 측정은 아래 "성능과 메모리"의 5 를 보세요.
   - `atomic()` 블록 안에 있는 연결(예: 바깥 동기 코드가 연 트랜잭션, Django `TestCase`)은 닫지 않습니다.
 - async 코드에서 `execute`·`stream`·`bulk_*`를 `arun` 없이 바로 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. 이 안전장치는 우회하지 않습니다.
 
@@ -208,16 +208,239 @@ async def view(request):
 - **`async with atomic()` 형태는 넣지 않습니다.** `atomic()`의 진입·종료를 따로 `sync_to_async`로 넘기면, 같은 스레드를 쓰는 코루틴들이 **연결 하나와 그 트랜잭션 상태를 함께 씁니다.** 먼저 연 코루틴의 트랜잭션 안에서 다른 코루틴의 `atomic()`은 savepoint가 되고, 트랜잭션이 없는 쓰기는 그 트랜잭션에 그대로 섞입니다. 그래서 정상 종료한 코루틴의 쓰기가 다른 코루틴의 실패와 함께 **예외 없이 롤백됩니다.** 이렇게 흉내 낸 구현을 `gather`로 두 건 돌려 SQLite·PostgreSQL 모두에서 재현했습니다(먼저 연 쪽이 실패하든, 정상 쪽이 먼저 블록을 나오든 정상 쪽의 행이 사라짐).
 - **SQLAlchemy 비동기 엔진(`AsyncEngine`)과 psycopg 3 비동기 연결 직접 사용은 채택하지 않습니다.** 둘 다 Django 밖에서 따로 연결을 열기 때문에 Django 트랜잭션·잠금·쿼리 집계(`execute_wrapper`, `assertNumQueries`) 밖에서 돕니다. "연결과 트랜잭션은 Django가 관리한다"는 원칙과 맞지 않습니다.
 
-## 성능과 메모리 (측정 중)
+## 성능과 메모리
 
-이 README의 모든 수치는 저장소의 `bench/` 스크립트와 결과 파일로 다시 재현할 수 있을 때만 싣습니다. 측정할 항목은 아래와 같습니다.
+아래 표의 수치는 모두 저장소의 `bench/` 스크립트가 쓴 결과 파일(`bench/results/*.json`)에서 `bench/readme.py`가 만든 것입니다. 표마다 출처 파일을 적었고, 결과 파일에는 회차별 원값과 버전·DB 서버·머신 정보가 함께 들어 있습니다. 표가 결과 파일과 어긋나면 테스트(`tests/test_bench_readme.py`)가 실패합니다.
 
-- PK 기준 대량 UPDATE: Django `bulk_update`, django-pgbulk, 브리지, SQLAlchemy ORM
-- 대량 INSERT: `bulk_create`, pgbulk `copy`, 브리지, SQLAlchemy `insert()`
-- 대량 읽기의 시간과 메모리: Django 모델 객체, `values()`, `values_list()`, 브리지, SQLAlchemy `Row`, SQLAlchemy ORM 객체
-- 쿼리 생성 오버헤드, async 경로, CTE·윈도 함수 리포트 쿼리
+**한 대의 로컬 머신에서 잰 수치입니다.** PostgreSQL 은 같은 Mac 의 Docker 컨테이너라 쿼리 한 번의 왕복이 실제 서버 배치보다 느리고, 측정 중에도 다른 프로세스가 돌고 있었습니다(결과 파일의 `load_average`). 절대값보다 같은 표 안의 상대 비교로 읽으세요.
 
-브리지가 도움이 **안 되는** 경우(일반 CRUD, django-pgbulk로 충분한 경우)도 함께 적습니다.
+<!-- bench:env-postgres -->
+PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.14.7 · Django 6.1.2 · SQLAlchemy 2.1.6 · psycopg 3.3.6 · django-pgbulk 3.3.0 · django-cte 4.0.0 · Apple M1 Pro (10코어, 메모리 32 GiB) · macOS-26.6.2-arm64-arm-64bit-Mach-O · 반복 5회(+예열 1회) 중 최솟값
+<!-- /bench:env-postgres -->
+
+<!-- bench:env-sqlite -->
+SQLite 3.53.1 · Python 3.14.7 · Django 6.1.2 · SQLAlchemy 2.1.6 · psycopg 3.3.6 · django-pgbulk 3.3.0 · django-cte 4.0.0 · Apple M1 Pro (10코어, 메모리 32 GiB) · macOS-26.6.2-arm64-arm-64bit-Mach-O · 반복 5회(+예열 1회) 중 최솟값
+<!-- /bench:env-sqlite -->
+
+다시 재기:
+
+```sh
+uv sync --group bench
+DSB_PG_HOST=127.0.0.1 DSB_PG_PORT=55432 DSB_PG_USER=dsb DSB_PG_PASSWORD=dsb DSB_PG_NAME=dsb \
+  uv run --group bench python -m bench --db postgres   # 시나리오 지정: python -m bench update read ...
+uv run --group bench python -m bench --db sqlite
+uv run python -m bench.readme --write                  # 결과 파일 날짜를 bench/readme.py 의 DATE 에 맞춘 뒤
+```
+
+**측정 방법.**
+
+- 시간은 측정 대상 호출 하나를 `perf_counter`로 잰 값이고, 예열 1회 뒤 5회 중 **최솟값**입니다(원값 5개는 결과 파일에). 메모리는 따로 한 번 더 돌려 `tracemalloc` 피크(그 호출이 새로 할당한 양)를 잽니다. 대량 읽기는 새 프로세스에서 결과를 쥔 채 RSS 증가분도 잽니다(3회 중앙값).
+- 매 회차 같은 데이터·같은 상태에서 시작합니다. 쓰기는 트랜잭션 안에서 재고 롤백하며, PostgreSQL 은 회차마다 `VACUUM ANALYZE`를 합니다.
+- **입력 만들기는 시간에 넣지 않습니다.** Django·django-pgbulk 는 모델 인스턴스, 브리지·SQLAlchemy 는 딕셔너리를 미리 만들어 두고 쓰기 호출만 잽니다. 실제로는 인스턴스를 만드는 비용이 Django 쪽에 더 붙습니다.
+- 비교 대상은 그 도구다운 방법으로 씁니다. Django `bulk_update`·`bulk_create`는 `batch_size` 기본값과 `1000` 둘 다, django-pgbulk 는 `update()`·`copy()`(text·binary)입니다.
+- **"별도 엔진"이라 적은 SQLAlchemy 수치는 브리지가 아닙니다.** SQLAlchemy 를 단독으로 쓸 때의 기준선으로, 자체 `Engine`이 Django 밖에서 따로 연결을 엽니다(Django 트랜잭션·쿼리 집계 밖). 브리지는 이 방식을 쓰지 않습니다(위 "설계 원칙").
+
+### 1. PK 기준 대량 UPDATE (컬럼 3개)
+
+<!-- bench:pg-update -->
+| | 5,000행 시간 (ms) | 50,000행 시간 (ms) |
+|---|---:|---:|
+| Django `bulk_update()` (batch_size 기본값) | 5,090 | 측정 안 함 ¹ |
+| Django `bulk_update(batch_size=1000)` | 960 | 11,955 |
+| django-pgbulk `update()` | 62.7 | 770 |
+| SQLAlchemy ORM bulk UPDATE (별도 엔진) | 80.3 | 793 |
+| 브리지 `execute(stmt, [params...])` (executemany) | 151 | 1,556 |
+| 브리지 `bulk_update()` | 34.4 | 360 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-postgres-update.json`](bench/results/2026-10-25-postgres-update.json)</sub>
+<!-- /bench:pg-update -->
+
+¹ PostgreSQL 에서 `batch_size`가 없으면 Django 는 모든 행을 컬럼마다 `CASE WHEN id = … THEN …` 하나에 담은 UPDATE 한 문장을 보냅니다. 5,000행에서도 위처럼 느리고, 50,000행에서는 서버 백엔드가 CPU 100%·메모리 3.6 GB 로 30분 넘게 끝나지 않고 취소에도 응답하지 않아 프로세스를 강제로 끝냈습니다. 그래서 재지 않았습니다.
+
+² SQLite 의 `batch_size` 기본값 실패는 Django 6.1.2 에서 재현됩니다. 기본 배치 크기를 `SQLITE_LIMIT_VARIABLE_NUMBER`(32766)를 행당 파라미터 `2 + 컬럼 수`로 나눠 정하는데, 실제 문장은 행당 `2 × 컬럼 수 + 1`개를 써서 두 컬럼 이상을 갱신하면 한도를 넘습니다(같은 5,000행·3컬럼이 Django 5.2.18 에서는 성공).
+
+<!-- bench:sqlite-update -->
+| | 5,000행 시간 (ms) | 50,000행 시간 (ms) |
+|---|---:|---:|
+| Django `bulk_update()` (batch_size 기본값) | 실패: `OperationalError` ² | 실패: `OperationalError` ² |
+| Django `bulk_update(batch_size=1000)` | 1,051 | 11,733 |
+| SQLAlchemy ORM bulk UPDATE (별도 엔진) | 51.6 | 233 |
+| 브리지 `execute(stmt, [params...])` (executemany) | 74.2 | 368 |
+| 브리지 `bulk_update()` | 52.5 | 153 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-sqlite-update.json`](bench/results/2026-10-25-sqlite-update.json)</sub>
+<!-- /bench:sqlite-update -->
+
+### 2. 대량 INSERT
+
+<!-- bench:pg-insert -->
+| | 20,000행 시간 (ms) | 200,000행 시간 (ms) |
+|---|---:|---:|
+| Django `bulk_create()` (batch_size 기본값) | 262 | 2,903 |
+| Django `bulk_create(batch_size=1000)` | 279 | 2,924 |
+| django-pgbulk `copy()` | 127 | 1,251 |
+| django-pgbulk `copy(binary=True)` | 111 | 1,106 |
+| SQLAlchemy Core `insert()` (별도 엔진) | 275 | 2,794 |
+| SQLAlchemy Core `insert().returning(id)` (별도 엔진) | 402 | 4,689 |
+| 브리지 `execute(insert(t), [rows...])` (executemany) | 599 | 6,042 |
+| 브리지 `bulk_insert()` | 191 | 2,016 |
+| 브리지 `bulk_insert(returning=['id'])` | 197 | 2,073 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-postgres-insert.json`](bench/results/2026-10-25-postgres-insert.json)</sub>
+<!-- /bench:pg-insert -->
+
+<!-- bench:sqlite-insert -->
+| | 20,000행 시간 (ms) | 200,000행 시간 (ms) |
+|---|---:|---:|
+| Django `bulk_create()` (batch_size 기본값) | 236 | 5,314 |
+| Django `bulk_create(batch_size=1000)` | 229 | 3,912 |
+| SQLAlchemy Core `insert()` (별도 엔진) | 66.9 | 831 |
+| SQLAlchemy Core `insert().returning(id)` (별도 엔진) | 80.4 | 1,823 |
+| 브리지 `execute(insert(t), [rows...])` (executemany) | 236 | 2,453 |
+| 브리지 `bulk_insert()` | 113 | 1,213 |
+| 브리지 `bulk_insert(returning=['id'])` | 119 | 1,260 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-sqlite-insert.json`](bench/results/2026-10-25-sqlite-insert.json)</sub>
+<!-- /bench:sqlite-insert -->
+
+### 3. 20,000행 읽기 (컬럼 7개): 시간과 메모리
+
+<!-- bench:pg-read -->
+| | 시간 (ms) | tracemalloc 피크 (MiB) | RSS 증가 (MiB) |
+|---|---:|---:|---:|
+| Django 모델 객체 `list(qs)` | 58.0 | 15.3 | 16.4 |
+| Django `values()` | 27.6 | 12.9 | 17.0 |
+| Django `values_list()` | 20.7 | 7.7 | 11.9 |
+| SQLAlchemy ORM 객체 (별도 엔진) | 61.5 | 28.3 | 33.7 |
+| SQLAlchemy Core `Row` (별도 엔진) | 22.1 | 8.9 | 12.9 |
+| 브리지 `execute_result().all()` (`Row`) | 23.1 | 8.9 | 12.9 |
+| 브리지 `execute()` (튜플) | 20.4 | 7.7 | 11.8 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-postgres-read.json`](bench/results/2026-10-25-postgres-read.json)</sub>
+<!-- /bench:pg-read -->
+
+<!-- bench:sqlite-read -->
+| | 시간 (ms) | tracemalloc 피크 (MiB) | RSS 증가 (MiB) |
+|---|---:|---:|---:|
+| Django 모델 객체 `list(qs)` | 93.2 | 16.7 | 16.1 |
+| Django `values()` | 58.9 | 14.3 | 16.9 |
+| Django `values_list()` | 53.3 | 11.1 | 13.8 |
+| SQLAlchemy ORM 객체 (별도 엔진) | 68.8 | 28.5 | 32.7 |
+| SQLAlchemy Core `Row` (별도 엔진) | 29.0 | 12.5 | 14.9 |
+| 브리지 `execute_result().all()` (`Row`) | 56.5 | 11.0 | 13.3 |
+| 브리지 `execute()` (튜플) | 52.8 | 11.0 | 13.2 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-sqlite-read.json`](bench/results/2026-10-25-sqlite-read.json)</sub>
+<!-- /bench:sqlite-read -->
+
+결과를 쥐지 않고 쪼개 읽기만 할 때(PostgreSQL, 서버 측 커서):
+
+<!-- bench:pg-stream -->
+| | 시간 (ms) | tracemalloc 피크 (MiB) |
+|---|---:|---:|
+| Django `values_list().iterator(chunk_size=2000)` | 30.3 | 1.5 |
+| 브리지 `stream(chunk_size=2000)` | 30.6 | 1.5 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-postgres-read.json`](bench/results/2026-10-25-postgres-read.json)</sub>
+<!-- /bench:pg-stream -->
+
+**메모리 지침.** 행을 많이 읽을 때는 모델 객체(Django 든 SQLAlchemy ORM 이든)가 아니라 튜플·행으로 받으세요. 브리지 `execute()`의 튜플은 Django `values_list()`와 같은 수준이고, 다 쥘 필요가 없으면 `stream()`이 메모리를 청크 크기로 묶습니다(Django `iterator()`와 같은 수준).
+
+### 4. 쿼리 생성 오버헤드: PK 조회 5,000번
+
+<!-- bench:pg-lookup -->
+| | 시간 (ms) | 호출당 (µs) |
+|---|---:|---:|
+| Django 커서에 SQL 직접 | 2,024 | 405 |
+| Django `objects.get(pk=...)` | 2,793 | 559 |
+| Django `values_list(...).get(pk=...)` | 2,877 | 575 |
+| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 1,948 | 390 |
+| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 2,381 | 476 |
+| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 2,687 | 537 |
+| 브리지 `execute()`, 매번 문장 생성 | 2,949 | 590 |
+| (참고) 브리지 컴파일·파라미터 변환만, DB 없음 | 315 | 63.0 |
+| (가상) 컴파일 1회 후 커서·변환기만 — 캐시의 상한 | 1,931 | 386 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-postgres-lookup.json`](bench/results/2026-10-25-postgres-lookup.json)</sub>
+<!-- /bench:pg-lookup -->
+
+<!-- bench:sqlite-lookup -->
+| | 시간 (ms) | 호출당 (µs) |
+|---|---:|---:|
+| Django 커서에 SQL 직접 | 30.7 | 6.14 |
+| Django `objects.get(pk=...)` | 471 | 94.1 |
+| Django `values_list(...).get(pk=...)` | 577 | 115 |
+| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 88.8 | 17.8 |
+| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 231 | 46.2 |
+| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 422 | 84.5 |
+| 브리지 `execute()`, 매번 문장 생성 | 597 | 119 |
+| (참고) 브리지 컴파일·파라미터 변환만, DB 없음 | 331 | 66.1 |
+| (가상) 컴파일 1회 후 커서·변환기만 — 캐시의 상한 | 51.4 | 10.3 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-sqlite-lookup.json`](bench/results/2026-10-25-sqlite-lookup.json)</sub>
+<!-- /bench:sqlite-lookup -->
+
+- 브리지 `execute()`는 **매 호출 문장을 컴파일합니다(컴파일 캐시 없음).** "컴파일·파라미터 변환만" 행이 그 비용이고, "(가상) 컴파일 1회" 행은 브리지 내부 함수로 컴파일을 한 번만 하고 커서·변환기만 돌린 값으로, 캐시를 넣으면 다가갈 수 있는 상한입니다(공개 API 가 아닙니다). 캐시 여부는 #17 에서 정합니다.
+- 왕복이 비싼 환경(위 PostgreSQL)에서는 컴파일 비용이 왕복에 묻혀 Django ORM 과 같은 수준이고, 왕복이 싼 SQLite 에서는 호출 시간의 대부분이 컴파일입니다. 문장을 한 번 만들어 `bindparam`으로 재사용하면 매번 만드는 것보다 빠릅니다.
+
+### 5. 비동기 (PostgreSQL, PK 조회)
+
+<!-- bench:pg-async -->
+| | 시간 (ms) | 쿼리당 (µs) |
+|---|---:|---:|
+| (기준) 동기 코드에서 `execute()` 1,000번 | 610 | 610 |
+| `aget()` 1,000번 순차 | 706 | 706 |
+| `arun()` 1,000번 순차 (호출마다 쿼리 1개) | 709 | 709 |
+| 같은 것, `CONN_MAX_AGE=0` (호출마다 재연결) | 7,330 | 7,330 |
+| `gather` 100건 × `aget()` | 57.2 | 572 |
+| `gather` 100건 × `arun()` | 61.6 | 616 |
+| `gather` 1,000건 × `aget()` | 520 | 520 |
+| `gather` 1,000건 × `arun()` | 554 | 554 |
+| 작업 단위(쿼리 5개) 200개 순차, 쿼리마다 `aget()` | 662 | 662 |
+| 작업 단위(쿼리 5개) 200개 순차, 단위마다 `arun()` | 534 | 534 |
+| 작업 단위 200개 `gather`, 쿼리마다 `aget()` | 477 | 477 |
+| 작업 단위 200개 `gather`, 단위마다 `arun()` | 520 | 520 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-postgres-async.json`](bench/results/2026-10-25-postgres-async.json)</sub>
+<!-- /bench:pg-async -->
+
+- 쿼리 하나짜리 호출에서는 `arun`과 `aget()`이 같은 수준입니다. 둘 다 thread-sensitive 스레드 하나에서 차례로 돌기 때문에 `gather`로 동시에 불러도 처리량이 늘지 않습니다.
+- `arun`의 이점은 속도보다 **트랜잭션을 async 코드에서 쓸 수 있다는 것**입니다. 쿼리 여러 개를 한 번에 넘기면 스레드 위임이 줄어 순차 실행에서는 빨라지지만, 작업 단위를 `gather`로 동시에 돌린 경우에는 이 측정에서 오히려 `aget()` 쪽이 빨랐습니다.
+- **`CONN_MAX_AGE=0`(기본값)이면 `arun`은 호출마다 다시 연결합니다**(위 "연결 수명"). 표에서 보듯 가장 큰 비용이므로 `arun`을 자주 부른다면 `CONN_MAX_AGE`나 연결 풀을 쓰세요.
+- SQLAlchemy `AsyncEngine`·psycopg 비동기 연결은 재지 않았습니다. #1 에서 Django 트랜잭션·잠금·쿼리 집계 밖에서 돈다는 이유로 탈락했고 브리지 API 가 아닙니다.
+
+### 6. CTE·윈도 함수 리포트 쿼리 (PostgreSQL, 20,000행)
+
+<!-- bench:pg-report -->
+| | CTE + `RANK()` (500행) 시간 (ms) |
+|---|---:|
+| Django 커서에 SQL 직접 | 4.13 |
+| Django ORM (CTE 없이 집계 + `Window`) | 4.43 |
+| Django + django-cte | 4.54 |
+| 브리지 (`select().cte()` + `rank().over()`) | 4.13 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-postgres-report.json`](bench/results/2026-10-25-postgres-report.json)</sub>
+<!-- /bench:pg-report -->
+
+<!-- bench:pg-running -->
+| | 누적 합 `SUM() OVER` (20,000행) 시간 (ms) |
+|---|---:|
+| Django ORM `Window(Sum(...), partition_by=...)` | 30.8 |
+| 브리지 `func.sum().over(partition_by=...)` | 23.9 |
+
+<sub>결과 파일: [`bench/results/2026-10-25-postgres-report.json`](bench/results/2026-10-25-postgres-report.json)</sub>
+<!-- /bench:pg-running -->
+
+모든 변형이 같은 행을 돌려주는지 측정 중에 확인합니다. 결과가 작은 집계(위 표)는 DB 실행이 시간의 대부분이라 도구 차이가 거의 없고, 행이 많은 결과(아래 표)는 행을 만들고 변환하는 비용에서 차이가 납니다.
+
+### 브리지가 도움이 안 되는 경우
+
+- **일반 CRUD.** 한 행을 읽고 쓰는 일은 Django ORM 과 같은 수준이고 매번 문장을 만들면 조금 느립니다(시나리오 4, 컴파일 캐시 없음). 얻는 것이 없으니 signal·`save()`·검증이 따라오는 ORM 을 쓰세요.
+- **대량 INSERT 만 필요하고 생성된 id 가 필요 없을 때.** PostgreSQL 에서는 django-pgbulk `copy()`(COPY)가 브리지 `bulk_insert()`보다 빠르고 메모리도 거의 쓰지 않습니다(시나리오 2). 브리지는 `RETURNING`이 필요하거나 `bulk_create`보다 빠른 정도로 충분할 때의 선택지입니다.
+- **django-pgbulk 를 이미 쓴다면.** PK 기준 대량 UPDATE 에서 브리지가 더 빠르긴 하지만 둘 다 Django `bulk_update`보다 한 자릿수 이상 빠른 같은 부류입니다(시나리오 1). 바꿀 이유는 속도보다 SQLAlchemy 식이 필요한지에 있습니다.
+- **ORM 으로 쓸 수 있는 리포트 쿼리.** CTE·윈도 함수 쿼리는 실행 시간이 DB 에서 정해져 도구 차이가 거의 없고, 이 예처럼 Django ORM(CTE 없이 `Window`로)이나 django-cte 로 표현되면 그대로 두면 됩니다(시나리오 6). 브리지는 ORM 으로 쓰기 어려운 식(여러 CTE, `LATERAL`, 복잡한 조인)에서 의미가 있습니다.
+- **SQLite 에서 Django 트랜잭션이 필요 없을 때.** SQLite 에서는 SQLAlchemy 를 단독으로(별도 엔진) 쓰는 편이 대량 INSERT·읽기에서 브리지보다 빠릅니다(시나리오 2·3). 브리지는 값을 Django 필드 변환기로 바꾸는 비용을 내는 대신 ORM 과 같은 값·같은 트랜잭션을 줍니다.
+- **SQLite executemany 형태의 `execute(stmt, [params…])`.** 행마다 SQLAlchemy 로 파라미터를 만들기 때문에 `bulk_update()`·`bulk_insert()`보다 느립니다. 대량 쓰기는 `bulk_*`를 쓰세요(시나리오 1·2).
 
 ## 첫 지원 대상 (계획)
 

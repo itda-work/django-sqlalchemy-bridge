@@ -14,6 +14,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `bulk_update(table, rows, *, key=None, columns=None)` / `bulk_insert(table, rows, *, returning=None)`: 대량 UPDATE·INSERT. PostgreSQL 은 컬럼마다 배열 파라미터 하나를 Django 컬럼 타입으로 캐스트한 `unnest()` 한 문장, 그 밖은 `executemany`(RETURNING 은 다중 VALUES 배치). 키·컬럼이 빠진 행, 중복 키, 빠뜨린 테이블 컬럼(자동 PK·`db_default` 제외)은 실행 전 `ValueError`. RETURNING 은 행 순서대로 ORM 변환기를 거친다.
 - `arun(fn, /, *args, **kwargs)`: 동기 작업 단위(`execute`·`atomic()`·`on_commit`·ORM)를 `sync_to_async(thread_sensitive=True)` 한 번으로 실행. 반환값·예외를 그대로 전달하고, 코루틴 함수나 awaitable 을 돌려주는 함수는 `TypeError`. `fn` 앞뒤로 `atomic()` 밖 연결에 `close_old_connections()` 와 같은 정리(끊긴 연결·`CONN_MAX_AGE` 초과). 직접 의존성에 `asgiref>=3.8.1`.
 - README 에 지원 필드 표와 사용 예.
+- 벤치마크 `bench/`(`uv run --group bench python -m bench [시나리오...] --db sqlite|postgres`): PK 대량 UPDATE·대량 INSERT·대량 읽기(시간·tracemalloc·RSS)·PK 조회 오버헤드·async·CTE/윈도 리포트를 Django·django-pgbulk·django-cte·SQLAlchemy 단독과 비교. 결과는 `bench/results/*.json`(회차별 원값·버전·머신), README "성능과 메모리" 표는 `bench/readme.py` 가 결과 파일에서 생성하고 테스트가 일치를 검사. 비교 대상 라이브러리는 의존성 그룹 `bench` (#2).
 - 테스트 하네스(`tests/` 아래 Django 테스트 프로젝트, SQLite·PostgreSQL 겸용)와 CI 매트릭스(Python 3.12/3.14 × Django 5.2/6.1 × SQLAlchemy 2.0/2.1, PostgreSQL 18).
 
 ### Changed
