@@ -18,12 +18,12 @@ Writes made here bypass the model layer: no ``save()``, no ``pre_save`` /
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import sqlalchemy as sa
-from django.db import DEFAULT_DB_ALIAS, connections
+from django.db import DEFAULT_DB_ALIAS, DatabaseError, connections
 from django.db.backends.base.base import BaseDatabaseWrapper
 from sqlalchemy.engine import BindTyping, Dialect
 from sqlalchemy.engine.interfaces import Compiled
@@ -32,7 +32,7 @@ from sqlalchemy.sql.compiler import SQLCompiler
 from django_sqlalchemy_bridge import _sa_result
 from django_sqlalchemy_bridge.tables import FieldType
 
-__all__ = ["execute", "execute_result"]
+__all__ = ["execute", "execute_result", "stream"]
 
 Params = Mapping[str, Any]
 
@@ -232,6 +232,13 @@ def execute(
     return _run(stmt, params, using)[1]
 
 
+def _check_returns_rows(stmt: sa.sql.ClauseElement, params: Any, caller: str) -> None:
+    if isinstance(stmt, sa.sql.dml.UpdateBase) and not _returns_rows(stmt):
+        raise ValueError("statement returns no rows; use execute() for its rowcount")
+    if params is not None and not isinstance(params, Mapping):
+        raise TypeError(f"{caller}() runs one statement; pass a single mapping of params")
+
+
 def execute_result(
     stmt: sa.sql.ClauseElement,
     params: Params | None = None,
@@ -246,11 +253,70 @@ def execute_result(
     without ``RETURNING`` raises ``ValueError`` before running, and a ``text()``
     statement that turns out to return none raises after it ran.
     """
-    if isinstance(stmt, sa.sql.dml.UpdateBase) and not _returns_rows(stmt):
-        raise ValueError("statement returns no rows; use execute() for its rowcount")
-    if params is not None and not isinstance(params, Mapping):
-        raise TypeError("execute_result() runs one statement; pass a single mapping of params")
+    _check_returns_rows(stmt, params, "execute_result")
     keys, rows = _run(stmt, params, using)
     if keys is None:
         raise ValueError("statement returned no rows; use execute() for its rowcount")
     return _sa_result.result_from_rows(keys, rows)
+
+
+# QuerySet.iterator()'s default chunk size.
+DEFAULT_CHUNK_SIZE = 2000
+
+
+def stream(
+    stmt: sa.sql.ClauseElement,
+    params: Params | None = None,
+    *,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    using: str = DEFAULT_DB_ALIAS,
+) -> Iterator[tuple[Any, ...]]:
+    """Like :func:`execute` for a statement that returns rows, but yield them a chunk at a time.
+
+    Rows are fetched ``chunk_size`` at a time and convert as in :func:`execute`.
+    The cursor is the one ``QuerySet.iterator()`` takes: ``chunked_cursor()``,
+    a server-side cursor on PostgreSQL, unless the database sets
+    ``DISABLE_SERVER_SIDE_CURSORS``. Nothing runs until the first row is asked
+    for; the cursor closes when the rows run out, the generator is closed, or
+    an error ends it.
+
+    DML with ``RETURNING`` runs on a plain cursor, since PostgreSQL declares
+    server-side cursors only for ``SELECT`` and ``VALUES``; a ``text()``
+    statement there must be one of those too. DML without ``RETURNING`` and a
+    sequence of params are refused before anything runs; a ``text()``
+    statement that returns no rows raises ``ValueError`` on the first ``next()``.
+    """
+    _check_returns_rows(stmt, params, "stream")
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be at least 1")
+    connection = connections[using]
+    # PostgreSQL declares a server-side cursor only for SELECT or VALUES, so DML
+    # with RETURNING takes a plain cursor (the driver then holds all its rows).
+    chunked = not isinstance(stmt, sa.sql.dml.UpdateBase)
+    return _stream(connection, prepare(stmt, params, connection), chunk_size, chunked)
+
+
+def _stream(
+    connection: BaseDatabaseWrapper, prepared: Prepared, chunk_size: int, chunked: bool
+) -> Iterator[tuple[Any, ...]]:
+    # The same steps as SQLCompiler.execute_sql(chunked_fetch=True) and cursor_iter().
+    if chunked and not connection.settings_dict.get("DISABLE_SERVER_SIDE_CURSORS"):
+        cursor = connection.chunked_cursor()
+    else:
+        cursor = connection.cursor()
+    try:
+        cursor.execute(prepared.sql, prepared.param_rows[0])
+    except Exception as e:
+        # Closing a server-side cursor can fail too (the transaction is aborted).
+        try:
+            cursor.close()
+        except DatabaseError:
+            raise e from None
+        raise
+    try:
+        if cursor.description is None:
+            raise ValueError("statement returned no rows; use execute() for its rowcount")
+        while rows := cursor.fetchmany(chunk_size):
+            yield from from_db(rows, prepared.converters, connection)
+    finally:
+        cursor.close()
