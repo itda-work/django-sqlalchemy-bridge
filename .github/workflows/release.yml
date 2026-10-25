@@ -1,0 +1,52 @@
+name: Release
+
+# Tag push (v*) -> build -> publish to PyPI via trusted publishing -> GitHub release.
+# PyPI side: pypi.org > Account settings > Publishing > add a pending publisher with
+# owner itda-work, repository django-sqlalchemy-bridge, workflow release.yml, environment pypi.
+# No API token is stored anywhere.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned exactly: setup-uv dropped its floating major tags in v8.
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Check the version, the CHANGELOG and the classifiers agree
+        run: python3 scripts/release_check.py "$GITHUB_REF_NAME"
+
+      - run: uv build
+      - run: uvx twine check dist/*
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # PyPI trusted publishing (OIDC)
+      contents: write # GitHub release
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
