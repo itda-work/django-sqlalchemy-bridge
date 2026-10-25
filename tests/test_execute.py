@@ -467,6 +467,14 @@ def returning_calls():
         "execute_result": lambda: execute_result(insert),
         "stream": lambda: stream(update),
         "bulk_insert": lambda: bulk_insert(authors, [{"name": "n", "joined_at": AT}], returning=["id"]),
+        # #21: derived from a statement whose (empty) columns were read first.
+        "execute derived insert": lambda: execute(
+            read_columns(sa.insert(authors)).values(name="n", joined_at=AT).returning(authors.c.id)
+        ),
+        "execute derived update": lambda: execute(
+            read_columns(sa.update(authors)).values(name="u").returning(authors.c.id)
+        ),
+        "execute derived delete": lambda: execute(read_columns(sa.delete(authors)).returning(authors.c.id)),
     }
 
 
@@ -493,3 +501,78 @@ def test_text_statements_are_not_checked_for_returning(no_returning):
     # The bridge cannot see RETURNING inside text(); the database decides (here it has it).
     rows = execute(sa.text("INSERT INTO testapp_author (name, joined_at) VALUES ('t', :at) RETURNING name"), {"at": AT})
     assert rows == [("t",)]
+
+
+# --- statements derived after their columns were read (#21) -------------------
+# SQLAlchemy memoizes a DML statement's exported_columns without registering the
+# memoization, so a statement derived with .returning() from one whose columns
+# were read (as executing it does) keeps the stale collection.
+
+
+def read_columns(stmt):
+    list(stmt.exported_columns)
+    return stmt
+
+
+def book_values(author, uid):
+    return {"uid": uid, "author_id": author.pk, "title": "t", "price": Decimal("1.00"), "meta": {}, "status": "draft"}
+
+
+def test_returning_derived_after_reading_the_columns_is_converted():
+    author = make_author()
+    uid = uuid.uuid4()
+    insert, update, delete = (read_columns(s) for s in (sa.insert(books), sa.update(authors), sa.delete(books)))
+    values = book_values(author, uid) | {"meta": {"a": 1}}
+    assert execute(insert.values(**values).returning(books.c.uid, books.c.meta)) == [(uid, {"a": 1})]
+    assert execute(update.values(name="u").returning(authors.c.joined_at)) == [(AT,)]
+    assert execute(delete.returning(books.c.uid, books.c.meta)) == [(uid, {"a": 1})]
+
+
+def test_returning_derived_from_an_executed_statement_is_converted():
+    author = make_author()
+    insert = sa.insert(books)
+    assert execute(insert, book_values(author, uuid.uuid4())) == 1
+    uid = uuid.uuid4()
+    values = book_values(author, uid) | {"meta": {"a": 1}}
+    assert execute(insert.values(**values).returning(books.c.uid, books.c.meta)) == [(uid, {"a": 1})]
+
+
+def test_returning_added_to_after_reading_the_columns_converts_every_column():
+    author = make_author()
+    uid = uuid.uuid4()
+    values = book_values(author, uid) | {"meta": {"a": 1}}
+    base = read_columns(sa.insert(books).values(**values).returning(books.c.id))
+    assert execute(base.returning(books.c.uid, books.c.meta)) == [(Book.objects.get().pk, uid, {"a": 1})]
+
+
+def test_execute_result_and_stream_accept_returning_derived_after_reading_the_columns():
+    make_author()
+    update = read_columns(sa.update(authors))
+    result = execute_result(update.values(name="r").returning(authors.c.name, authors.c.joined_at))
+    assert result.mappings().one() == {"name": "r", "joined_at": AT}
+    assert list(stream(update.values(name="s").returning(authors.c.joined_at))) == [(AT,)]
+
+
+def test_insert_derived_after_reading_the_columns_still_returns_the_rowcount():
+    base = read_columns(sa.insert(authors))
+    assert execute(base.values(name="n", joined_at=AT)) == 1
+    assert execute(base, [{"name": "a", "joined_at": AT}, {"name": "b", "joined_at": AT}]) == 2
+
+
+def test_select_derived_after_reading_the_columns_is_converted():
+    make_author("x")
+    base = sa.select(authors.c.name)
+    list(base.selected_columns)
+    list(base.exported_columns)
+    assert execute(base.add_columns(authors.c.joined_at)) == [("x", AT)]
+    assert execute(base.with_only_columns(authors.c.joined_at)) == [(AT,)]
+    subquery = base.add_columns(authors.c.joined_at).subquery()
+    list(subquery.c)
+    assert execute(sa.select(subquery.c.joined_at)) == [(AT,)]
+
+
+def test_returning_a_whole_table_or_a_label_derived_after_reading_the_columns_is_converted():
+    author = make_author("w")
+    update = read_columns(sa.update(authors))
+    assert execute(update.values(name="v").returning(authors)) == [(author.pk, "v", AT)]
+    assert execute(update.values(name="l").returning(authors.c.joined_at.label("j"))) == [(AT,)]
