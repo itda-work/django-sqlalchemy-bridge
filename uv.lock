@@ -39,6 +39,7 @@ name = "django-sqlalchemy-bridge"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "asgiref" },
     { name = "django" },
     { name = "sqlalchemy" },
 ]
@@ -53,6 +54,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "asgiref", specifier = ">=3.8.1" },
     { name = "django", specifier = ">=5.2" },
     { name = "sqlalchemy", specifier = ">=2.0,<2.2" },
 ]
