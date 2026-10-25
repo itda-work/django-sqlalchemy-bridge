@@ -152,6 +152,31 @@ def test_unsupported_concrete_field_raises():
 
 
 @isolate_apps("tests.testapp")
+def test_unsupported_field_behind_a_foreign_key_leaves_nothing_cached():
+    class WeirdField(models.Field):
+        def db_type(self, connection):
+            return "text"
+
+    class Target(models.Model):
+        w = WeirdField()
+
+        class Meta:
+            app_label = "testapp"
+
+    class Source(models.Model):
+        target = models.ForeignKey(Target, on_delete=models.CASCADE)
+
+        class Meta:
+            app_label = "testapp"
+
+    for _ in range(2):
+        with pytest.raises(UnsupportedFieldError, match=r"Target\.w"):
+            table_for(Source)
+        assert "testapp_source" not in metadata.tables
+        assert "testapp_target" not in metadata.tables
+
+
+@isolate_apps("tests.testapp")
 def test_abstract_model_is_rejected():
     class Base(models.Model):
         name = models.CharField(max_length=10)

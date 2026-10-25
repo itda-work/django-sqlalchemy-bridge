@@ -37,6 +37,7 @@ assert_table_matches(Order, check_db=True)
 - 각 `Column.info["django_field"]`에 원래 Django 필드가, `Table.info["django_model"]`에 모델이 들어 있습니다. SQLAlchemy 타입은 SQL 컴파일용이고, 값 변환은 Django 필드가 맡습니다(예정).
 - `compare_table(model, table=None, check_db=False)`는 차이를 `Difference(source, kind, column, expected, actual)` 리스트로 돌려줍니다. 모델과는 테이블명·컬럼·타입·nullable·PK·FK 를, 실제 DB 와는 컬럼 유무와 nullable 을 비교합니다(DB 타입 비교는 예정).
 - 다중 DB 는 아직 `default` 만 받습니다(`using` 인자 자리만 있음).
+- `forget_table(model)`은 캐시와 공용 `MetaData`에서 테이블을 지웁니다. 테스트(`isolate_apps` 등)에서 동적 모델을 정리하는 용도입니다.
 
 ### 지원 필드
 

@@ -155,16 +155,31 @@ def table_for(model: type[models.Model], *, using: str = "default") -> sa.Table:
         table = _tables.get(model)
         if table is not None:
             return table
-        name = model._meta.db_table
-        if name in metadata.tables:
-            other = metadata.tables[name].info.get("django_model")
-            raise ValueError(f"table {name!r} of {model._meta.label} is already built for {other!r}")
-        table = _build(model, metadata)
-        _tables[model] = table
-        for field in _model_fields(model):
+        pending = _uncached_closure(model)
+        # Check every table this call would add before registering any, so a
+        # failure leaves the cache and the metadata as they were.
+        claimed = {name: table.info.get("django_model") for name, table in metadata.tables.items()}
+        for each in pending:
+            name = each._meta.db_table
+            if name in claimed:
+                raise ValueError(f"table {name!r} of {each._meta.label} is already built for {claimed[name]!r}")
+            claimed[name] = each
+            _build(each, sa.MetaData())
+        for each in pending:
+            _tables[each] = _build(each, metadata)
+        return _tables[model]
+
+
+def _uncached_closure(model: type[models.Model]) -> list[type[models.Model]]:
+    """``model`` and the models its foreign keys reach, minus those already cached."""
+    found = [model]
+    for each in found:
+        for field in _model_fields(each):
             if _is_foreign_key(field):
-                table_for(field.target_field.model)
-        return table
+                target = field.target_field.model._meta.concrete_model
+                if target not in _tables and target not in found:
+                    found.append(target)
+    return found
 
 
 def forget_table(model: type[models.Model]) -> None:
