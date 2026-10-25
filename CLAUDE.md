@@ -7,7 +7,7 @@
 | 무엇 | 정본 |
 |------|------|
 | 의존성, 지원 Python | `pyproject.toml` |
-| 아키텍처 원칙 | `README.md` "Planned architecture" |
+| 아키텍처 원칙 | `README.md` "설계 원칙" |
 | 변경 이력 | `CHANGELOG.md` |
 
 ## 규약
