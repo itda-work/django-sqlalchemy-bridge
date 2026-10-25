@@ -8,4 +8,4 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
-- Name reservation and design README. No public API.
+- Name reservation and design README. **Experimental** project; no public API.
