@@ -7,11 +7,11 @@ from zoneinfo import ZoneInfo
 import pytest
 import sqlalchemy as sa
 from django.core.exceptions import SynchronousOnlyOperation
-from django.db import connection, transaction
+from django.db import NotSupportedError, connection, transaction
 from django.db.models.signals import post_save, pre_save
 from django.test.utils import CaptureQueriesContext
 
-from django_sqlalchemy_bridge import execute, execute_result, table_for
+from django_sqlalchemy_bridge import bulk_insert, execute, execute_result, stream, table_for
 from tests.testapp.models import Author, Book, Gadget, Specimen
 
 pytestmark = pytest.mark.django_db
@@ -440,3 +440,56 @@ def test_execute_result_for_returning():
 def test_execute_result_refuses_a_statement_without_rows():
     with pytest.raises(ValueError, match="no rows"):
         execute_result(sa.update(authors).values(name="x"))
+
+
+# --- RETURNING needs a database that has it ------------------------------------
+
+
+@pytest.fixture
+def no_returning(monkeypatch):
+    """Make the connection report no RETURNING; call it after the ORM writes (they rely on it)."""
+
+    def disable():
+        # SQLite has RETURNING from 3.35; Django 5.2 still runs on 3.31 and reports it here.
+        monkeypatch.setattr(connection.features, "can_return_columns_from_insert", False)
+
+    return disable
+
+
+def returning_calls():
+    insert = sa.insert(authors).values(name="n", joined_at=AT).returning(authors.c.id)
+    update = sa.update(authors).values(name="u").returning(authors.c.id)
+    delete = sa.delete(authors).returning(authors.c.id)
+    return {
+        "execute insert": lambda: execute(insert),
+        "execute update": lambda: execute(update),
+        "execute delete": lambda: execute(delete),
+        "execute_result": lambda: execute_result(insert),
+        "stream": lambda: stream(update),
+        "bulk_insert": lambda: bulk_insert(authors, [{"name": "n", "joined_at": AT}], returning=["id"]),
+    }
+
+
+@pytest.mark.parametrize("call", returning_calls().values(), ids=returning_calls().keys())
+def test_returning_is_refused_before_running_where_the_database_lacks_it(no_returning, call):
+    make_author("kept")
+    no_returning()
+    with CaptureQueriesContext(connection) as queries, pytest.raises(NotSupportedError, match="RETURNING"):
+        call()
+    assert queries.captured_queries == []
+    assert list(Author.objects.values_list("name", flat=True)) == ["kept"]
+
+
+def test_statements_without_returning_still_run_where_the_database_lacks_it(no_returning):
+    no_returning()
+    assert execute(sa.insert(authors).values(name="a", joined_at=AT)) == 1
+    assert bulk_insert(authors, [{"name": "b", "joined_at": AT}]) == 1
+    assert execute(sa.select(authors.c.name).order_by(authors.c.name)) == [("a",), ("b",)]
+    assert list(stream(sa.select(authors.c.name).order_by(authors.c.name))) == [("a",), ("b",)]
+
+
+def test_text_statements_are_not_checked_for_returning(no_returning):
+    no_returning()
+    # The bridge cannot see RETURNING inside text(); the database decides (here it has it).
+    rows = execute(sa.text("INSERT INTO testapp_author (name, joined_at) VALUES ('t', :at) RETURNING name"), {"at": AT})
+    assert rows == [("t",)]

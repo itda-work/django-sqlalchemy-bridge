@@ -73,7 +73,7 @@ def test_column_types_carry_their_django_field():
         (Book, "status", "String(length=20)"),
         (Book, "price", "Numeric(precision=10, scale=2)"),
         (Book, "uid", "Uuid()"),
-        (Book, "meta", "JSON()"),
+        (Book, "meta", "JSONB(astext_type=Text())"),
         (Specimen, "uid", "Uuid()"),
         (Specimen, "body", "Text()"),
         (Specimen, "slug", "String(length=50)"),
@@ -282,13 +282,28 @@ def test_drift_detects_nullability_primary_key_and_foreign_key_changes():
         sa.Column("title", sa.String(200), nullable=True),
         sa.Column("price", sa.Numeric(10, 2), nullable=False),
         sa.Column("status", sa.String(20), nullable=False),
-        sa.Column("meta", sa.JSON(), nullable=False),
+        sa.Column("meta", postgresql.JSONB(), nullable=False),
         sa.Column("author_id", sa.BigInteger(), sa.ForeignKey("other.id"), nullable=False),
     )
     diffs = {(d.kind, d.column): d for d in compare_table(Book, table)}
     assert set(diffs) == {("primary_key", "id"), ("nullable", "title"), ("foreign_key", "author_id")}
     assert diffs["foreign_key", "author_id"].expected == ["testapp_author.id"]
     assert diffs["foreign_key", "author_id"].actual == ["other.id"]
+
+
+def test_drift_detects_a_json_column_without_the_jsonb_operators():
+    # A plain JSON column has no contains()/has_key(); contains() would compile to LIKE.
+    table = table_for(Book).to_metadata(sa.MetaData())
+    table.c.meta.type = sa.JSON()
+    assert compare_table(Book, table) == [
+        Difference("model", "type", "meta", expected="JSONB(astext_type=Text())", actual="JSON()")
+    ]
+
+
+def test_json_column_compiles_as_jsonb_on_postgresql_and_json_on_sqlite():
+    create = sa.schema.CreateTable(table_for(Book))
+    assert "meta JSONB NOT NULL" in str(create.compile(dialect=DIALECTS["postgresql"]))
+    assert "meta JSON NOT NULL" in str(create.compile(dialect=DIALECTS["sqlite"]))
 
 
 def test_drift_detects_a_renamed_table():
