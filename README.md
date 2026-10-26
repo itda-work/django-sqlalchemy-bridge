@@ -213,6 +213,7 @@ for row in result.mappings():
 - **컴파일 캐시: `bindparam()`으로 만든 문장을 재사용하면 컴파일을 건너뜁니다.** 브리지는 넘겨받은 문장 객체마다 컴파일 결과를 기억해, 같은 객체를 같은 DB 종류(vendor)에서 같은 이름의 `params`로 다시 실행하면 컴파일 없이 값 변환과 실행만 합니다(`execute`·`execute_result`·`stream` 공통). 그러니 값은 `sa.bindparam("pk")`로 비워 둔 문장을 한 번 만들어 두고(모듈 수준 등) 돌려 쓰세요. `where(orders.c.id == pk)`처럼 값을 넣어 매번 새로 만든 문장은 매번 컴파일합니다(아래 "성능과 메모리" 4번). `params` 이름이 달라지면(예: UPDATE 의 `SET` 컬럼) SQL 이 달라지므로 따로 컴파일합니다. 결과 변환기와 `RETURNING` 지원 검사는 연결(alias)마다 다를 수 있어 매 호출 그 연결로 다시 정합니다. 기억한 결과는 문장 객체가 사라지면 함께 사라지고, 여러 스레드가 같은 문장을 써도 됩니다. 끄는 스위치는 없습니다(결과가 캐시 여부와 무관하므로).
 - 리터럴 `%`는 그대로 써도 됩니다(`LIKE 'a%'`, `text("SELECT '100%'")`). 브리지가 `%s` 자리표시로 컴파일하고 `%`를 `%%`로 바꾼 뒤, 파라미터가 없어도 빈 튜플을 넘겨 백엔드가 되돌리게 합니다(MySQL 의 mysqlclient 도 같은 format paramstyle 입니다). `sa.text()`는 그 DB 의 SQL 그대로라, MySQL 기본 `sql_mode`에서는 문자열 리터럴의 백슬래시가 이스케이프입니다(`ESCAPE '\\'`로 써야 백슬래시 하나).
 - async 코드에서 직접 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. 작업 단위를 동기 함수로 묶어 `arun`으로 부르세요(아래 "비동기").
+- DRF·클래스 기반 뷰(`ViewSet`·`APIView`·페이지네이션·`TemplateView`)에서 쓰는 레시피와 되지 않는 것(`ModelViewSet`·`ModelSerializer`·필터 백엔드·`CursorPagination` 등)은 [docs/drf.md](docs/drf.md)에 있습니다.
 
 ### 쪼개 읽기: `stream`
 
