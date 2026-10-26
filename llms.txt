@@ -15,7 +15,7 @@ Supported: SQLite, PostgreSQL (psycopg 3), MySQL 8.4 (mysqlclient), Oracle (orac
 
 ## Rules
 
-1. Do not create a SQLAlchemy `create_engine()`, `Engine`, `Connection`, `Session` or `AsyncEngine`. Build a statement and pass it to `execute()`, `execute_result()`, `stream()`, `raw()` or `execute_pipeline()`. It runs on Django's cursor, so `transaction.atomic()`, savepoints, `on_commit` and `assertNumQueries` apply exactly as for the ORM. Use Django's `atomic()`.
+1. Do not create a SQLAlchemy `create_engine()`, `Engine`, `Connection`, `Session` or `AsyncEngine`. Build a statement and pass it to `execute()`, `execute_result()`, `stream()`, `raw()`, `execute_pipeline()` or `copy_to()`. It runs on Django's cursor, so `transaction.atomic()`, savepoints, `on_commit` and `assertNumQueries` apply exactly as for the ORM. Use Django's `atomic()`.
 2. Get tables with `table_for(Model)`. Do not define `sa.Table(...)` by hand or call `metadata.create_all()`. The Django model and `makemigrations` own the schema. Column names are the database column names (`author_id` for a foreign key, the `db_column` when one is set).
 3. INSERT, UPDATE and DELETE run through the bridge bypass the model layer: `save()` and `delete()` are not called, `pre_save`/`post_save`/`pre_delete`/`post_delete` signals are not sent, and Django field `default` and `auto_now` are not filled. Give every value yourself (`None` too, for nullable columns). If code relies on signals, use the ORM.
 4. For a query run repeatedly, build the statement once with `sa.bindparam("name")` placeholders and reuse it: `execute(stmt, {"name": value})`. The compilation of a statement object is cached. A statement rebuilt with the values in it compiles on every call.
@@ -47,6 +47,11 @@ The same rows as a SQLAlchemy `Result` (`.mappings()`, `.scalars()`, `row.name`)
 stream(stmt, params=None, *, chunk_size=2000, using='default')
 ```
 A generator that fetches `chunk_size` rows at a time and yields tuples one by one. On PostgreSQL it uses a server-side cursor (the path `QuerySet.iterator()` takes). On MySQL the driver reads the whole result at `execute()`, as for `iterator()`, so there is no memory gain. On SQLite, MySQL and Oracle it is a plain cursor, as for `iterator()`. Opened inside `atomic()`, read it to the end inside the block. If you stop early, `close()` it or wrap it in `contextlib.closing()`. PostgreSQL does not take data-modifying CTEs on a server-side cursor; use `execute` for those.
+
+```
+copy_to(stmt, params=None, *, format='csv', header=True, using='default')
+```
+PostgreSQL with psycopg 3 only. A generator of `bytes`: runs `COPY (<compiled stmt>) TO STDOUT WITH (FORMAT csv, HEADER …)` on the psycopg cursor under Django's and yields the bytes the server writes, in chunks of at least 64 KiB, without building Python rows. Use it for exports: `StreamingHttpResponse(copy_to(stmt), content_type="text/csv")` or `f.writelines(copy_to(stmt))`. `stmt` compiles and `params` convert as in `execute()` (psycopg writes them into the SQL, since `COPY` takes no parameters; this works with `server_side_binding` too). `format` is `"csv"` (header line of the column names and labels unless `header=False`) or `"text"` (tab-separated; pass `header=False`, `header=True` raises `ValueError`). Values are PostgreSQL's text, not Django's conversion: `timestamptz` in the session time zone Django sets (UTC under `USE_TZ`, `+00` suffix), booleans `t`/`f`, `bytea` `\x…`, JSON as its text, NULL an empty CSV field (an empty string is `""`) or `\N` in text. DML (with or without `RETURNING`) raises `ValueError`; another backend or psycopg2 `NotSupportedError`, both before running. Nothing runs until the first chunk is asked for; the cursor closes when the bytes run out, on `close()`, or on an error. Opened inside `atomic()`, read it inside the block; closed early inside a transaction it reads and drops the rest (cancelling would abort the transaction), outside one it cancels the `COPY`. The `COPY` shows up in `connection.queries` but not in `connection.execute_wrapper()`.
 
 ```
 raw(model, stmt, params=None, *, using='default')

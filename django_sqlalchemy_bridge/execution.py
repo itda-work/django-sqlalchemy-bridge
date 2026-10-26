@@ -42,7 +42,7 @@ from sqlalchemy.sql.elements import ClauseList, ExpressionClauseList, Grouping
 from django_sqlalchemy_bridge import _sa_result
 from django_sqlalchemy_bridge.tables import FieldType, _db_name, _generic_type, _oracle_name
 
-__all__ = ["execute", "execute_pipeline", "execute_result", "raw", "stream"]
+__all__ = ["copy_to", "execute", "execute_pipeline", "execute_result", "raw", "stream"]
 
 Params = Mapping[str, Any]
 
@@ -843,5 +843,95 @@ def _stream(
             raise ValueError("statement returned no rows; use execute() for its rowcount")
         while rows := cursor.fetchmany(chunk_size):
             yield from from_db(rows, prepared.converters, connection)
+    finally:
+        cursor.close()
+
+
+# copy_to() gathers psycopg's COPY data, which comes a row at a time, into
+# chunks of at least this many bytes: a StreamingHttpResponse writes each chunk.
+COPY_CHUNK_BYTES = 64 * 1024
+
+
+def copy_to(
+    stmt: sa.sql.ClauseElement,
+    params: Params | None = None,
+    *,
+    format: str = "csv",
+    header: bool = True,
+    using: str = DEFAULT_DB_ALIAS,
+) -> Iterator[bytes]:
+    """Yield the rows of ``stmt`` as the CSV (or text) bytes PostgreSQL's ``COPY ... TO STDOUT`` writes.
+
+    The statement is compiled and ``params`` converted as in :func:`execute`,
+    then runs as ``COPY (<statement>) TO STDOUT`` on the psycopg 3 cursor under
+    Django's, so no row becomes a Python object: ``f.writelines(copy_to(...))``
+    or ``StreamingHttpResponse(copy_to(...), content_type="text/csv")``. The
+    bytes come in chunks of at least 64 KiB (the last may be shorter).
+
+    ``format`` is ``"csv"`` (with a header line of the column names unless
+    ``header=False``) or ``"text"`` (PostgreSQL's tab-separated format, no
+    header). The values are the server's text, not Django's: a ``timestamptz``
+    in the session time zone Django set (UTC under ``USE_TZ``), booleans ``t``
+    and ``f``, ``bytea`` as ``\\x...``, JSON as its text; NULL is an empty field
+    in CSV (an empty string is ``""``) and ``\\N`` in text.
+
+    Only statements that return rows: DML (``RETURNING`` or not) raises
+    ``ValueError``, and PostgreSQL with psycopg 3 only, else
+    ``NotSupportedError``, both before anything runs. As with :func:`stream`
+    nothing runs until the first chunk is asked for, and the cursor closes when
+    the bytes run out, the generator is closed, or an error ends it. Closed
+    early, the ``COPY`` is cancelled, unless a transaction is open: cancelling
+    would abort it, so the rest is read and dropped. The ``COPY`` shows up in
+    ``connection.queries`` but not in ``execute_wrapper()``.
+    """
+    if format not in ("csv", "text"):
+        raise ValueError(f"format must be 'csv' or 'text', got {format!r}")
+    if header and format != "csv":
+        raise ValueError("header=True needs format='csv'; pass header=False for the text format")
+    if isinstance(stmt, sa.sql.dml.UpdateBase):
+        raise ValueError("copy_to() takes a statement that selects rows (SELECT); use execute() for DML")
+    connection = connections[using]
+    if connection.vendor != "postgresql":
+        raise NotSupportedError(f"copy_to() needs PostgreSQL, not {connection.display_name}")
+    # psycopg2 has copy_expert() rather than psycopg 3's Cursor.copy().
+    if getattr(connection.Database, "Copy", None) is None:
+        raise NotSupportedError("copy_to() needs psycopg 3, not psycopg2")
+    prepared = _prepare_one(stmt, params, connection, "copy_to")
+    options = f"FORMAT {format}" + (f", HEADER {'true' if header else 'false'}" if format == "csv" else "")
+    return _copy_to(connection, prepared, options)
+
+
+def _copy_to(connection: BaseDatabaseWrapper, prepared: Prepared, options: str) -> Iterator[bytes]:
+    cursor = connection.cursor()
+    try:
+        # PostgreSQL takes no parameters in COPY; psycopg writes them into the
+        # SQL itself, but only when there are some, so "%%" would stay doubled
+        # without. A ClientCursor's mogrify() writes them as psycopg would, with
+        # the connection's adapters, and turns "%%" into "%" even with none.
+        query = connection.Database.ClientCursor(connection.connection).mogrify(prepared.sql, prepared.param_rows[0])
+        sql = f"COPY ({query}) TO STDOUT WITH ({options})"
+        # The psycopg cursor's copy() goes around Django's execute(): check the
+        # transaction, log the statement and wrap errors as execute() does (see bulk._copy).
+        connection.validate_no_broken_transaction()
+        logged = cursor.debug_sql(sql) if connection.queries_logged else contextlib.nullcontext()
+        with logged, connection.wrap_database_errors, cursor.cursor.copy(sql) as copy:
+            chunk: list[Any] = []
+            size = 0
+            try:
+                for data in copy:
+                    chunk.append(data)
+                    size += len(data)
+                    if size >= COPY_CHUNK_BYTES:
+                        yield b"".join(chunk)
+                        chunk, size = [], 0
+            except GeneratorExit:
+                # Leaving the block early, psycopg cancels the COPY, which in a
+                # transaction aborts it. There, read the rest instead.
+                if not connection.get_autocommit():
+                    for _ in copy:
+                        pass
+                raise
+            if chunk:
+                yield b"".join(chunk)
     finally:
         cursor.close()

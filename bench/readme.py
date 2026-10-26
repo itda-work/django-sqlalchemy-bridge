@@ -119,6 +119,13 @@ PIPELINE_ROWS = [
     ("execute_sequential_autocommit", "`execute()`를 문장마다 (트랜잭션 밖)"),
     ("execute_pipeline_autocommit", "`execute_pipeline()` (트랜잭션 밖, 자체 `atomic()`)"),
 ]
+EXPORT_ROWS = [
+    ("django_values_list_csv", "Django `values_list()` + `csv.writer`"),
+    ("django_iterator_csv", "Django `values_list().iterator(chunk_size=2000)` + `csv.writer`"),
+    ("bridge_execute_csv", "브리지 `execute()` + `csv.writer`"),
+    ("bridge_stream_csv", "브리지 `stream(chunk_size=2000)` + `csv.writer`"),
+    ("bridge_copy_to_csv", "브리지 `copy_to()` (COPY TO STDOUT)"),
+]
 RUNNING_ROWS = [
     ("django_window", "Django ORM `Window(Sum(...), partition_by=...)`"),
     ("bridge", "브리지 `func.sum().over(partition_by=...)`"),
@@ -270,6 +277,12 @@ TABLES: dict[str, dict] = {
         "rows": PIPELINE_ROWS,
         "metric": "ms",
     },
+    "pg-export": {
+        "file": _file("postgres", "export"),
+        "cases": _sizes(20_000, 200_000),
+        "rows": EXPORT_ROWS,
+        "metric": ["ms", "tracemalloc"],
+    },
     "pg-batch-insert": {
         "file": _file("postgres", "batch"),
         "cases": [("", {"op": "insert", "n": 1_000_000})],
@@ -419,6 +432,7 @@ def blocks(doc: Path = README) -> dict[str, str]:
             out[f"env-{db}"] = environment(db)
         out["env-postgres-batch"] = environment("postgres", "batch")
         out["env-postgres-insert"] = environment("postgres", "insert")
+        out["env-postgres-export"] = environment("postgres", "export")
     out["env-postgres-compare"] = environment("postgres", "compare")
     if doc == COMPARISONS:
         out["env-sqlite-compare"] = environment("sqlite", "compare")

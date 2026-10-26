@@ -1,0 +1,295 @@
+{
+ "scenario": "export",
+ "db": "postgres",
+ "date": "2026-10-26",
+ "quick": false,
+ "command": "python -m bench export --db postgres",
+ "method": {
+  "repeat": 5,
+  "warmup": 1,
+  "time": "perf_counter around the measured call; best_s = min(times_s)",
+  "memory": "tracemalloc peak of one extra run, minus what was traced at its start"
+ },
+ "environment": {
+  "revision": "12df72b",
+  "python": "3.12.3",
+  "packages": {
+   "django-sqlalchemy-bridge": "0.1.0",
+   "django": "6.1.2",
+   "sqlalchemy": "2.1.6",
+   "psycopg": "3.3.6",
+   "psycopg-binary": "3.3.6",
+   "django-pgbulk": "3.3.0",
+   "django-cte": "4.0.0",
+   "asgiref": "3.13.0"
+  },
+  "python_sqlite3": "3.45.1",
+  "database": {
+   "vendor": "postgresql",
+   "server": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2)"
+  },
+  "ci_run": "https://github.com/itda-work/django-sqlalchemy-bridge/actions/runs/40350591123",
+  "machine": {
+   "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+   "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+   "cpu_count": 4,
+   "memory_bytes": 16765374464
+  }
+ },
+ "elapsed_s": 46.4,
+ "load_average": {
+  "before": [
+   0.4560546875,
+   0.1669921875,
+   0.05908203125
+  ],
+  "after": [
+   0.8759765625,
+   0.32958984375,
+   0.12060546875
+  ]
+ },
+ "scope": "Timed: reading every row and writing the CSV (header included) into an in-memory buffer, returned as bytes. No transaction. tracemalloc includes the output buffer.",
+ "cases": [
+  {
+   "n": 20000,
+   "variants": {
+    "django_values_list_csv": {
+     "note": "csv.writer over values_list(...)",
+     "warmup_s": [
+      0.07158000100000095
+     ],
+     "times_s": [
+      0.07060930400000132,
+      0.07302536299999929,
+      0.07549877699999286,
+      0.07560388299999943,
+      0.07316455599999472
+     ],
+     "best_s": 0.07060930400000132,
+     "median_s": 0.07316455599999472,
+     "prepare_s": [
+      7.379999971135476e-07,
+      7.419999974445091e-07,
+      6.989999974393868e-07,
+      9.980000044151893e-07,
+      9.999999974752427e-07
+     ],
+     "tracemalloc_peak_bytes": 11527863
+    },
+    "django_iterator_csv": {
+     "note": "csv.writer over values_list(...).iterator(chunk_size=2000)",
+     "warmup_s": [
+      0.08036495199999649
+     ],
+     "times_s": [
+      0.07926399200000844,
+      0.07970850700000653,
+      0.08018987399999844,
+      0.07938851300001204,
+      0.08510406999999987
+     ],
+     "best_s": 0.07926399200000844,
+     "median_s": 0.07970850700000653,
+     "prepare_s": [
+      4.509999911306295e-07,
+      8.989999997766063e-07,
+      6.900000073528645e-07,
+      8.869999987837218e-07,
+      8.180000037327773e-07
+     ],
+     "tracemalloc_peak_bytes": 4331610
+    },
+    "bridge_execute_csv": {
+     "note": "csv.writer over execute(select(...))",
+     "warmup_s": [
+      0.07313177000000337
+     ],
+     "times_s": [
+      0.07037357500000496,
+      0.07062042100000099,
+      0.07354664999999727,
+      0.07422682800000757,
+      0.07187255600000242
+     ],
+     "best_s": 0.07037357500000496,
+     "median_s": 0.07187255600000242,
+     "prepare_s": [
+      5.419999951072896e-07,
+      8.760000014262914e-07,
+      6.540000043742111e-07,
+      7.809999971186699e-07,
+      1.2779999991607838e-06
+     ],
+     "tracemalloc_peak_bytes": 11516667
+    },
+    "bridge_stream_csv": {
+     "note": "csv.writer over stream(select(...), chunk_size=2000)",
+     "warmup_s": [
+      0.07950818799999126
+     ],
+     "times_s": [
+      0.08260206200000653,
+      0.08908311099999366,
+      0.07395009600000435,
+      0.0744294170000046,
+      0.07647850400000777
+     ],
+     "best_s": 0.07395009600000435,
+     "median_s": 0.07647850400000777,
+     "prepare_s": [
+      5.060000063394909e-07,
+      8.799999875463982e-07,
+      7.550000020728476e-07,
+      5.659999970930585e-07,
+      8.069999921644921e-07
+     ],
+     "tracemalloc_peak_bytes": 4330011
+    },
+    "bridge_copy_to_csv": {
+     "note": "BytesIO().writelines(copy_to(select(...)))",
+     "warmup_s": [
+      0.023389312000006157
+     ],
+     "times_s": [
+      0.02329147300000045,
+      0.02208284200000321,
+      0.022685105000007866,
+      0.022836345000001756,
+      0.023372975000000906
+     ],
+     "best_s": 0.02208284200000321,
+     "median_s": 0.022836345000001756,
+     "prepare_s": [
+      6.159999941246497e-07,
+      5.489999921337585e-07,
+      5.849999951124119e-07,
+      5.96000006680697e-07,
+      4.73000000056345e-07
+     ],
+     "tracemalloc_peak_bytes": 1671498
+    }
+   }
+  },
+  {
+   "n": 200000,
+   "variants": {
+    "django_values_list_csv": {
+     "note": "csv.writer over values_list(...)",
+     "warmup_s": [
+      0.7493354929999896
+     ],
+     "times_s": [
+      0.7618255830000038,
+      0.7711406239999974,
+      0.7553550290000004,
+      0.7546528729999977,
+      0.7635858919999947
+     ],
+     "best_s": 0.7546528729999977,
+     "median_s": 0.7618255830000038,
+     "prepare_s": [
+      1.6420000008565694e-06,
+      1.7650000074809213e-06,
+      1.5329999882851553e-06,
+      1.631000003499139e-06,
+      1.1529999994763784e-06
+     ],
+     "tracemalloc_peak_bytes": 115714068
+    },
+    "django_iterator_csv": {
+     "note": "csv.writer over values_list(...).iterator(chunk_size=2000)",
+     "warmup_s": [
+      0.798564393999996
+     ],
+     "times_s": [
+      0.8125736849999896,
+      0.7808496239999982,
+      0.7766348239999985,
+      0.7840871550000088,
+      0.7911165200000028
+     ],
+     "best_s": 0.7766348239999985,
+     "median_s": 0.7840871550000088,
+     "prepare_s": [
+      9.60999997801082e-07,
+      1.6569999985449613e-06,
+      1.0659999958306798e-06,
+      1.147999995509963e-06,
+      1.0880000047563954e-06
+     ],
+     "tracemalloc_peak_bytes": 41919801
+    },
+    "bridge_execute_csv": {
+     "note": "csv.writer over execute(select(...))",
+     "warmup_s": [
+      0.7402396110000069
+     ],
+     "times_s": [
+      0.7508093950000045,
+      0.7716244110000048,
+      0.757978792000003,
+      0.7722726969999911,
+      0.7614695520000225
+     ],
+     "best_s": 0.7508093950000045,
+     "median_s": 0.7614695520000225,
+     "prepare_s": [
+      1.2910000037891223e-06,
+      1.6079999909379694e-06,
+      1.5829999995276012e-06,
+      1.3410000008207135e-06,
+      1.8890000035298726e-06
+     ],
+     "tracemalloc_peak_bytes": 115702888
+    },
+    "bridge_stream_csv": {
+     "note": "csv.writer over stream(select(...), chunk_size=2000)",
+     "warmup_s": [
+      0.7950550220000139
+     ],
+     "times_s": [
+      0.7820349100000215,
+      0.7671129539999981,
+      0.7663937199999964,
+      0.7851310970000043,
+      0.776928923999975
+     ],
+     "best_s": 0.7663937199999964,
+     "median_s": 0.776928923999975,
+     "prepare_s": [
+      1.343999997516221e-06,
+      9.400000067216752e-07,
+      1.1999999856016075e-06,
+      1.034999996818442e-06,
+      1.319999995530452e-06
+     ],
+     "tracemalloc_peak_bytes": 41916297
+    },
+    "bridge_copy_to_csv": {
+     "note": "BytesIO().writelines(copy_to(select(...)))",
+     "warmup_s": [
+      0.25011069099997485
+     ],
+     "times_s": [
+      0.24995979199999852,
+      0.24653460100000757,
+      0.2465447440000048,
+      0.24171277800002144,
+      0.23650207299999693
+     ],
+     "best_s": 0.23650207299999693,
+     "median_s": 0.24653460100000757,
+     "prepare_s": [
+      1.0680000173124427e-06,
+      9.25000023244138e-07,
+      9.910000073887204e-07,
+      7.11000012643126e-07,
+      9.770000133357826e-07
+     ],
+     "tracemalloc_peak_bytes": 12883910
+    }
+   }
+  }
+ ]
+}

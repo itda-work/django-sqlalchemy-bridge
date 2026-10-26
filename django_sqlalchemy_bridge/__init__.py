@@ -13,7 +13,14 @@ from importlib.metadata import PackageNotFoundError, version
 
 from django_sqlalchemy_bridge.asynchronous import arun
 from django_sqlalchemy_bridge.bulk import bulk_insert, bulk_update
-from django_sqlalchemy_bridge.execution import execute, execute_pipeline, execute_result, raw, stream
+from django_sqlalchemy_bridge.execution import (
+    copy_to,
+    execute,
+    execute_pipeline,
+    execute_result,
+    raw,
+    stream,
+)
 from django_sqlalchemy_bridge.tables import (
     Difference,
     FieldType,
@@ -40,6 +47,7 @@ __all__ = [
     "bulk_insert",
     "bulk_update",
     "compare_table",
+    "copy_to",
     "execute",
     "execute_pipeline",
     "execute_result",

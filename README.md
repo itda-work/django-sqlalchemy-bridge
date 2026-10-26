@@ -486,6 +486,28 @@ results = execute_pipeline(
 - **한 항목이 실패하면** 그 항목의 DB 에러(Django 의 `IntegrityError` 등)가 그대로 나고, 에러의 note(`e.__notes__`, 트레이스백 끝에 보임)에 `execute_pipeline(): item 2 failed`처럼 몇 번째 항목인지 적힙니다. psycopg 가 실패 뒤 문장에 내는 `PipelineAborted`는 드러나지 않습니다. 뒤 항목은 효과가 없습니다. PostgreSQL 은 이미 보낸 문장을 서버가 건너뛰고(그래서 `execute_wrapper`에는 보인 문장으로 잡힙니다), 하나씩 실행하는 백엔드는 보내지 않습니다. `atomic()` 안이면 블록이 롤백됩니다.
 - 결과 하나짜리 `Result`(`execute_result`)판, `stream`의 파이프라인화, 결과 지연 읽기는 없습니다. async 코드에서는 다른 API 처럼 `SynchronousOnlyOperation`이니 `arun`으로 감싸세요.
 
+### CSV 로 내보내기: `copy_to` (PostgreSQL)
+
+```python
+from django.http import StreamingHttpResponse
+from django_sqlalchemy_bridge import copy_to
+
+paid = sa.select(orders.c.id, orders.c.status, orders.c.paid_at).where(orders.c.status == sa.bindparam("s"))
+response = StreamingHttpResponse(copy_to(paid, {"s": "paid"}), content_type="text/csv")
+
+with open("orders.csv", "wb") as f:
+    f.writelines(copy_to(paid, {"s": "paid"}))
+```
+
+- `copy_to(stmt, params=None, *, format="csv", header=True, using="default")`는 `COPY (<컴파일한 문장>) TO STDOUT WITH (FORMAT csv, HEADER …)`를 Django 커서 아래 psycopg 커서(`cursor.cursor.copy()`)로 실행하고 **서버가 쓴 바이트를 그대로** 내주는 제너레이터입니다. 행을 파이썬 객체로 만들지 않습니다. psycopg 는 COPY 데이터를 행 하나씩 주므로 브리지가 64 KiB 이상씩 모아 내줍니다(마지막 덩어리만 더 작을 수 있음). `StreamingHttpResponse`는 덩어리마다 한 번 쓰기 때문입니다.
+- **값은 서버의 텍스트 표현입니다(Django 필드 변환 없음).** `timestamptz`는 Django 가 연결에 설정한 세션 시간대(`USE_TZ`면 UTC, `+00` 접미), boolean 은 `t`/`f`, numeric 은 그대로(`12.500`), jsonb 는 JSON 텍스트, bytea 는 `\x…`입니다. NULL 은 csv 에서 빈 칸, 빈 문자열은 `""`, text 포맷에서는 `\N`입니다. 쉼표·따옴표·개행·탭의 따옴표 처리와 이스케이프는 서버가 합니다(테스트로 고정).
+- `format`은 `"csv"`(헤더 줄은 `header=True`가 기본, 컬럼 이름이나 `label()`)와 `"text"`(탭 구분, PostgreSQL 기본 COPY 포맷)입니다. text 포맷은 헤더를 받지 않아 `header=False`를 함께 줘야 하고, `header=True`면 `ValueError`입니다.
+- `stmt`·`params`는 `execute`처럼 컴파일·변환합니다(컬럼과 비교하는 값은 ORM 조회처럼, 컴파일 캐시도 탐). PostgreSQL 의 COPY 는 프로토콜 파라미터를 받지 않으므로 브리지는 psycopg `ClientCursor.mogrify()`로 값을 SQL 리터럴로 쓴 뒤 파라미터 없이 COPY 합니다. psycopg 의 어댑터로 쓰므로 bytea·jsonb·UUID 도 그대로이고, Django `OPTIONS["server_side_binding"]`(psycopg `ServerBindingCursor`)에서도 같습니다. 파라미터가 없어도 거치므로 리터럴 `%`는 `execute`처럼 그대로 씁니다.
+- 행을 고르는 문장(`select()`·복합 SELECT·`sa.text()`)만 받습니다. `insert`·`update`·`delete`는 `RETURNING`이 있어도 실행 전 `ValueError`, 매핑의 시퀀스는 `TypeError`입니다. PostgreSQL 이 아니거나 psycopg2 면 실행 전 `NotSupportedError`입니다.
+- **`stream`과 같은 계약.** 첫 덩어리를 요청할 때 실행되고, 바이트가 끝나거나 `close()`하거나 예외로 끝나면 커서를 닫습니다. `atomic()` 안에서 열었으면 블록 안에서 끝까지 읽으세요. 일찍 `close()`하면 트랜잭션 밖(autocommit)에서는 psycopg 가 COPY 를 취소하고, **트랜잭션 안에서는 남은 데이터를 읽어 버립니다.** 취소하면 그 트랜잭션이 깨지기 때문입니다(결과가 클 때 `current transaction is aborted`, 테스트로 고정). 그래서 큰 내보내기를 트랜잭션 안에서 중간에 멈추면 나머지를 받는 시간만큼 걸립니다.
+- 쿼리 기록은 `bulk_insert(method="copy")`와 같습니다. 디버그 기록이 켜져 있으면 값을 넣은 `COPY (…) TO STDOUT …` 문장 한 건이 `connection.queries`에 남고(시간은 바이트를 다 내준 뒤까지), **`execute_wrapper()`에는 보이지 않습니다.** 에러는 Django 예외(`ProgrammingError` 등)로 올라오고, 깨진 트랜잭션에서는 `execute`처럼 `TransactionManagementError`입니다.
+- **언제 쓰나**: 많은 행을 그대로 파일·HTTP 로 내보낼 때. 200,000행(컬럼 7개)을 CSV 로 쓰는 데 `stream()` + `csv.writer` 766 ms 대 237 ms, tracemalloc 피크 40.0 MiB 대 12.3 MiB 였습니다(아래 "성능과 메모리" 9). 파이썬 값이 필요하거나 Django 식 표현(aware datetime 의 `+09:00`, `True`)이 필요하면 `stream`으로 읽어 `csv.writer`로 쓰세요(아래 "성능과 메모리" 9).
+
 ### 대량 쓰기: `bulk_update`, `bulk_insert`
 
 ```python
@@ -548,6 +570,7 @@ bulk_insert(orders, rows, method="copy")
   - `sum()`·`avg()`처럼 정밀도가 없는 숫자를 Django 의 Oracle 커서는 텍스트에 소수점이 있는지로 `int`나 `Decimal`로 줍니다. 브리지는 ORM 처럼(`BaseExpression.convert_value`) 컬럼 필드의 타입으로 맞춥니다(`DecimalField`의 합은 `Decimal`).
   - `SELECT` 목록의 불리언 식(`(price > 2).label("gt")`, `sa.exists()`)은 Oracle 23ai 부터 됩니다. 19c 는 확인하지 않았습니다(아래 "지원 대상").
 - **`bulk_insert(method="copy")`는 `execute_wrapper()`에 보이지 않습니다.** psycopg 의 `Cursor.copy()`는 Django 커서의 `execute()`를 거치지 않기 때문입니다. `connection.queries`에는 배치마다 한 건씩 남깁니다(위 "대량 쓰기"). PostgreSQL + psycopg 3 전용이고, 다른 연결에서는 실행 전 `NotSupportedError`입니다.
+- **`copy_to`는 PostgreSQL + psycopg 3 전용이고 `execute_wrapper()`에 보이지 않습니다.** 값은 Django 변환이 아닌 서버의 텍스트 표현이고, 트랜잭션 안에서 일찍 `close()`하면 남은 데이터를 다 받습니다(위 "CSV 로 내보내기").
 - **`bulk_insert(returning=...)`의 행 순서는 DB 가 문서로 보장하지 않습니다.** PostgreSQL·SQLite 모두 지금은 입력 순서로 돌려주고 Django `bulk_create`도 같은 가정에 기대지만, 순서가 중요하면 행을 식별할 키(자연 키, `uid` 등)를 함께 `RETURNING`해서 그 값으로 짝지으세요. 예: `bulk_insert(books, rows, returning=["uid", "id"])`.
 
 ## 비동기
@@ -916,6 +939,28 @@ SQLite 에서는 차이가 작습니다. 시간은 3% 안, tracemalloc 피크는
 - 5,000번에서는 1.6배로 줄었습니다. CI 러너에서는 5,000번이 1,000번의 약 9.5배였으나 로컬(PG 컨테이너)에서는 문장 수에 비례했습니다. 러너의 특성으로 보이며 원인은 재지 않았습니다.
 - 대시보드처럼 문장마다 서버 실행(20,000행 집계)이 시간 대부분이면 차이가 작습니다(약 8%). 파이프라인은 서버에서 문장을 동시에 실행하지 않습니다.
 - 트랜잭션 밖에서는 `execute_pipeline()`이 자체 `atomic()`을 열어 `COMMIT` 왕복이 하나 늘지만, 표에서 차이가 보이지 않을 만큼 작습니다.
+
+### 9. CSV 내보내기: `copy_to()` 대 행 읽기 + `csv.writer` (PostgreSQL, 컬럼 7개)
+
+표 전체(헤더 포함)를 메모리 버퍼에 CSV 바이트로 씁니다. `copy_to()`는 서버가 쓴 바이트를 모으고, 나머지는 행을 읽어 `csv.writer`로 씁니다. 출력 텍스트는 세부가 다릅니다(서버는 `t`/`f`·`+00`, `csv.writer`는 파이썬 `str()`). tracemalloc 에는 출력 버퍼(20,000행에 약 1.3 MB)도 들어갑니다. 위 환경과 다른 실행(다른 러너 CPU)에서 쟀습니다.
+
+<!-- bench:env-postgres-export -->
+PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQLAlchemy 2.1.6 · psycopg 3.3.6 · django-pgbulk 3.3.0 · django-cte 4.0.0 · INTEL(R) XEON(R) PLATINUM 8573C (4코어, 메모리 16 GiB) · Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 · 반복 5회(+예열 1회) 중 최솟값
+<!-- /bench:env-postgres-export -->
+
+<!-- bench:pg-export -->
+| | 20,000행 시간 (ms) | 20,000행 tracemalloc 피크 (MiB) | 200,000행 시간 (ms) | 200,000행 tracemalloc 피크 (MiB) |
+|---|---:|---:|---:|---:|
+| Django `values_list()` + `csv.writer` | 70.6 | 11.0 | 755 | 110.4 |
+| Django `values_list().iterator(chunk_size=2000)` + `csv.writer` | 79.3 | 4.1 | 777 | 40.0 |
+| 브리지 `execute()` + `csv.writer` | 70.4 | 11.0 | 751 | 110.3 |
+| 브리지 `stream(chunk_size=2000)` + `csv.writer` | 74.0 | 4.1 | 766 | 40.0 |
+| 브리지 `copy_to()` (COPY TO STDOUT) | 22.1 | 1.6 | 237 | 12.3 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-export.json`](bench/results/2026-10-26-postgres-export.json)</sub>
+<!-- /bench:pg-export -->
+
+`copy_to()`는 200,000행에서 237 ms 로 `execute()`·`stream()` + `csv.writer`(751·766 ms)의 3분의 1 이하였습니다. 파이썬 행을 만들지 않아 tracemalloc 피크는 출력 버퍼 수준(12.3 MiB, `stream()` + `csv.writer`는 40.0 MiB)입니다. 행을 쥐는 `execute()`·`values_list()`는 110 MiB 입니다.
 
 ### 브리지가 도움이 안 되는 경우
 
