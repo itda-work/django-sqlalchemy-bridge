@@ -33,7 +33,7 @@ import sqlalchemy as sa
 from django.db import DEFAULT_DB_ALIAS, NotSupportedError, connections, models, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
 
-from django_sqlalchemy_bridge.execution import _field_converters, check_returning, dialect_for, from_db, lookup_value
+from django_sqlalchemy_bridge.execution import _result_converters, check_returning, dialect_for, from_db, lookup_value
 from django_sqlalchemy_bridge.tables import FieldType, table_for
 
 __all__ = ["bulk_insert", "bulk_update"]
@@ -372,4 +372,4 @@ def _unnest(columns: list[sa.Column], connection: BaseDatabaseWrapper) -> str:
 def _convert(
     rows: Sequence[Sequence[Any]], columns: list[sa.Column], connection: BaseDatabaseWrapper
 ) -> list[tuple[Any, ...]]:
-    return from_db(rows, [_field_converters(c.type, connection) for c in columns], connection)
+    return from_db(rows, _result_converters([c.type for c in columns], connection), connection)

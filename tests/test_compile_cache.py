@@ -1,9 +1,9 @@
 """Compiled statements are reused when the same statement object runs again (#28).
 
 The cache is keyed by the statement object the caller passed, the database
-vendor and the params' names. What depends on the connection (result
-converters, the RETURNING check) is worked out on every call, so it never
-leaks from one alias to another.
+vendor and the params' names. What depends on the connection is never shared
+between aliases: the RETURNING check is made on every call, and the result
+converters are kept per connection object (tests/test_converter_cache.py).
 """
 
 import datetime

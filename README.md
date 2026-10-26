@@ -412,7 +412,7 @@ for row in result.mappings():
   MySQL 은 JSON 값과 문자열을 비교하면 문자열을 JSON 문자열로 보므로(`'1'`이 `{"k": "1"}`에 맞음), 브리지는 ORM 처럼 JSON 컬럼에 묶는 값을 `JSON_EXTRACT(%s, '$')`로 감싸 JSON 문서로 읽힙니다(INSERT·UPDATE 로 넣는 값도 같은 문서로 저장됩니다). `contains`·`has_key`는 MySQL 에 없는 연산자라 실행 시 `ProgrammingError`이고, `astext`는 MySQL 의 `->>`(`JSON_UNQUOTE(JSON_EXTRACT(...))`)라 `{"k": 1}`과 `{"k": "1"}` 모두 텍스트 `'1'`입니다(ORM `KT()` 필터는 MySQL 에서 우변을 JSON 으로 감싸 텍스트와 맞지 않으니 결과를 대조하지 마세요).
 
   Oracle 에서 Django 는 `JSONField`를 `NCLOB`(`IS JSON`)으로 저장하는데, Oracle 은 `NCLOB`을 `=`로 비교하지 못하고(`ORA-22848`) 키는 `JSON_QUERY()` 텍스트라 `[1,2]`가 Django 가 쓴 `[1, 2]`와 맞지 않습니다. 그래서 브리지는 JSON 끼리의 `==`·`!=`를 `JSON_EQUAL()`로 컴파일합니다. 문서 전체 비교(`meta == {...}`)는 ORM 과 같습니다. 키 비교는 JSON 값으로 비교해 `meta["k"] == 1`이 `{"k": "1"}`에 맞지 않습니다(PostgreSQL·MySQL 과 같음). Oracle 의 ORM 은 키를 `JSON_VALUE()` 텍스트로 비교해 `1`과 `"1"`이 서로 맞으니 결과를 대조하지 마세요. `meta["k"].in_([...])`는 JSON 텍스트 비교라 구조 값이 맞지 않습니다(SQLite 와 같음). `as_string()`·`as_integer()` 등은 SQLAlchemy 가 `JSON_VALUE(... ERROR ON ERROR)`로 컴파일해 키가 없는 행 하나에 문장 전체가 실패하므로, 브리지는 `ERROR ON ERROR`를 떼어 다른 DB 처럼 `NULL`을 받게 합니다. `contains`·`has_key`는 Oracle 에 없는 연산자입니다. SQLAlchemy 2.0 의 Oracle dialect 는 JSON 키·경로를 컴파일하지 못해 실행 전 `sqlalchemy.exc.UnsupportedCompilationError`입니다(문서 전체 비교는 됩니다). JSON 키·경로를 Oracle 에서 쓰려면 SQLAlchemy 2.1 을 쓰세요.
-- **컴파일 캐시: `bindparam()`으로 만든 문장을 재사용하면 컴파일을 건너뜁니다.** 브리지는 넘겨받은 문장 객체마다 컴파일 결과를 기억해, 같은 객체를 같은 DB 종류(vendor)에서 같은 이름의 `params`로 다시 실행하면 컴파일 없이 값 변환과 실행만 합니다(`execute`·`execute_result`·`stream` 공통). 그러니 값은 `sa.bindparam("pk")`로 비워 둔 문장을 한 번 만들어 두고(모듈 수준 등) 돌려 쓰세요. `where(orders.c.id == pk)`처럼 값을 넣어 매번 새로 만든 문장은 매번 컴파일합니다(아래 "성능과 메모리" 4번). `params` 이름이 달라지면(예: UPDATE 의 `SET` 컬럼) SQL 이 달라지므로 따로 컴파일합니다. 결과 변환기와 `RETURNING` 지원 검사는 연결(alias)마다 다를 수 있어 매 호출 그 연결로 다시 정합니다. 기억한 결과는 문장 객체가 사라지면 함께 사라지고, 여러 스레드가 같은 문장을 써도 됩니다. 끄는 스위치는 없습니다(결과가 캐시 여부와 무관하므로).
+- **컴파일 캐시: `bindparam()`으로 만든 문장을 재사용하면 컴파일을 건너뜁니다.** 브리지는 넘겨받은 문장 객체마다 컴파일 결과를 기억해, 같은 객체를 같은 DB 종류(vendor)에서 같은 이름의 `params`로 다시 실행하면 컴파일 없이 값 변환과 실행만 합니다(`execute`·`execute_result`·`stream` 공통). 그러니 값은 `sa.bindparam("pk")`로 비워 둔 문장을 한 번 만들어 두고(모듈 수준 등) 돌려 쓰세요. `where(orders.c.id == pk)`처럼 값을 넣어 매번 새로 만든 문장은 매번 컴파일합니다(아래 "성능과 메모리" 4번). `params` 이름이 달라지면(예: UPDATE 의 `SET` 컬럼) SQL 이 달라지므로 따로 컴파일합니다. `RETURNING` 지원 검사는 연결(alias)마다 다를 수 있어 매 호출 그 연결로 다시 정하고, 결과 변환기는 연결 객체(`connections[alias]`, 스레드마다 하나)에 컬럼 타입별로 한 번 찾아 둡니다. 기억한 결과는 문장 객체가 사라지면 함께 사라지고, 여러 스레드가 같은 문장을 써도 됩니다. 끄는 스위치는 없습니다(결과가 캐시 여부와 무관하므로).
 - 리터럴 `%`는 그대로 써도 됩니다(`LIKE 'a%'`, `text("SELECT '100%'")`). 브리지가 `%s` 자리표시로 컴파일하고 `%`를 `%%`로 바꾼 뒤, 파라미터가 없어도 빈 튜플을 넘겨 백엔드가 되돌리게 합니다(MySQL 의 mysqlclient 도 같은 format paramstyle 입니다). `sa.text()`는 그 DB 의 SQL 그대로라, MySQL 기본 `sql_mode`에서는 문자열 리터럴의 백슬래시가 이스케이프입니다(`ESCAPE '\\'`로 써야 백슬래시 하나).
 - async 코드에서 직접 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. 작업 단위를 동기 함수로 묶어 `arun`으로 부르세요(아래 "비동기").
 - 모델 인스턴스가 필요하면 `raw(Model, stmt)`가 Django `RawQuerySet`을 줍니다(아래 "모델 인스턴스로 읽기").
@@ -743,15 +743,15 @@ PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQL
 <!-- bench:pg-lookup -->
 | | 시간 (ms) | 호출당 (µs) |
 |---|---:|---:|
-| Django 커서에 SQL 직접 | 488 | 97.5 |
-| Django `objects.get(pk=...)` | 1,316 | 263 |
-| Django `values_list(...).get(pk=...)` | 1,415 | 283 |
-| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 550 | 110 |
-| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 833 | 167 |
-| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 749 | 150 |
-| 브리지 `execute()`, 매번 문장 생성 | 1,573 | 315 |
-| (참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음 | 50.7 | 10.1 |
-| (참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만 | 471 | 94.3 |
+| Django 커서에 SQL 직접 | 877 | 175 |
+| Django `objects.get(pk=...)` | 1,844 | 369 |
+| Django `values_list(...).get(pk=...)` | 2,045 | 409 |
+| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 902 | 180 |
+| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 1,300 | 260 |
+| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 1,188 | 238 |
+| 브리지 `execute()`, 매번 문장 생성 | 2,253 | 451 |
+| (참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음 | 33.2 | 6.65 |
+| (참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만 | 878 | 176 |
 
 <sub>결과 파일: [`bench/results/2026-10-26-postgres-lookup.json`](bench/results/2026-10-26-postgres-lookup.json)</sub>
 <!-- /bench:pg-lookup -->
@@ -759,23 +759,23 @@ PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQL
 <!-- bench:sqlite-lookup -->
 | | 시간 (ms) | 호출당 (µs) |
 |---|---:|---:|
-| Django 커서에 SQL 직접 | 28.0 | 5.60 |
-| Django `objects.get(pk=...)` | 501 | 100 |
-| Django `values_list(...).get(pk=...)` | 620 | 124 |
-| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 78.9 | 15.8 |
-| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 249 | 49.9 |
-| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 118 | 23.6 |
-| 브리지 `execute()`, 매번 문장 생성 | 666 | 133 |
-| (참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음 | 62.5 | 12.5 |
-| (참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만 | 45.6 | 9.12 |
+| Django 커서에 SQL 직접 | 41.9 | 8.37 |
+| Django `objects.get(pk=...)` | 672 | 134 |
+| Django `values_list(...).get(pk=...)` | 837 | 167 |
+| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 119 | 23.8 |
+| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 322 | 64.4 |
+| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 127 | 25.3 |
+| 브리지 `execute()`, 매번 문장 생성 | 895 | 179 |
+| (참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음 | 33.0 | 6.60 |
+| (참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만 | 67.2 | 13.4 |
 
 <sub>결과 파일: [`bench/results/2026-10-26-sqlite-lookup.json`](bench/results/2026-10-26-sqlite-lookup.json)</sub>
 <!-- /bench:sqlite-lookup -->
 
-- 이 표는 위 환경 줄과 다른 실행(결과 파일의 `ci_run`)에서 같은 종류의 러너로 다시 잰 값입니다(#28 컴파일 캐시 반영).
-- 브리지는 **같은 문장 객체를 다시 실행하면 컴파일을 건너뜁니다**(위 "실행하기"의 컴파일 캐시). `bindparam`으로 한 번 만든 문장은 첫 호출에만 컴파일하고, 매번 새로 만든 문장은 매번 컴파일합니다. 두 행의 차이(PostgreSQL 약 165µs, SQLite 약 110µs)가 호출당 컴파일 비용입니다. 문장을 한 번 만들어 `bindparam`으로 재사용하세요.
-- "(참고) `prepare()`만" 행은 캐시 적중 뒤 남는 브리지 쪽 일(파라미터 변환, 결과 변환기 찾기)이고 호출당 약 10~13µs 입니다. "(참고) `prepare()` 1회" 행은 그것마저 한 번만 하고 커서 하나로 실행·변환만 한 값으로, 공개 API 가 아닙니다. 브리지 `execute()`는 호출마다 Django 커서를 새로 엽니다(Django `objects.get()`도 마찬가지). PostgreSQL 에서 `execute()`가 두 참고 행의 합보다 느린 몫은 그 때문으로 보이지만 따로 재지는 않았습니다.
-- PostgreSQL 에서 `bindparam` 재사용 브리지(호출당 150µs)는 Django `objects.get()`(263µs)보다 빠르고, SQLAlchemy 단독 엔진(110µs)과의 차이는 40µs 입니다. SQLite 에서는 23.6µs 로 SQLAlchemy 단독(15.8µs)과 같은 자릿수이고 Django ORM 조회(100µs 이상)보다 4배 남짓 빠릅니다.
+- 이 표는 위 환경 줄과 다른 실행(결과 파일의 `ci_run`, 러너 CPU AMD EPYC 9V74)에서 다시 잰 값입니다(#28 컴파일 캐시, #60 결과 변환기 캐시 반영). 러너 CPU 가 달라 절대값을 위 표들과 견주지 마세요.
+- 브리지는 **같은 문장 객체를 다시 실행하면 컴파일을 건너뜁니다**(위 "실행하기"의 컴파일 캐시). `bindparam`으로 한 번 만든 문장은 첫 호출에만 컴파일하고, 매번 새로 만든 문장은 매번 컴파일합니다. 두 행의 차이(PostgreSQL 약 210µs, SQLite 약 150µs)가 호출당 컴파일 비용입니다. 문장을 한 번 만들어 `bindparam`으로 재사용하세요.
+- "(참고) `prepare()`만" 행은 캐시 적중 뒤 남는 브리지 쪽 일(파라미터 변환, 연결 객체에 둔 결과 변환기 꺼내기)이고 호출당 약 6.6µs 입니다. "(참고) `prepare()` 1회" 행은 그것마저 한 번만 하고 커서 하나로 실행·변환만 한 값으로, 공개 API 가 아닙니다. 브리지 `execute()`는 호출마다 Django 커서를 새로 엽니다(Django `objects.get()`도 마찬가지). PostgreSQL 에서 `execute()`가 두 참고 행의 합보다 느린 몫은 그 때문으로 보이지만 따로 재지는 않았습니다.
+- PostgreSQL 에서 `bindparam` 재사용 브리지(호출당 238µs)는 Django `objects.get()`(369µs)보다 빠르고, SQLAlchemy 단독 엔진(180µs)과의 차이는 58µs 입니다. SQLite 에서는 25.3µs 로 SQLAlchemy 단독(23.8µs)과 같은 자릿수이고 Django ORM 조회(134µs 이상)보다 5배 남짓 빠릅니다.
 
 ### 5. 비동기 (PostgreSQL, PK 조회)
 
