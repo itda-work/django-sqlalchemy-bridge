@@ -39,6 +39,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: dsb
+          MYSQL_DATABASE: dsb
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pdsb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       REQUIRE_PG: "1"
       DSB_PG_HOST: localhost
@@ -46,12 +58,20 @@ jobs:
       DSB_PG_USER: dsb
       DSB_PG_PASSWORD: dsb
       DSB_PG_NAME: dsb
+      # 127.0.0.1, not localhost: mysqlclient takes "localhost" for the Unix socket.
+      DSB_MYSQL_HOST: 127.0.0.1
+      DSB_MYSQL_PORT: "3306"
+      DSB_MYSQL_USER: root
+      DSB_MYSQL_PASSWORD: dsb
+      DSB_MYSQL_NAME: dsb
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: ${{ matrix.python }}
-      - run: uv sync --locked
+      # mysqlclient (the "mysql" group) builds against the MySQL client library.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libmysqlclient-dev pkg-config
+      - run: uv sync --locked --group mysql
       # The lock holds one version of each; the matrix overrides them in the synced venv.
       - run: uv pip install "django~=${{ matrix.django }}.0" "sqlalchemy~=${{ matrix.sqlalchemy }}.0"
       - run: uv run --no-sync python -c "import django, sqlalchemy; print('django', django.__version__, 'sqlalchemy', sqlalchemy.__version__)"
@@ -63,3 +83,8 @@ jobs:
         run: uv run --no-sync pytest
         env:
           DSB_DB: postgres
+      - name: pytest (MySQL)
+        run: uv run --no-sync pytest
+        env:
+          DSB_DB: mysql
+          REQUIRE_MYSQL: "1"

@@ -493,8 +493,8 @@ DB_TYPE_DRIFT = {
 @pytest.mark.django_db
 @pytest.mark.parametrize("case", DB_TYPE_DRIFT)
 def test_drift_against_the_database_detects_column_types(case, undo_ddl):
-    if connection.vendor not in DB_TYPE_DRIFT[case]:
-        pytest.skip(f"{connection.vendor} does not report this from its columns")
+    if connection.vendor not in DB_TYPE_DRIFT[case] or getattr(connection, "mysql_is_mariadb", False):
+        pytest.skip(f"{connection.display_name} does not report this from its columns")
     statements, expected = DB_TYPE_DRIFT[case][connection.vendor]
     sql = next(each for each in statements if isinstance(each, str) and each.startswith("ALTER"))
     model = {"testapp_author": Author, "testapp_book": Book, "dsb_specimen": Specimen}[sql.split()[2]]

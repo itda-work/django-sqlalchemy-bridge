@@ -539,6 +539,8 @@ def test_returning_is_refused_before_running_where_the_database_lacks_it(no_retu
 @pytest.mark.skipif(connection.vendor != "mysql", reason="MySQL has no RETURNING")
 @pytest.mark.parametrize("call", ["execute insert", "execute update", "execute delete", "stream", "bulk_insert"])
 def test_mysql_refuses_returning_before_running(call):
+    if connection.mysql_is_mariadb:
+        pytest.skip("MariaDB has INSERT and DELETE ... RETURNING")
     make_author("kept")
     with CaptureQueriesContext(connection) as queries, pytest.raises(NotSupportedError, match="RETURNING"):
         returning_calls()[call]()
