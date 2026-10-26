@@ -21,7 +21,7 @@ from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory
 from rest_framework.views import APIView
 
-from django_sqlalchemy_bridge import execute, execute_result, table_for
+from django_sqlalchemy_bridge import execute, execute_result, raw, table_for
 from tests.testapp.models import Category, Product, Sale
 
 pytestmark = pytest.mark.django_db
@@ -160,6 +160,43 @@ class CategoryReportView(TemplateView):
 # /readme:drf-template
 
 
+# readme:drf-raw
+top_products = (
+    sa.select(products, sa.func.sum(sales.c.amount).label("revenue"))
+    .join(sales, sales.c.product_id == products.c.id)
+    .where(products.c.price >= sa.bindparam("min_price"))  # "10" converts as the ORM's price__gte="10"
+    .group_by(*products.c)
+    .order_by(sa.func.sum(sales.c.amount).desc(), products.c.sku)
+)
+
+
+class ProductModelSerializer(serializers.ModelSerializer):
+    revenue = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)  # the label, an attribute
+
+    class Meta:
+        model = Product
+        fields = ["id", "sku", "category", "price", "revenue"]
+
+
+class TopProductsView(APIView):
+    def get(self, request):
+        instances = raw(Product, top_products, {"min_price": request.query_params.get("min_price", "0")})
+        return Response(ProductModelSerializer(instances, many=True).data)
+
+
+class TopProductsReportView(TemplateView):
+    template_name = "shop/top_products.html"  # {% for p in products %}{{ p.sku }} {{ p.category.name }}{% endfor %}
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        # A RawQuerySet: the query runs when the template iterates it, the categories in one more
+        context["products"] = raw(Product, top_products, {"min_price": 0}).prefetch_related("category")
+        return context
+
+
+# /readme:drf-raw
+
+
 @pytest.fixture
 def shop():
     """의류 (SHIRT, JEANS, SOCKS with no sales) and 식품 (TEA)."""
@@ -257,3 +294,28 @@ def test_template_view_context_holds_bridge_rows(shop):
         {"name": "의류", "revenue": Decimal("110.00"), "rank": 1},
         {"name": "식품", "revenue": Decimal("51.00"), "rank": 2},
     ]
+
+
+def test_a_model_serializer_takes_the_instances_of_raw(shop):
+    with CaptureQueriesContext(connection) as queries:
+        response = TopProductsView.as_view()(api.get("/top/", {"min_price": "10"}))
+
+    assert len(queries) == 1  # the category is the foreign key's value, no query per row
+    assert response.status_code == 200
+    clothes = shop["clothes"].pk
+    shirt, jeans = Product.objects.get(sku="SHIRT").pk, Product.objects.get(sku="JEANS").pk
+    assert response.data == [
+        {"id": shirt, "sku": "SHIRT", "category": clothes, "price": "30.00", "revenue": "60.00"},
+        {"id": jeans, "sku": "JEANS", "category": clothes, "price": "50.00", "revenue": "50.00"},
+    ]
+
+
+def test_a_template_iterates_the_instances_of_raw(shop):
+    response = TopProductsReportView.as_view()(RequestFactory().get("/top/"))
+    products = response.context_data["products"]
+
+    with CaptureQueriesContext(connection) as queries:
+        rows = [(p.sku, p.category.name) for p in products]
+    assert len(queries) == 2  # the products, then their categories (prefetch_related)
+    assert rows == [("SHIRT", "의류"), ("TEA", "식품"), ("JEANS", "의류")]
+    assert all(isinstance(p, Product) for p in products)

@@ -43,6 +43,7 @@ def test_every_recipe_is_shown_in_the_drf_doc():
         "drf-create",
         "drf-atomic",
         "drf-template",
+        "drf-raw",
     }
 
 
