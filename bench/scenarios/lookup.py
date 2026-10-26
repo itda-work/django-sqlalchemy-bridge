@@ -9,13 +9,15 @@ API bound the per-call cost: ``bridge_prepare_only`` runs the internal
 ``prepare()`` on the statement built once (a cache hit: converting the params
 and finding the result converters) without touching the database, and
 ``bridge_prepared_once`` calls ``prepare()`` once and then runs only the
-Django cursor and the result converters, the floor for ``execute``.
+Django cursor and the result converters, the floor for ``execute``. Both pass
+``prepare()`` the connection object itself (``connections[alias]``), as
+``execute`` does, not the ``django.db.connection`` proxy.
 """
 
 from __future__ import annotations
 
 import sqlalchemy as sa
-from django.db import connection
+from django.db import DEFAULT_DB_ALIAS, connection, connections
 
 from bench import data
 from bench.harness import Variant, no_scope, run_variants, sa_rollback
@@ -44,6 +46,7 @@ def variants(engine) -> list[Variant]:
     sa_table = data.SAItem.__table__
     sa_columns = [sa_table.c[name] for name in data.COLUMNS]
     pks = _pks()
+    wrapper = connections[DEFAULT_DB_ALIAS]
     qn = connection.ops.quote_name
     raw_sql = f"SELECT {', '.join(qn(c) for c in data.COLUMNS)} FROM {qn(Item._meta.db_table)} WHERE {qn('id')} = %s"
 
@@ -73,15 +76,15 @@ def variants(engine) -> list[Variant]:
         return [execute(by_pk, {"pk": pk})[0] for pk in pks]
 
     def bridge_prepare_only(_, __):
-        return [prepare(by_pk, {"pk": pk}, connection).sql for pk in pks]
+        return [prepare(by_pk, {"pk": pk}, wrapper).sql for pk in pks]
 
     def bridge_prepared_once(_, __):
-        prepared = prepare(by_pk, {"pk": 0}, connection)
+        prepared = prepare(by_pk, {"pk": 0}, wrapper)
         out = []
         with connection.cursor() as cursor:
             for pk in pks:
                 cursor.execute(prepared.sql, (pk,))
-                out.append(from_db(cursor.fetchall(), prepared.converters, connection)[0])
+                out.append(from_db(cursor.fetchall(), prepared.converters, wrapper)[0])
         return out
 
     def sa_core_build_each(_, conn):
