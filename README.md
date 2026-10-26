@@ -743,15 +743,15 @@ PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQL
 <!-- bench:pg-lookup -->
 | | 시간 (ms) | 호출당 (µs) |
 |---|---:|---:|
-| Django 커서에 SQL 직접 | 488 | 97.5 |
-| Django `objects.get(pk=...)` | 1,316 | 263 |
-| Django `values_list(...).get(pk=...)` | 1,415 | 283 |
-| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 550 | 110 |
-| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 833 | 167 |
-| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 749 | 150 |
-| 브리지 `execute()`, 매번 문장 생성 | 1,573 | 315 |
-| (참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음 | 50.7 | 10.1 |
-| (참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만 | 471 | 94.3 |
+| Django 커서에 SQL 직접 | 877 | 175 |
+| Django `objects.get(pk=...)` | 1,844 | 369 |
+| Django `values_list(...).get(pk=...)` | 2,045 | 409 |
+| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 902 | 180 |
+| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 1,300 | 260 |
+| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 1,188 | 238 |
+| 브리지 `execute()`, 매번 문장 생성 | 2,253 | 451 |
+| (참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음 | 33.2 | 6.65 |
+| (참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만 | 878 | 176 |
 
 <sub>결과 파일: [`bench/results/2026-10-26-postgres-lookup.json`](bench/results/2026-10-26-postgres-lookup.json)</sub>
 <!-- /bench:pg-lookup -->
@@ -759,23 +759,23 @@ PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQL
 <!-- bench:sqlite-lookup -->
 | | 시간 (ms) | 호출당 (µs) |
 |---|---:|---:|
-| Django 커서에 SQL 직접 | 28.0 | 5.60 |
-| Django `objects.get(pk=...)` | 501 | 100 |
-| Django `values_list(...).get(pk=...)` | 620 | 124 |
-| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 78.9 | 15.8 |
-| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 249 | 49.9 |
-| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 118 | 23.6 |
-| 브리지 `execute()`, 매번 문장 생성 | 666 | 133 |
-| (참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음 | 62.5 | 12.5 |
-| (참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만 | 45.6 | 9.12 |
+| Django 커서에 SQL 직접 | 41.9 | 8.37 |
+| Django `objects.get(pk=...)` | 672 | 134 |
+| Django `values_list(...).get(pk=...)` | 837 | 167 |
+| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 119 | 23.8 |
+| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 322 | 64.4 |
+| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 127 | 25.3 |
+| 브리지 `execute()`, 매번 문장 생성 | 895 | 179 |
+| (참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음 | 33.0 | 6.60 |
+| (참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만 | 67.2 | 13.4 |
 
 <sub>결과 파일: [`bench/results/2026-10-26-sqlite-lookup.json`](bench/results/2026-10-26-sqlite-lookup.json)</sub>
 <!-- /bench:sqlite-lookup -->
 
-- 이 표는 위 환경 줄과 다른 실행(결과 파일의 `ci_run`)에서 같은 종류의 러너로 다시 잰 값입니다(#28 컴파일 캐시 반영).
-- 브리지는 **같은 문장 객체를 다시 실행하면 컴파일을 건너뜁니다**(위 "실행하기"의 컴파일 캐시). `bindparam`으로 한 번 만든 문장은 첫 호출에만 컴파일하고, 매번 새로 만든 문장은 매번 컴파일합니다. 두 행의 차이(PostgreSQL 약 165µs, SQLite 약 110µs)가 호출당 컴파일 비용입니다. 문장을 한 번 만들어 `bindparam`으로 재사용하세요.
-- "(참고) `prepare()`만" 행은 캐시 적중 뒤 남는 브리지 쪽 일(파라미터 변환, 결과 변환기 찾기)이고 호출당 약 10~13µs 입니다. "(참고) `prepare()` 1회" 행은 그것마저 한 번만 하고 커서 하나로 실행·변환만 한 값으로, 공개 API 가 아닙니다. 브리지 `execute()`는 호출마다 Django 커서를 새로 엽니다(Django `objects.get()`도 마찬가지). PostgreSQL 에서 `execute()`가 두 참고 행의 합보다 느린 몫은 그 때문으로 보이지만 따로 재지는 않았습니다.
-- PostgreSQL 에서 `bindparam` 재사용 브리지(호출당 150µs)는 Django `objects.get()`(263µs)보다 빠르고, SQLAlchemy 단독 엔진(110µs)과의 차이는 40µs 입니다. SQLite 에서는 23.6µs 로 SQLAlchemy 단독(15.8µs)과 같은 자릿수이고 Django ORM 조회(100µs 이상)보다 4배 남짓 빠릅니다.
+- 이 표는 위 환경 줄과 다른 실행(결과 파일의 `ci_run`, 러너 CPU AMD EPYC 9V74)에서 다시 잰 값입니다(#28 컴파일 캐시, #60 결과 변환기 캐시 반영). 러너 CPU 가 달라 절대값을 위 표들과 견주지 마세요.
+- 브리지는 **같은 문장 객체를 다시 실행하면 컴파일을 건너뜁니다**(위 "실행하기"의 컴파일 캐시). `bindparam`으로 한 번 만든 문장은 첫 호출에만 컴파일하고, 매번 새로 만든 문장은 매번 컴파일합니다. 두 행의 차이(PostgreSQL 약 210µs, SQLite 약 150µs)가 호출당 컴파일 비용입니다. 문장을 한 번 만들어 `bindparam`으로 재사용하세요.
+- "(참고) `prepare()`만" 행은 캐시 적중 뒤 남는 브리지 쪽 일(파라미터 변환, 연결 객체에 둔 결과 변환기 꺼내기)이고 호출당 약 6.6µs 입니다. "(참고) `prepare()` 1회" 행은 그것마저 한 번만 하고 커서 하나로 실행·변환만 한 값으로, 공개 API 가 아닙니다. 브리지 `execute()`는 호출마다 Django 커서를 새로 엽니다(Django `objects.get()`도 마찬가지). PostgreSQL 에서 `execute()`가 두 참고 행의 합보다 느린 몫은 그 때문으로 보이지만 따로 재지는 않았습니다.
+- PostgreSQL 에서 `bindparam` 재사용 브리지(호출당 238µs)는 Django `objects.get()`(369µs)보다 빠르고, SQLAlchemy 단독 엔진(180µs)과의 차이는 58µs 입니다. SQLite 에서는 25.3µs 로 SQLAlchemy 단독(23.8µs)과 같은 자릿수이고 Django ORM 조회(134µs 이상)보다 5배 남짓 빠릅니다.
 
 ### 5. 비동기 (PostgreSQL, PK 조회)
 
