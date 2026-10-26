@@ -63,7 +63,7 @@ compare_table(model, table=None, *, check_db=False, using='default')
 assert_table_matches(model, table=None, *, check_db=False, using='default')
 forget_table(model)
 ```
-`compare_table` lists the differences between a table (by default `table_for(model)`) and the model (and, with `check_db=True`, the database columns) as `Difference(source, kind, column, expected, actual)`; `assert_table_matches` raises `AssertionError` when there are any. Put it in a test. `forget_table` removes the table from the cache and `metadata` (for dynamic models in tests). `__version__` is the installed version string.
+`compare_table` lists the differences between a table (by default `table_for(model)`) and the model (and, with `check_db=True`, the database columns: presence, nullability, and on SQLite and PostgreSQL the column type the field's `db_type()` asks for, including varchar length and, on PostgreSQL, numeric precision) as `Difference(source, kind, column, expected, actual)`; `assert_table_matches` raises `AssertionError` when there are any. Put it in a test. `forget_table` removes the table from the cache and `metadata` (for dynamic models in tests). `__version__` is the installed version string.
 
 ## Not supported, and pitfalls
 
