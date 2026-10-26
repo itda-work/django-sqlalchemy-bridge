@@ -6,7 +6,7 @@ from django.apps import apps
 from django.db import connection, models
 from django.test import override_settings
 from django.test.utils import isolate_apps
-from sqlalchemy.dialects import mysql, postgresql, sqlite
+from sqlalchemy.dialects import mysql, oracle, postgresql, sqlite
 
 from django_sqlalchemy_bridge import (
     Difference,
@@ -18,21 +18,31 @@ from django_sqlalchemy_bridge import (
     metadata,
     table_for,
 )
+from django_sqlalchemy_bridge.execution import dialect_for
 from tests.testapp.models import Author, Book, Gadget, Specimen
 
-DIALECTS = {"sqlite": sqlite.dialect(), "postgresql": postgresql.dialect(), "mysql": mysql.dialect()}
+DIALECTS = {
+    "sqlite": sqlite.dialect(),
+    "postgresql": postgresql.dialect(),
+    "mysql": mysql.dialect(),
+    "oracle": oracle.dialect(),
+}
 
 
 @pytest.fixture
 def undo_ddl(db):
-    """Put back, on MySQL, the tables a test changed with DDL.
+    """Put back, on MySQL and Oracle, the tables a test changed with DDL.
 
-    MySQL commits each DDL statement at once, so the test's rollback cannot undo
-    it; the tables of the models passed to ``rebuild([...])`` are dropped and
-    created again from the model, the tables named in ``drop([...])`` dropped.
+    MySQL and Oracle commit each DDL statement at once, so the test's rollback
+    cannot undo it; the tables of the models passed to ``rebuild([...])`` are
+    dropped and created again from the model, the tables named in
+    ``drop([...])`` dropped. Oracle drops the foreign keys into a table with it,
+    so there the tables pointing at a rebuilt one are rebuilt too.
     """
     rebuild, drop = [], []
     yield types.SimpleNamespace(rebuild=rebuild.extend, drop=drop.extend)
+    if connection.vendor == "oracle":
+        rebuild_on_oracle(rebuild, drop)
     if connection.vendor != "mysql":
         return
     qn = connection.ops.quote_name
@@ -52,6 +62,31 @@ def undo_ddl(db):
                 cursor.execute(f"DROP TABLE IF EXISTS {qn(name)}")
         finally:
             cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
+
+
+def rebuild_on_oracle(rebuild, drop):
+    qn = connection.ops.quote_name
+    everything = apps.get_models(include_auto_created=True)
+    models_ = list(rebuild)
+    for each in models_:  # grows: the tables whose foreign keys point at one being rebuilt
+        for other in everything:
+            if other not in models_ and any(
+                f.many_to_one and f.remote_field.model is each for f in other._meta.local_fields
+            ):
+                models_.append(other)
+    with connection.cursor() as cursor:
+        for model in reversed(models_):
+            cursor.execute(f"DROP TABLE IF EXISTS {qn(model._meta.db_table)} CASCADE CONSTRAINTS PURGE")
+        for model in models_:
+            if model._meta.auto_created:
+                continue  # a many-to-many table, which create_model() makes with its model
+            # Collected, not run: the schema editor refuses DDL inside the test's atomic().
+            with connection.schema_editor(collect_sql=True) as editor:
+                editor.create_model(model)
+            for sql in editor.collected_sql:
+                cursor.execute(sql.rstrip(";"))
+        for name in drop:
+            cursor.execute(f"DROP TABLE IF EXISTS {qn(name)} CASCADE CONSTRAINTS PURGE")
 
 
 def type_repr(table, name):
@@ -245,8 +280,11 @@ def test_only_the_default_database_for_now():
 
 @pytest.mark.parametrize("dialect", DIALECTS.values(), ids=DIALECTS.keys())
 def test_tables_compile_on_every_dialect(dialect):
+    # SQLAlchemy 2.0's Oracle dialect has no JSON column DDL (Django makes the schema anyway).
+    ddl = not (dialect.name == "oracle" and tuple(int(n) for n in sa.__version__.split(".")[:2]) < (2, 1))
     for model in (Author, Book, Gadget, Specimen):
-        str(sa.schema.CreateTable(table_for(model)).compile(dialect=dialect))
+        if ddl:
+            str(sa.schema.CreateTable(table_for(model)).compile(dialect=dialect))
         str(sa.select(table_for(model)).compile(dialect=dialect))
 
 
@@ -254,10 +292,18 @@ def test_tables_compile_on_every_dialect(dialect):
 @pytest.mark.parametrize("model", [Author, Book, Gadget, Specimen])
 def test_select_from_the_table_runs_on_the_live_database(model):
     stmt = sa.select(table_for(model))
-    sql = str(stmt.compile(dialect=DIALECTS[connection.vendor]))
+    names = list(table_for(model).c.keys())
+    if connection.vendor == "oracle":
+        # SQLAlchemy's own Oracle dialect quotes lower case reserved words ("uid",
+        # "level"), naming columns Django never made; the bridge's spells them as Django does.
+        sql = str(stmt.compile(dialect=dialect_for(connection)))
+        expected = [name.upper() for name in names]
+    else:
+        sql = str(stmt.compile(dialect=DIALECTS[connection.vendor]))
+        expected = names
     with connection.cursor() as cursor:
         cursor.execute(sql)
-        assert [col[0] for col in cursor.description] == list(table_for(model).c.keys())
+        assert [col[0] for col in cursor.description] == expected
 
 
 ALL_MODELS = [
@@ -368,7 +414,10 @@ def test_assert_table_matches_lists_every_difference():
 def test_drift_against_the_database_detects_added_and_dropped_columns(undo_ddl):
     undo_ddl.rebuild([Author])
     with connection.cursor() as cursor:
-        cursor.execute("ALTER TABLE testapp_author ADD COLUMN extra integer NULL")
+        if connection.vendor == "oracle":
+            cursor.execute("ALTER TABLE testapp_author ADD (extra NUMBER(11) NULL)")
+        else:
+            cursor.execute("ALTER TABLE testapp_author ADD COLUMN extra integer NULL")
         cursor.execute("ALTER TABLE testapp_author DROP COLUMN joined_at")
     # The model still matches the table; only the database moved.
     assert compare_table(Author, check_db=True) == [
@@ -385,6 +434,15 @@ def test_drift_against_the_database_detects_nullability(undo_ddl):
             cursor.execute("ALTER TABLE testapp_author ALTER COLUMN name DROP NOT NULL")
         elif connection.vendor == "mysql":
             cursor.execute("ALTER TABLE testapp_author MODIFY name varchar(100) NULL")
+        elif connection.vendor == "oracle":
+            # Django makes a CharField nullable on Oracle (an empty string is NULL there),
+            # so NOT NULL is the drift; a non-string column drifts the other way.
+            cursor.execute("ALTER TABLE testapp_author MODIFY (name NOT NULL, joined_at NULL)")
+            assert compare_table(Author, check_db=True) == [
+                Difference("db", "nullable", "name", expected=False, actual=True),
+                Difference("db", "nullable", "joined_at", expected=True, actual=False),
+            ]
+            return
         else:
             cursor.execute("ALTER TABLE testapp_author DROP COLUMN name")
             cursor.execute("ALTER TABLE testapp_author ADD COLUMN name varchar(100) NULL")
@@ -524,6 +582,8 @@ def test_type_check_accepts_the_spellings_a_hand_written_table_uses(undo_ddl):
             app_label = "testapp"
             db_table = "dsb_handmade"
 
+    if connection.vendor == "oracle":
+        pytest.skip("Oracle column types are not compared")
     if connection.vendor == "postgresql":
         columns = (
             "id serial PRIMARY KEY, name VARCHAR( 20 ) NOT NULL, price DECIMAL(10,2) NOT NULL,"

@@ -13,8 +13,8 @@ from django.db.models.signals import post_save, pre_save
 from django.test.utils import CaptureQueriesContext
 
 from django_sqlalchemy_bridge import bulk_insert, execute, execute_result, stream, table_for
-from django_sqlalchemy_bridge.execution import prepare
-from tests.testapp.models import Author, Book, Gadget, Specimen
+from django_sqlalchemy_bridge.execution import dialect_for, prepare
+from tests.testapp.models import Author, Book, Gadget, OracleSpelledNameModelWithALongName, Specimen
 
 pytestmark = pytest.mark.django_db
 
@@ -132,8 +132,8 @@ def test_expressions_that_are_not_columns_come_back_raw():
     author = make_author()
     insert_book(author, title="abc")
     insert_book(author, title="abcd")
-    stmt = sa.select(sa.func.count(books.c.id), sa.func.length(books.c.title).label("n")).group_by(sa.text("2"))
-    stmt = stmt.order_by(sa.text("2"))
+    length = sa.func.length(books.c.title)
+    stmt = sa.select(sa.func.count(books.c.id), length.label("n")).group_by(length).order_by(length)
     assert execute(stmt) == [(1, 3), (1, 4)]
 
 
@@ -240,7 +240,7 @@ def test_queries_are_captured_and_counted(django_assert_num_queries):
     with CaptureQueriesContext(connection) as ctx:
         execute(sa.select(authors.c.name).where(authors.c.name == "a"))
     assert len(ctx.captured_queries) == 1
-    assert "testapp_author" in ctx.captured_queries[0]["sql"]
+    assert "testapp_author" in ctx.captured_queries[0]["sql"].lower()  # Oracle: "TESTAPP_AUTHOR"
     with django_assert_num_queries(2):
         execute(sa.select(authors.c.id))
         execute(sa.update(authors).values(name="b"))
@@ -258,7 +258,7 @@ def test_execute_wrapper_sees_bridge_queries():
         execute(sa.select(authors.c.name).where(authors.c.id == author.pk))
         execute(sa.insert(authors), [{"name": "x", "joined_at": AT}, {"name": "y", "joined_at": AT}])
     assert len(seen) == 2
-    assert "testapp_author" in seen[0][0]
+    assert "testapp_author" in seen[0][0].lower()
     assert list(seen[0][1]) == [author.pk]
     assert seen[0][2] is False
     assert seen[1][2] is True
@@ -340,12 +340,16 @@ def orm_rows(**filters):
 def stored(uid):
     """The row as the database holds it (no field converters), without its uid and twin."""
     column = Specimen._meta.get_field("uid")
+    qn = connection.ops.quote_name  # an unquoted uid is Oracle's UID pseudocolumn
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT * FROM dsb_specimen WHERE uid = %s", [column.get_db_prep_value(uid, connection, prepared=False)]
+            f"SELECT * FROM {qn('dsb_specimen')} WHERE {qn('uid')} = %s",
+            [column.get_db_prep_value(uid, connection, prepared=False)],
         )
-        names = [c[0] for c in cursor.description]
-        return {k: v for k, v in zip(names, cursor.fetchone()) if k not in ("uid", "twin_id")}
+        names = [c[0].lower() for c in cursor.description]
+        # Oracle's driver hands NCLOB and BLOB columns over as LOB objects.
+        values = [v.read() if hasattr(v, "read") else v for v in cursor.fetchone()]
+        return {k: v for k, v in zip(names, values) if k not in ("uid", "twin_id")}
 
 
 def orm_row(uid):
@@ -490,6 +494,80 @@ def test_execute_result_refuses_a_statement_without_rows():
         execute_result(sa.update(authors).values(name="x"))
 
 
+# --- result keys -------------------------------------------------------------
+
+spelled = table_for(OracleSpelledNameModelWithALongName)
+LONG_NAME = "a_column_name_longer_than_thirty_characters"
+
+
+def description_names(sql, params=()):
+    with connection.cursor() as cursor:
+        cursor.execute(sql, params)
+        return [column[0] for column in cursor.description]
+
+
+def test_result_keys_are_the_names_the_statement_was_built_with():
+    # On Oracle the database reports "MIXEDCASE", "A_COLUMN_NAME_LONGER_THAN_9E63"
+    # and "COUNT_1"; the keys are the table's names, as on every other backend.
+    OracleSpelledNameModelWithALongName.objects.create(cased="c", **{LONG_NAME: 7})
+    result = execute_result(sa.select(spelled.c.MixedCase, spelled.c[LONG_NAME]))
+    assert list(result.keys()) == ["MixedCase", LONG_NAME]
+    assert result.mappings().one() == {"MixedCase": "c", LONG_NAME: 7}
+    labelled = sa.select(spelled.c.MixedCase.label("Cased"), sa.func.count(), sa.func.max(spelled.c[LONG_NAME]))
+    result = execute_result(labelled.group_by(spelled.c.MixedCase))
+    assert list(result.keys()) == ["Cased", "count_1", "max_1"]
+    sub = sa.select(spelled).subquery()
+    assert list(execute_result(sa.select(sub)).keys()) == ["id", "MixedCase", LONG_NAME]
+
+
+def oracle_sql(stmt):
+    # No server needed: the dialect compiles without connecting.
+    return str(stmt.compile(dialect=dialect_for(types.SimpleNamespace(vendor="oracle"))))
+
+
+def test_oracle_spells_identifiers_as_django_does():
+    # Django's quote_name() on Oracle: upper case, cut past 30 characters with a
+    # hash. SQLAlchemy's own Oracle dialect would quote "MixedCase" and the long
+    # name as they are, and "uid" (a reserved word), naming columns Django never made.
+    stmt = sa.select(spelled.c.MixedCase, spelled.c[LONG_NAME], books.c.uid).join_from(spelled, books, sa.true())
+    sql = oracle_sql(stmt)
+    for name in ('"MIXEDCASE"', '"A_COLUMN_NAME_LONGER_THAN_9E63"', '"TESTAPP_BOOK"."UID"'):
+        assert name in sql
+    assert oracle_sql(sa.select(authors.c.name.label("Who"))).startswith('SELECT "TESTAPP_AUTHOR"."NAME" AS "WHO"')
+
+
+def test_oracle_spells_a_quoted_name_upper_case_too():
+    # Django makes no case-sensitive Oracle names (quote_name() upper-cases even
+    # a quoted one), so quoted_name(..., quote=True) is spelled the same way.
+    legacy = sa.table(sa.sql.quoted_name("Legacy", quote=True), sa.column(sa.sql.quoted_name("Col", quote=True)))
+    assert oracle_sql(sa.select(legacy.c.Col)) == 'SELECT "LEGACY"."COL" \nFROM "LEGACY"'
+
+
+@pytest.mark.skipif(connection.vendor == "oracle", reason="Oracle reports upper case names")
+def test_result_keys_elsewhere_are_the_names_the_database_reports():
+    author = make_author("k")
+    stmt = sa.select(authors.c.id, authors.c.name.label("Who"), sa.func.count()).group_by(authors.c.id, authors.c.name)
+    prepared = prepare(stmt, None, connection)
+    keys = list(execute_result(stmt).keys())
+    assert keys == description_names(prepared.sql, prepared.param_rows[0]) == ["id", "Who", "count_1"]
+    # text(): PostgreSQL folds an unquoted alias to lower case, SQLite and MySQL keep it.
+    quoted = "`Quoted`" if connection.vendor == "mysql" else '"Quoted"'
+    sql = f"SELECT name AS Plain, name AS {quoted} FROM testapp_author WHERE id = :pk"
+    keys = list(execute_result(sa.text(sql), {"pk": author.pk}).keys())
+    assert keys == ["plain" if connection.vendor == "postgresql" else "Plain", "Quoted"]
+
+
+@pytest.mark.skipif(connection.vendor != "oracle", reason="Oracle reports upper case names")
+def test_oracle_text_result_keys_are_lower_case_unless_quoted_in_mixed_case():
+    # As SQLAlchemy's Oracle dialect reports them: an all upper case name
+    # (what Oracle makes of an unquoted one) in lower case, others as written.
+    author = make_author("k")
+    sql = 'SELECT name AS Plain, name AS "Quoted", name AS "UPPER", name AS "lower" FROM testapp_author WHERE id = :pk'
+    assert description_names("SELECT name AS Plain FROM testapp_author") == ["PLAIN"]
+    keys = list(execute_result(sa.text(sql), {"pk": author.pk}).keys())
+    assert keys == ["plain", "Quoted", "upper", "lower"]
+
+
 # --- RETURNING needs a database that has it ------------------------------------
 
 
@@ -546,6 +624,37 @@ def test_mysql_refuses_returning_before_running(call):
         returning_calls()[call]()
     assert queries.captured_queries == []
     assert list(Author.objects.values_list("name", flat=True)) == ["kept"]
+
+
+@pytest.mark.skipif(connection.vendor != "oracle", reason="Oracle RETURNING ... INTO")
+@pytest.mark.parametrize("call", returning_calls().values(), ids=returning_calls().keys())
+def test_oracle_refuses_returning_before_running(call):
+    # Oracle returns the rows into output binds (RETURNING ... INTO), which Django's
+    # cursor does not hand back: run anyway, the statement gave its rowcount, no error.
+    make_author("kept")
+    with CaptureQueriesContext(connection) as queries, pytest.raises(NotSupportedError, match="RETURNING"):
+        call()
+    assert queries.captured_queries == []
+    assert list(Author.objects.values_list("name", flat=True)) == ["kept"]
+
+
+@pytest.mark.skipif(connection.vendor != "oracle", reason="Oracle stores an empty string as NULL")
+def test_oracle_compares_an_empty_string_as_null():
+    # SQL semantics, not the ORM's: filter(name="") becomes IS NULL there, "= ''" matches nothing.
+    make_author("")
+    assert Author.objects.filter(name="").count() == 1
+    assert execute(sa.select(sa.func.count()).where(authors.c.name == "")) == [(0,)]
+    assert execute(sa.select(sa.func.count()).where(authors.c.name.is_(None))) == [(1,)]
+    assert execute(sa.select(authors.c.name)) == [("",)]  # read back as the ORM reads it
+
+
+@pytest.mark.skipif(connection.vendor != "oracle", reason="Oracle NCLOB")
+def test_oracle_refuses_to_compare_a_text_field_with_equals():
+    # TextField is NCLOB on Oracle, which "=" cannot compare; the database says so.
+    from django.db import DatabaseError
+
+    with pytest.raises(DatabaseError, match="ORA-22848"):
+        execute(sa.select(specimens.c.uid).where(specimens.c.body == "x"))
 
 
 def mariadb_connection():

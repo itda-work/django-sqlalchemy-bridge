@@ -24,7 +24,8 @@ pytestmark = pytest.mark.django_db
 SEOUL = ZoneInfo("Asia/Seoul")
 IS_PG = connection.vendor == "postgresql"
 IS_MYSQL = connection.vendor == "mysql"
-_NAMES = {"postgresql": "PostgreSQL", "sqlite": "SQLite", "mysql": "MySQL"}
+IS_ORACLE = connection.vendor == "oracle"
+_NAMES = {"postgresql": "PostgreSQL", "sqlite": "SQLite", "mysql": "MySQL", "oracle": "Oracle"}
 
 
 def only_on(*vendors, syntax):
@@ -175,7 +176,7 @@ def test_window_over_a_cte_ranks_products_by_revenue_in_their_category(shop):
     assert execute(stmt) == [("JEANS", 1), ("SHIRT", 1), ("SOCKS", 2), ("TEA", 1)]
 
 
-@only_on("postgresql", "mysql", syntax="LATERAL")
+@only_on("postgresql", "mysql", "oracle", syntax="LATERAL")
 def test_lateral_join_takes_the_two_largest_sales_of_each_product(shop):
     top = (
         sa.select(sales.c.sold_at, sales.c.amount)
@@ -306,6 +307,7 @@ def test_insert_on_conflict_do_nothing_reports_what_it_skipped(shop):
     assert list(DailyStock.objects.order_by("day").values_list("quantity", flat=True)) == [7, 2]
 
 
+@only_on("postgresql", "sqlite", "mysql", syntax="ON CONFLICT or ON DUPLICATE KEY UPDATE")
 def test_insert_select_with_on_conflict_rolls_sales_up_into_daily_stock(shop):
     # One row per product and Seoul day. SQLite reads the ON of ON CONFLICT as a join constraint when the
     # SELECT ends in "FROM t" (no WHERE, no GROUP BY); a WHERE avoids that.
@@ -458,11 +460,11 @@ def test_untyped_values_in_a_select_list_skip_the_field_conversion(shop):
         sa.select(products.c.id, sa.literal(datetime.date(2026, 10, 31)), sa.literal(1), sa.literal(at(31, 23))),
     )
     execute(stmt)
-    stored = execute(sa.select(sa.cast(daily_stock.c.counted_at, sa.String)).limit(1))[0][0]
+    stored = execute(sa.select(sa.cast(daily_stock.c.counted_at, sa.String(40))).limit(1))[0][0]
     if IS_PG:
         assert stored.endswith("+00")  # PostgreSQL stores timestamptz as an instant either way
-    elif IS_MYSQL:
-        # MySQLdb drops the offset: the Seoul wall time is stored, which Django reads as UTC (9 hours late).
+    elif IS_MYSQL or IS_ORACLE:
+        # MySQLdb and oracledb drop the offset: the Seoul wall time is stored, which Django reads as UTC (9 hours late).
         assert stored == "2026-10-31 23:00:00.000000"
         assert DailyStock.objects.filter(counted_at=at(31, 23)).count() == 0
     else:
@@ -470,6 +472,7 @@ def test_untyped_values_in_a_select_list_skip_the_field_conversion(shop):
         assert DailyStock.objects.filter(counted_at=at(31, 23)).count() == 0  # the ORM compares UTC text
 
 
+@only_on("postgresql", "sqlite", "mysql", syntax="UPDATE with a second table")
 def test_update_from_an_aggregate_subquery(shop):
     # Set each product's price to its average sale price per unit since the 25th; TEA sold 10 more at a discount.
     Sale.objects.create(product=Product.objects.get(sku="TEA"), sold_at=at(26, 20), quantity=10, amount=Decimal("50"))

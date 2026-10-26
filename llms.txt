@@ -4,7 +4,7 @@
 
 Print this file from the installed package: `python -c "import importlib.resources as r; print(r.files('django_sqlalchemy_bridge').joinpath('llms.txt').read_text('utf-8'))"`
 
-Supported: SQLite, PostgreSQL (psycopg 3), MySQL 8.4 (mysqlclient) · Django 5.2+ · SQLAlchemy >=2.0,<2.2 · Python 3.12+. MariaDB compiles and its RETURNING is checked, but it is not tested in CI. Oracle is not supported (`NotImplementedError` when run).
+Supported: SQLite, PostgreSQL (psycopg 3), MySQL 8.4 (mysqlclient), Oracle (oracledb; verified on Oracle 23ai Free) · Django 5.2+ · SQLAlchemy >=2.0,<2.2 (JSON keys and paths on Oracle need 2.1) · Python 3.12+. MariaDB compiles and its RETURNING is checked, but it is not tested in CI.
 
 ## When to use it, and when not
 
@@ -35,23 +35,23 @@ The model's `sa.Table` (cached per model, in the shared `metadata`). Column type
 ```
 execute(stmt, params=None, *, using='default')
 ```
-A statement that returns rows (SELECT, RETURNING) gives `list[tuple]`; any other gives the rowcount `int`. `params` is a mapping of `bindparam` values; for a bare `insert(table)` it gives the column values. A list of mappings runs `cursor.executemany()` (no RETURNING). `RETURNING` needs SQLite 3.35+; MySQL has none; MariaDB has it for INSERT and DELETE but not UPDATE. Where it is missing, `NotSupportedError` is raised before the statement runs.
+A statement that returns rows (SELECT, RETURNING) gives `list[tuple]`; any other gives the rowcount `int`. `params` is a mapping of `bindparam` values; for a bare `insert(table)` it gives the column values. A list of mappings runs `cursor.executemany()` (no RETURNING). `RETURNING` needs SQLite 3.35+; MySQL has none; MariaDB has it for INSERT and DELETE but not UPDATE; Oracle's (`RETURNING … INTO` output binds) is not supported. Where it is missing, `NotSupportedError` is raised before the statement runs.
 
 ```
 execute_result(stmt, params=None, *, using='default')
 ```
-The same rows as a SQLAlchemy `Result` (`.mappings()`, `.scalars()`, `row.name`), built after all rows are fetched. DML that returns no rows raises `ValueError`.
+The same rows as a SQLAlchemy `Result` (`.mappings()`, `.scalars()`, `row.name`), built after all rows are fetched. DML that returns no rows raises `ValueError`. Keys are the names the database reports; on Oracle, the names the statement's columns and labels were built with, and for `sa.text()` columns Oracle's upper case names in lower case (`AS "MixedCase"` stays as written).
 
 ```
 stream(stmt, params=None, *, chunk_size=2000, using='default')
 ```
-A generator that fetches `chunk_size` rows at a time and yields tuples one by one. On PostgreSQL it uses a server-side cursor (the path `QuerySet.iterator()` takes). On MySQL the driver reads the whole result at `execute()`, as for `iterator()`, so there is no memory gain. Opened inside `atomic()`, read it to the end inside the block. If you stop early, `close()` it or wrap it in `contextlib.closing()`. PostgreSQL does not take data-modifying CTEs on a server-side cursor; use `execute` for those.
+A generator that fetches `chunk_size` rows at a time and yields tuples one by one. On PostgreSQL it uses a server-side cursor (the path `QuerySet.iterator()` takes). On MySQL the driver reads the whole result at `execute()`, as for `iterator()`, so there is no memory gain. On SQLite, MySQL and Oracle it is a plain cursor, as for `iterator()`. Opened inside `atomic()`, read it to the end inside the block. If you stop early, `close()` it or wrap it in `contextlib.closing()`. PostgreSQL does not take data-modifying CTEs on a server-side cursor; use `execute` for those.
 
 ```
 bulk_update(table, rows, *, key=None, columns=None, batch_size=None, using='default')
 bulk_insert(table, rows, *, returning=None, batch_size=None, using='default')
 ```
-`table` is a `table_for()` table or a model; `rows` is a sequence of column name → value mappings. `bulk_update` finds rows by `key` (the primary key by default, a tuple for a composite key), updates each with its own values and returns the rowcount. `bulk_insert` returns the rowcount, or with `returning=["id", ...]` a list of tuples in row order. One `unnest()` statement on PostgreSQL, executemany on SQLite and MySQL (on MySQL an UPDATE executemany sends one statement per row; `returning` raises `NotSupportedError` before running). A positive `batch_size` sends one statement per that many rows; the rowcount is the sum and `returning` rows stay in input order. A call that runs more than one statement runs in `atomic(savepoint=False)`, so a failure writes none of its rows. Leave it `None` unless memory matters: one PostgreSQL statement for 1,000,000 rows peaked at about 850 MiB in the client and 230 MiB in the server backend; `batch_size=10_000` on `bulk_insert` cut that to about 230 MiB and 6 MiB and ran 4% faster, while batching `bulk_update` made it slower (use about 200,000 there). `bulk_insert` needs every column except an automatic primary key and `db_default` columns. Missing keys or columns and duplicate keys raise `ValueError` before anything runs.
+`table` is a `table_for()` table or a model; `rows` is a sequence of column name → value mappings. `bulk_update` finds rows by `key` (the primary key by default, a tuple for a composite key), updates each with its own values and returns the rowcount. `bulk_insert` returns the rowcount, or with `returning=["id", ...]` a list of tuples in row order. One `unnest()` statement on PostgreSQL, executemany on SQLite, MySQL and Oracle (on MySQL an UPDATE executemany sends one statement per row; on MySQL and Oracle `returning` raises `NotSupportedError` before running). A positive `batch_size` sends one statement per that many rows; the rowcount is the sum and `returning` rows stay in input order. A call that runs more than one statement runs in `atomic(savepoint=False)`, so a failure writes none of its rows. Leave it `None` unless memory matters: one PostgreSQL statement for 1,000,000 rows peaked at about 850 MiB in the client and 230 MiB in the server backend; `batch_size=10_000` on `bulk_insert` cut that to about 230 MiB and 6 MiB and ran 4% faster, while batching `bulk_update` made it slower (use about 200,000 there). `bulk_insert` needs every column except an automatic primary key and `db_default` columns. Missing keys or columns and duplicate keys raise `ValueError` before anything runs.
 
 ```
 arun(fn, /, *args, **kwargs)
@@ -63,16 +63,17 @@ compare_table(model, table=None, *, check_db=False, using='default')
 assert_table_matches(model, table=None, *, check_db=False, using='default')
 forget_table(model)
 ```
-`compare_table` lists the differences between a table (by default `table_for(model)`) and the model (and, with `check_db=True`, the database columns: presence, nullability, and on SQLite, PostgreSQL and MySQL (not MariaDB) the column type the field's `db_type()` asks for, including varchar length and, on PostgreSQL and MySQL, numeric precision) as `Difference(source, kind, column, expected, actual)`; `assert_table_matches` raises `AssertionError` when there are any. Put it in a test. `forget_table` removes the table from the cache and `metadata` (for dynamic models in tests). `__version__` is the installed version string.
+`compare_table` lists the differences between a table (by default `table_for(model)`) and the model (and, with `check_db=True`, the database columns: presence, nullability, and on SQLite, PostgreSQL and MySQL (not MariaDB or Oracle) the column type the field's `db_type()` asks for, including varchar length and, on PostgreSQL and MySQL, numeric precision) as `Difference(source, kind, column, expected, actual)`; `assert_table_matches` raises `AssertionError` when there are any. Put it in a test. `forget_table` removes the table from the cache and `metadata` (for dynamic models in tests). `__version__` is the installed version string.
 
 ## Not supported, and pitfalls
 
-- Databases other than SQLite, PostgreSQL and MySQL/MariaDB, such as Oracle. MariaDB is not tested in CI; its JSON comparisons can differ from the ORM's (MariaDB stores JSON as text).
+- Databases other than SQLite, PostgreSQL, MySQL/MariaDB and Oracle. MariaDB is not tested in CI; its JSON comparisons can differ from the ORM's (MariaDB stores JSON as text).
 - `table_for(..., using=...)` other than `'default'`.
 - SQLAlchemy Python-side `Column(default=...)` and `onupdate=...` (values or callables) on a hand-made `sa.Table` cannot be applied, so an INSERT or UPDATE that leaves such a column out raises `ValueError` before it runs. Give the value, or use `server_default` or Django `db_default`. SQL expression defaults (`sa.func.now()`) work.
 - PostgreSQL `standard_conforming_strings=off`.
 - On SQLite and MySQL the jsonb operators (`contains`, `has_key`) fail when run. For JSON, `meta["k"] == 1`, `meta[("a", "b")]`, `meta == {...}` and `.as_string()` work on every backend. On MySQL a JSON column's bound values are wrapped in `JSON_EXTRACT(%s, '$')`, as the ORM does, so they compare as JSON documents.
 - MySQL: no `RETURNING`, no `DISTINCT ON`, no DML inside a CTE, no `(VALUES …) AS v (cols)`; `UPDATE … FROM` is written as `sa.update(t).where(t.c.k == other.c.k).values(...)` without `.returning()` (it compiles to `UPDATE t, other SET …`). `LATERAL` works (8.0.14+). In `sa.text()`, a backslash in a string literal is an escape under MySQL's default `sql_mode`. An untyped aware datetime in an `INSERT … SELECT` list is stored as its wall time, a different instant.
+- Oracle: identifiers compile as Django's `quote_name()` spells them (upper case, cut past 30 characters with a hash), also for a `quoted_name(..., quote=True)`: Django makes no case-sensitive Oracle names. No `RETURNING`, `ON CONFLICT`, `UPDATE … FROM` or `DISTINCT ON` (`LATERAL` works); a multi-row `VALUES` does not compile (use a list of params, which runs executemany). Oracle stores `""` as NULL: `col == ""` matches nothing (the ORM rewrites it to `IS NULL`); read back, the ORM and the bridge give `""`. `TextField` is NCLOB, which `==` cannot compare (`ORA-22848`). JSON `==` and `!=` compile to `JSON_EQUAL()`, so `meta["k"] == 1` does not match `{"k": "1"}` (the ORM on Oracle matches both); `in_()` on a JSON key compares JSON text. `.as_string()` and the like give NULL where the key is missing. With SQLAlchemy 2.0, JSON keys and paths raise `UnsupportedCompilationError` before running (whole-document `==` works). NCLOB and BLOB values from `sa.text()` or expressions with no column come back as `oracledb` LOB objects. An untyped aware datetime in an `INSERT … SELECT` list is stored as its wall time. Boolean expressions in a SELECT list need Oracle 23ai.
 - SQLite does not take `LATERAL`, `DISTINCT ON`, DML inside a CTE, or `(VALUES …) AS v (cols)`. In `INSERT … SELECT … ON CONFLICT`, when the SELECT ends with `FROM t` (no WHERE or GROUP BY), SQLite reads `ON` as a join condition and raises a syntax error; add `.where(sa.true())`.
 - SQLAlchemy 2.1 deprecates `select().distinct(col)` (DISTINCT ON). On 2.1 use `stmt.ext(postgresql.distinct_on(col))`, on 2.0 `stmt.distinct(col)`.
 - The databases do not document the row order of `bulk_insert(returning=...)`. If order matters, return a natural key too and pair the rows by it.
@@ -158,7 +159,7 @@ execute(sa.insert(daily_stock).from_select(["product_id", "day", "quantity", "co
 
 With a `.where(...)` on that SELECT and `.on_conflict_do_update(...)` chained onto `insert(...).from_select(...)`, it becomes an aggregating upsert.
 
-PostgreSQL only (LATERAL also on MySQL):
+PostgreSQL only (LATERAL also on MySQL and Oracle):
 
 ```python
 # LATERAL: the two largest sales of each product

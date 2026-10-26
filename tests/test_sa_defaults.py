@@ -30,6 +30,10 @@ stamps = sa.Table(
 )
 
 
+# Oracle stores an empty string as NULL, and Django reads a NULL CharField there as "".
+NULL_TEXT = "" if connection.features.interprets_empty_strings_as_nulls else None
+
+
 def stored():
     return list(Stamp.objects.order_by("id").values_list("name", "note", "kind"))
 
@@ -56,10 +60,17 @@ def test_insert_leaving_out_a_python_side_default_is_refused_before_running(name
         request.getfixturevalue("needs_returning")
     call = refused_inserts()[name]
     Stamp.objects.create(name="kept")
+    if name == "multi values" and connection.vendor == "oracle":
+        # SQLAlchemy compiles a multi-row VALUES for Oracle only when it has seen
+        # a 23ai server, and the bridge's dialect never connects.
+        with CaptureQueriesContext(connection) as queries, pytest.raises(sa.exc.CompileError, match="multirow"):
+            call()
+        assert queries.captured_queries == []
+        return
     with CaptureQueriesContext(connection) as queries, pytest.raises(ValueError, match="Python-side default") as e:
         call()
     assert queries.captured_queries == []
-    assert stored() == [("kept", None, "db")]
+    assert stored() == [("kept", NULL_TEXT, "db")]
     assert "testapp_stamp." in str(e.value)
     assert "pass the value" in str(e.value)
 
@@ -100,7 +111,8 @@ def test_update_leaving_out_a_python_side_onupdate_is_refused_instead_of_nulling
 def test_values_given_for_those_columns_run():
     assert execute(sa.insert(stamps).values(name="a", note="b")) == 1
     assert execute(sa.insert(stamps), [{"name": "c", "note": "d"}]) == 1
-    if connection.features.can_return_columns_from_insert:  # MySQL has no RETURNING
+    # MySQL has no RETURNING; the bridge refuses Oracle's RETURNING ... INTO.
+    if connection.features.can_return_columns_from_insert and connection.vendor != "oracle":
         rows = execute_result(sa.insert(stamps).values(name="e", note="f").returning(stamps.c.name)).all()
         assert [tuple(row) for row in rows] == [("e",)]
     else:
@@ -108,7 +120,7 @@ def test_values_given_for_those_columns_run():
     assert stored() == [("a", "b", "db"), ("c", "d", "db"), ("e", "f", "db")]
     assert execute(sa.update(stamps).where(stamps.c.name == "a").values(name="A", note="B")) == 1
     update = sa.update(stamps).where(stamps.c.name == "c").values(note="D")
-    if connection.vendor == "mysql":  # MySQL and MariaDB have no UPDATE ... RETURNING
+    if connection.vendor in ("mysql", "oracle"):  # no UPDATE ... RETURNING the bridge runs
         assert execute(update) == 1
     else:
         assert list(stream(update.returning(stamps.c.note))) == [("D",)]

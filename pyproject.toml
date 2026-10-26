@@ -37,6 +37,7 @@ bench = [
 ]
 dev = [
     "djangorestframework>=3.18.3",
+    "oracledb>=2.3",
     "psycopg[binary]>=3.2",
     "pytest>=8",
     "pytest-django>=4.9",

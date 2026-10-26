@@ -28,12 +28,14 @@ from typing import Any
 import sqlalchemy as sa
 from django.db import DEFAULT_DB_ALIAS, DatabaseError, NotSupportedError, connections
 from django.db.backends.base.base import BaseDatabaseWrapper
+from django.db.models import Expression
 from sqlalchemy.engine import BindTyping, Dialect
 from sqlalchemy.engine.interfaces import Compiled
+from sqlalchemy.sql import operators
 from sqlalchemy.sql.compiler import SQLCompiler
 
 from django_sqlalchemy_bridge import _sa_result
-from django_sqlalchemy_bridge.tables import FieldType
+from django_sqlalchemy_bridge.tables import FieldType, _generic_type, _oracle_name
 
 __all__ = ["execute", "execute_result", "stream"]
 
@@ -116,6 +118,64 @@ def _mysql_dialect(*, mariadb: bool, backslash_escapes: bool) -> Dialect:
     return dialect
 
 
+def _is_json(type_: sa.types.TypeEngine) -> bool:
+    return isinstance(_generic_type(type_), sa.JSON)
+
+
+_ERROR_ON_ERROR = " ERROR ON ERROR)"
+
+
+def _null_on_error(sql: str) -> str:
+    return sql[: -len(_ERROR_ON_ERROR)] + ")" if sql.endswith(_ERROR_ON_ERROR) else sql
+
+
+def _oracle_dialect() -> Dialect:
+    from sqlalchemy.dialects.oracle import oracledb
+
+    # Django's Oracle cursor takes "%s" and rewrites it to ":arg0", ":arg1", ...
+    dialect = oracledb.dialect(paramstyle="format")
+
+    class Compiler(_ReturningCompiler, dialect.statement_compiler):
+        def visit_binary(self, binary: Any, override_operator: Any = None, **kw: Any) -> str:
+            # Django stores JSONField as text (NCLOB IS JSON), which Oracle cannot
+            # compare with "=" (ORA-22848), and a key compiles to JSON_QUERY(),
+            # whose text "=" would tell [1,2] from Django's "[1, 2]". Compare JSON
+            # values with JSON_EQUAL(), as the ORM compares whole documents.
+            if (
+                override_operator is None
+                and binary.operator in (operators.eq, operators.ne)
+                and (_is_json(binary.left.type) or _is_json(binary.right.type))
+            ):
+                sql = f"JSON_EQUAL({self.process(binary.left, **kw)}, {self.process(binary.right, **kw)})"
+                return sql if binary.operator is operators.eq else f"NOT {sql}"
+            return super().visit_binary(binary, override_operator=override_operator, **kw)
+
+        if hasattr(dialect.statement_compiler, "visit_json_getitem_op_binary"):  # SQLAlchemy 2.1+
+            # as_string(), as_integer() and the like compile to JSON_VALUE(... ERROR
+            # ON ERROR), which fails the whole statement on a row that lacks the key
+            # or holds another type. Give NULL there instead, as the other backends do.
+            def visit_json_getitem_op_binary(self, binary: Any, operator: Any, **kw: Any) -> str:
+                return _null_on_error(super().visit_json_getitem_op_binary(binary, operator, **kw))
+
+            def visit_json_path_getitem_op_binary(self, binary: Any, operator: Any, **kw: Any) -> str:
+                return _null_on_error(super().visit_json_path_getitem_op_binary(binary, operator, **kw))
+
+    class Preparer(dialect.preparer):
+        def quote(self, ident: str, force: Any = None) -> str:  # force: SQLAlchemy 2.0's deprecated argument
+            # Django names every Oracle table, column and alias as quote_name() does:
+            # upper case and, past 30 characters, cut with a hash. SQLAlchemy would
+            # leave a lower case name unquoted (which Oracle reads upper case, so
+            # far the same) but quote a mixed case or long one as it is, naming a
+            # column Django never made. Spell them all Django's way, quoted, even a
+            # quoted_name(..., quote=True): Django makes no case-sensitive names.
+            return self.quote_identifier(_oracle_name(ident))
+
+    dialect.statement_compiler = Compiler
+    dialect.preparer = Preparer
+    dialect.identifier_preparer = Preparer(dialect)
+    return dialect
+
+
 # Every Django backend here takes "%s" placeholders and "%%" for a literal percent
 # sign (the SQLite wrapper rewrites them to "?" and "%") whenever params are passed.
 _DIALECT_FACTORIES = {
@@ -125,6 +185,7 @@ _DIALECT_FACTORIES = {
     "mysql-no-backslash-escapes": lambda: _mysql_dialect(mariadb=False, backslash_escapes=False),
     "mariadb": lambda: _mysql_dialect(mariadb=True, backslash_escapes=True),
     "mariadb-no-backslash-escapes": lambda: _mysql_dialect(mariadb=True, backslash_escapes=False),
+    "oracle": _oracle_dialect,
 }
 _dialects: dict[str, Dialect] = {}
 
@@ -165,7 +226,9 @@ class Prepared:
     ``param_rows`` holds one positional tuple per execution: exactly one unless
     ``many``. ``converters`` has one entry per result column, ``None`` where the
     value is returned raw; it is empty when the statement's columns are unknown.
-    ``rowcount_only`` marks DML that compiled without ``RETURNING``.
+    ``rowcount_only`` marks DML that compiled without ``RETURNING``. ``names``
+    are the result columns' names as the statement was built (empty when
+    unknown), which Oracle reports respelled.
     """
 
     sql: str
@@ -173,19 +236,22 @@ class Prepared:
     many: bool
     converters: list[tuple[list[Any], Any] | None]
     rowcount_only: bool = False
+    names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class _Compiled:
     """What compiling a statement for one dialect gives, whatever the connection or values.
 
-    ``types`` are the result columns' types (empty when the statement's columns
-    are unknown); ``defaults_error`` is why the statement is refused, if it is.
+    ``types`` and ``names`` are the result columns' types and names (empty when
+    the statement's columns are unknown); ``defaults_error`` is why the
+    statement is refused, if it is.
     """
 
     compiled: Compiled
     dml: bool
     types: tuple[sa.types.TypeEngine, ...]
+    names: tuple[str, ...]
     defaults_error: str | None
 
 
@@ -223,7 +289,9 @@ def _compile(
     compiled = target.compile(dialect=dialect, column_keys=list(column_keys) if column_keys is not None else None)
     dml = isinstance(stmt, sa.sql.dml.UpdateBase)
     columns = compiled.returned_columns if dml else getattr(target, "exported_columns", None)
-    entry = _Compiled(compiled, dml, tuple(column.type for column in columns or ()), _python_defaults_error(compiled))
+    columns = list(columns or ())
+    names = tuple(name for column in columns if isinstance(name := getattr(column, "name", None), str))
+    entry = _Compiled(compiled, dml, tuple(column.type for column in columns), names, _python_defaults_error(compiled))
     if target is not stmt:
         try:
             _cache.setdefault(stmt, {})[key] = entry
@@ -267,7 +335,14 @@ def prepare(
             raise ValueError("every executemany row must compile to the same SQL (check expanding IN lists)")
         param_rows.append(_positional(compiled, state, connection))
     converters = [_field_converters(type_, connection) for type_ in entry.types]
-    return Prepared(sql or compiled.string, param_rows, many, converters, rowcount_only=entry.dml and not entry.types)
+    return Prepared(
+        sql or compiled.string,
+        param_rows,
+        many,
+        converters,
+        rowcount_only=entry.dml and not entry.types,
+        names=entry.names,
+    )
 
 
 def check_returning(connection: BaseDatabaseWrapper, verb: str = "INSERT") -> None:
@@ -277,8 +352,16 @@ def check_returning(connection: BaseDatabaseWrapper, verb: str = "INSERT") -> No
     any database. SQLite has it from 3.35 for INSERT, UPDATE and DELETE alike,
     and Django (5.2 runs on 3.31) reports it as ``can_return_columns_from_insert``.
     MySQL has none; MariaDB, which Django also reports as vendor "mysql", has
-    INSERT and DELETE ... RETURNING but no UPDATE ... RETURNING.
+    INSERT and DELETE ... RETURNING but no UPDATE ... RETURNING. Oracle returns
+    the rows into output bind variables (``RETURNING ... INTO``), which Django's
+    cursor does not give back: run anyway, the statement would report its
+    rowcount, so it is refused for every verb although Django reports it.
     """
+    if connection.vendor == "oracle":
+        raise NotSupportedError(
+            f"database {connection.alias!r} ({connection.display_name}) returns {verb} ... RETURNING rows into "
+            "output binds (RETURNING ... INTO), which the bridge does not support"
+        )
     supported = connection.features.can_return_columns_from_insert
     if supported and verb == "UPDATE" and connection.vendor == "mysql":
         supported = False
@@ -340,7 +423,16 @@ def _field_converters(type_: sa.types.TypeEngine, connection: BaseDatabaseWrappe
         return None
     field = type_.field
     expression = field.get_col(field.model._meta.db_table)
-    functions = connection.ops.get_db_converters(expression) + expression.get_db_converters(connection)
+    functions = connection.ops.get_db_converters(expression)
+    if connection.vendor == "oracle":
+        # Django's Oracle cursor gives a number with no declared precision (sum(),
+        # avg(), CASE) as int or Decimal by its text. The ORM coerces an
+        # expression's number to its field's type (BaseExpression.convert_value)
+        # before the field's converters; a plain column is typed already.
+        coerce = Expression(output_field=field).convert_value
+        if coerce is not Expression._convert_value_noop:
+            functions.append(coerce)
+    functions += expression.get_db_converters(connection)
     return (functions, expression) if functions else None
 
 
@@ -376,8 +468,29 @@ def _run(prepared: Prepared, connection: BaseDatabaseWrapper) -> tuple[list[str]
             cursor.execute(prepared.sql, prepared.param_rows[0])
         if cursor.description is None:
             return None, cursor.rowcount
-        keys = [column[0] for column in cursor.description]
+        keys = _result_keys(cursor.description, prepared.names, connection)
         return keys, from_db(cursor.fetchall(), prepared.converters, connection)
+
+
+def _result_keys(
+    description: Sequence[Sequence[Any]], names: tuple[str, ...], connection: BaseDatabaseWrapper
+) -> list[str]:
+    """The result's keys: the column names the database reports, read back on Oracle.
+
+    Oracle reports a name as the dialect spelled it, Django's way (upper case,
+    cut past 30 characters), so a column or label the statement names keeps the
+    name it was built with. Any other name (``text()`` columns, SQLAlchemy's
+    anonymous labels such as ``count_1``) is read as SQLAlchemy's Oracle dialect
+    reads it: lower case if Oracle reports it all upper case, else as reported.
+    """
+    keys = [column[0] for column in description]
+    if connection.vendor != "oracle":
+        return keys
+    built = {}
+    for name in names:
+        built.setdefault(_oracle_name(name), name)
+    dialect = dialect_for(connection)
+    return [built.get(key) or str(dialect.normalize_name(key)) for key in keys]
 
 
 def execute(

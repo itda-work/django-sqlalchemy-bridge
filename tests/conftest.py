@@ -6,7 +6,7 @@ from tests import dbenv
 def pytest_report_header(config):
     return (
         f"django-sqlalchemy-bridge: DSB_DB={dbenv.BACKEND} REQUIRE_PG={int(dbenv.REQUIRE_PG)}"
-        f" REQUIRE_MYSQL={int(dbenv.REQUIRE_MYSQL)}"
+        f" REQUIRE_MYSQL={int(dbenv.REQUIRE_MYSQL)} REQUIRE_ORACLE={int(dbenv.REQUIRE_ORACLE)}"
     )
 
 
@@ -15,6 +15,8 @@ def pytest_collection_modifyitems(config, items):
         name, host, required, flag = "PostgreSQL", "DSB_PG_HOST", dbenv.REQUIRE_PG, "REQUIRE_PG"
     elif dbenv.MYSQL_MISSING:
         name, host, required, flag = "MySQL", "DSB_MYSQL_HOST", dbenv.REQUIRE_MYSQL, "REQUIRE_MYSQL"
+    elif dbenv.ORACLE_MISSING:
+        name, host, required, flag = "Oracle", "DSB_ORACLE_HOST", dbenv.REQUIRE_ORACLE, "REQUIRE_ORACLE"
     else:
         return
     db_items = [item for item in items if item.get_closest_marker("django_db")]
@@ -29,11 +31,13 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def needs_returning(db):
-    """Skip unless the database has INSERT and DELETE ... RETURNING (MySQL has none)."""
+    """Skip unless the bridge runs INSERT and DELETE ... RETURNING there (not on MySQL or Oracle)."""
     from django.db import connection
 
     if not connection.features.can_return_columns_from_insert:
         pytest.skip(f"{connection.display_name} has no RETURNING")
+    if connection.vendor == "oracle":
+        pytest.skip("Oracle returns RETURNING rows into output binds, which the bridge refuses")
 
 
 @pytest.fixture

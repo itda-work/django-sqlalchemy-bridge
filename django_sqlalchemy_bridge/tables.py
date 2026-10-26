@@ -19,6 +19,7 @@ from typing import Any
 import sqlalchemy as sa
 from django.conf import settings
 from django.db import connections, models
+from django.db.backends.utils import truncate_name
 from sqlalchemy.dialects import mysql, postgresql
 from sqlalchemy.dialects.postgresql import operators as pg_operators
 from sqlalchemy.sql import operators
@@ -84,6 +85,12 @@ class FieldType(sa.types.TypeDecorator):
         self.impl = impl
         self.field = field
 
+    def bind_processor(self, dialect: sa.engine.Dialect) -> None:
+        # Values convert through the field, never through the generic type's
+        # processor, which SQLAlchemy 2.0 still builds for every bind (and which,
+        # for JSON on its Oracle dialect, cannot be built).
+        return None
+
     def coerce_compared_value(self, op: Any, value: Any) -> sa.types.TypeEngine:
         if op in _SAME_VALUE_OPERATORS:
             return self
@@ -111,6 +118,10 @@ class _MySQLJSON(mysql.JSON):
 
     def bind_expression(self, bindvalue: Any) -> Any:
         return sa.func.JSON_EXTRACT(bindvalue, sa.literal_column("'$'"), type_=self)
+
+
+# SQLAlchemy compiles JSON for Oracle from 2.1 on.
+_SA_ORACLE_JSON = tuple(int(n) for n in sa.__version__.split(".")[:2]) >= (2, 1)
 
 
 def _string(field: models.Field) -> sa.types.TypeEngine:
@@ -147,10 +158,13 @@ _TYPES = {
     "UUIDField": lambda f: sa.Uuid(),
     # Django stores JSONField as jsonb on PostgreSQL. The comparator comes from the
     # type an expression is built with, before any dialect is chosen, so JSONB has
-    # to be the base type for contains() and has_key() to exist; SQLite compiles
-    # JSON, MySQL and MariaDB JSON with bound values read as documents.
+    # to be the base type for contains() and has_key() to exist; SQLite and Oracle
+    # compile JSON, MySQL and MariaDB JSON with bound values read as documents.
+    # SQLAlchemy 2.0's Oracle dialect has no JSON (nor JSON keys and paths).
     "JSONField": lambda f: (
-        postgresql.JSONB().with_variant(sa.JSON(), "sqlite").with_variant(_MySQLJSON(), "mysql", "mariadb")
+        postgresql.JSONB()
+        .with_variant(sa.JSON(), "sqlite", *(["oracle"] if _SA_ORACLE_JSON else []))
+        .with_variant(_MySQLJSON(), "mysql", "mariadb")
     ),
     "BinaryField": lambda f: sa.LargeBinary(),
 }
@@ -409,23 +423,60 @@ def _db_column_types(connection: Any, cursor: Any, table_name: str, description:
         # its JSON is longtext and its UUID a native type, so its columns are not compared.
         cursor.execute(_MYSQL_COLUMN_TYPES, [table_name])
         return {name: _normalize_type("mysql", sql_type) for name, sql_type in cursor.fetchall()}
+    # Nor are Oracle's: its data dictionary spells types apart from db_type()
+    # (FLOAT(126) for DOUBLE PRECISION, TIMESTAMP(6), identity columns).
     return {}
+
+
+# Django's Oracle backend keeps identifiers to 30 characters (DatabaseOperations.max_name_length()).
+_ORACLE_MAX_NAME_LENGTH = 30
+
+
+def _oracle_name(name: str) -> str:
+    """The name Django's Oracle ``quote_name()`` gives ``name``: cut past 30 characters (with a hash), upper case."""
+    # str(): a quoted_name(..., quote=True) keeps its case through upper().
+    return truncate_name(str(name), _ORACLE_MAX_NAME_LENGTH).upper()
+
+
+def _db_name(connection: Any, name: str) -> str:
+    """``name`` as the database's introspection reports it (on Oracle, respelled and in lower case)."""
+    if connection.vendor == "oracle":
+        name = _oracle_name(name)
+    return connection.introspection.identifier_converter(name)
+
+
+def _db_nullable(connection: Any, column: sa.Column) -> bool:
+    """Whether the live column allows NULL for ``column``, as Django's schema editor makes it.
+
+    Where the database stores an empty string as NULL (Oracle), a field that
+    takes empty strings is nullable whatever its ``null``.
+    """
+    field = column.info.get("django_field")
+    if (
+        field is not None
+        and connection.features.interprets_empty_strings_as_nulls
+        and field.empty_strings_allowed
+        and not field.primary_key
+    ):
+        return True
+    return column.nullable
 
 
 def _compare_with_db(model: type[models.Model], table: sa.Table, using: str) -> list[Difference]:
     connection = connections[using]
     introspection = connection.introspection
     with connection.cursor() as cursor:
-        if table.name not in introspection.table_names(cursor):
+        if _db_name(connection, table.name) not in introspection.table_names(cursor):
             return [Difference("db", "table_missing", None, table.name, None)]
         description = introspection.get_table_description(cursor, table.name)
         db_types = _db_column_types(connection, cursor, table.name, description)
-    fields = {field.column: field for field in _model_fields(model)}
+    fields = {_db_name(connection, field.column): field for field in _model_fields(model)}
+    columns = {_db_name(connection, column.name): column for column in table.c}
     diffs = []
     in_db = set()
     for info in description:
         in_db.add(info.name)
-        have = table.c.get(info.name)
+        have = columns.get(info.name)
         if have is None:
             try:
                 db_type = introspection.get_field_type(info.type_code, info)
@@ -438,11 +489,11 @@ def _compare_with_db(model: type[models.Model], table: sa.Table, using: str) -> 
         if info.name in db_types and want is not None:
             want = _normalize_type(connection.vendor, want)
             if db_types[info.name] != want:
-                diffs.append(Difference("db", "type", info.name, db_types[info.name], want))
-        if bool(info.null_ok) != have.nullable:
-            diffs.append(Difference("db", "nullable", info.name, bool(info.null_ok), have.nullable))
-    for have in table.c:
-        if have.name not in in_db:
+                diffs.append(Difference("db", "type", have.name, db_types[info.name], want))
+        if bool(info.null_ok) != (nullable := _db_nullable(connection, have)):
+            diffs.append(Difference("db", "nullable", have.name, bool(info.null_ok), nullable))
+    for name, have in columns.items():
+        if name not in in_db:
             diffs.append(Difference("db", "unexpected", have.name, None, _type_repr(have)))
     return diffs
 
@@ -459,9 +510,11 @@ def compare_table(
     The table is compared with a table freshly built from the current model:
     table name, columns, types, nullability, primary key and foreign key targets.
     With ``check_db=True`` it is also compared with the live table in database
-    ``using``: column names, nullability and, on SQLite, PostgreSQL and MySQL
-    (not MariaDB), the column type the model field's ``db_type()`` asks for. An
-    empty list means no drift.
+    ``using``: column names (as the backend spells them: Oracle's upper case
+    names, cut past 30 characters), nullability (as Django's schema editor
+    makes it: on Oracle a field that takes empty strings is nullable) and, on
+    SQLite, PostgreSQL and MySQL (not MariaDB or Oracle), the column type the
+    model field's ``db_type()`` asks for. An empty list means no drift.
     """
     model = _check_model(model)
     if table is None:
