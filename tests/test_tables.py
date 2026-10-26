@@ -1,5 +1,6 @@
 import pytest
 import sqlalchemy as sa
+from django.apps import apps
 from django.db import connection, models
 from django.test import override_settings
 from django.test.utils import isolate_apps
@@ -226,8 +227,15 @@ def test_select_from_the_table_runs_on_the_live_database(model):
         assert [col[0] for col in cursor.description] == list(table_for(model).c.keys())
 
 
+ALL_MODELS = [
+    model
+    for label in ("testapp", "benchapp")
+    for model in apps.get_app_config(label).get_models(include_auto_created=True)
+]
+
+
 @pytest.mark.django_db
-@pytest.mark.parametrize("model", [Author, Book, Gadget, Specimen])
+@pytest.mark.parametrize("model", ALL_MODELS, ids=[m._meta.label for m in ALL_MODELS])
 def test_tables_match_models_and_live_database(model):
     assert compare_table(model, check_db=True) == []
     assert_table_matches(model, check_db=True)
@@ -343,6 +351,128 @@ def test_drift_against_the_database_detects_nullability():
             cursor.execute("ALTER TABLE testapp_author DROP COLUMN name")
             cursor.execute("ALTER TABLE testapp_author ADD COLUMN name varchar(100) NULL")
     assert compare_table(Author, check_db=True) == [Difference("db", "nullable", "name", expected=True, actual=False)]
+
+
+def drop_indexes_on(table, column):
+    def run(cursor):
+        for name, info in connection.introspection.get_constraints(cursor, table).items():
+            if info["index"] and info["columns"] == [column]:
+                cursor.execute(f"DROP INDEX {connection.ops.quote_name(name)}")
+
+    return run
+
+
+# Each case changes the live columns the way a missed migration would: {vendor: (SQL, differences)}.
+# On SQLite a column is dropped and added again, as SQLite cannot change a column's type in place.
+DB_TYPE_DRIFT = {
+    "varchar_length": {
+        "postgresql": (
+            ["ALTER TABLE testapp_author ALTER COLUMN name TYPE varchar(50)"],
+            [Difference("db", "type", "name", expected="character varying(50)", actual="character varying(100)")],
+        ),
+        "sqlite": (
+            [
+                "ALTER TABLE testapp_author DROP COLUMN name",
+                "ALTER TABLE testapp_author ADD COLUMN name varchar(50) NOT NULL DEFAULT ''",
+            ],
+            [Difference("db", "type", "name", expected="varchar(50)", actual="varchar(100)")],
+        ),
+    },
+    "type": {
+        "postgresql": (
+            ["ALTER TABLE testapp_author ALTER COLUMN joined_at TYPE timestamp without time zone"],
+            [
+                Difference(
+                    "db",
+                    "type",
+                    "joined_at",
+                    expected="timestamp without time zone",
+                    actual="timestamp with time zone",
+                )
+            ],
+        ),
+        "sqlite": (
+            [
+                "ALTER TABLE testapp_author DROP COLUMN joined_at",
+                "ALTER TABLE testapp_author ADD COLUMN joined_at date NOT NULL DEFAULT '2026-01-01'",
+            ],
+            [Difference("db", "type", "joined_at", expected="date", actual="datetime")],
+        ),
+    },
+    "numeric_precision": {
+        "postgresql": (
+            ["ALTER TABLE testapp_book ALTER COLUMN price TYPE numeric(12, 3)"],
+            [Difference("db", "type", "price", expected="numeric(12,3)", actual="numeric(10,2)")],
+        ),
+    },
+    "foreign_key_target_type": {
+        "postgresql": (
+            ["ALTER TABLE testapp_book ALTER COLUMN author_id TYPE integer"],
+            [Difference("db", "type", "author_id", expected="integer", actual="bigint")],
+        ),
+        "sqlite": (
+            [
+                drop_indexes_on("dsb_specimen", "gadget_id"),
+                "ALTER TABLE dsb_specimen DROP COLUMN gadget_id",
+                "ALTER TABLE dsb_specimen ADD COLUMN gadget_id varchar(20) NULL",
+            ],
+            [Difference("db", "type", "gadget_id", expected="varchar(20)", actual="varchar(12)")],
+        ),
+    },
+}
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("case", DB_TYPE_DRIFT)
+def test_drift_against_the_database_detects_column_types(case):
+    if connection.vendor not in DB_TYPE_DRIFT[case]:
+        pytest.skip(f"{connection.vendor} does not report this from its columns")
+    statements, expected = DB_TYPE_DRIFT[case][connection.vendor]
+    sql = next(each for each in statements if isinstance(each, str))
+    model = {"testapp_author": Author, "testapp_book": Book, "dsb_specimen": Specimen}[sql.split()[2]]
+    with connection.cursor() as cursor:
+        for each in statements:
+            each(cursor) if callable(each) else cursor.execute(each)
+    assert compare_table(model, check_db=True) == expected
+
+
+@isolate_apps("tests.testapp")
+@pytest.mark.django_db
+def test_type_check_accepts_the_spellings_a_hand_written_table_uses():
+    # Synonyms and spacing the database accepts are the same type, not drift.
+    class Handmade(models.Model):
+        id = models.AutoField(primary_key=True)
+        name = models.CharField(max_length=20)
+        price = models.DecimalField(max_digits=10, decimal_places=2)
+        at = models.DateTimeField()
+        when = models.TimeField()
+        flag = models.BooleanField()
+        n = models.IntegerField()
+        big = models.BigIntegerField()
+        ratio = models.FloatField()
+
+        class Meta:
+            app_label = "testapp"
+            db_table = "dsb_handmade"
+
+    if connection.vendor == "postgresql":
+        columns = (
+            "id serial PRIMARY KEY, name VARCHAR( 20 ) NOT NULL, price DECIMAL(10,2) NOT NULL,"
+            ' at timestamptz NOT NULL, "when" time NOT NULL, flag bool NOT NULL, n int4 NOT NULL,'
+            " big int8 NOT NULL, ratio float8 NOT NULL"
+        )
+    else:
+        columns = (
+            "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, name VARCHAR( 20 ) NOT NULL, price Decimal NOT NULL,"
+            ' at DATETIME NOT NULL, "when" TIME NOT NULL, flag BOOL NOT NULL, n INTEGER NOT NULL,'
+            " big BIGINT NOT NULL, ratio REAL NOT NULL"
+        )
+    with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE dsb_handmade ({columns})")
+    try:
+        assert compare_table(Handmade, check_db=True) == []
+    finally:
+        forget_table(Handmade)
 
 
 @pytest.mark.django_db

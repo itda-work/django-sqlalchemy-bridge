@@ -11,6 +11,7 @@ that type, and so does a result column that selects it.
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -311,13 +312,71 @@ def _compare_with_model(model: type[models.Model], table: sa.Table) -> list[Diff
     return diffs
 
 
-def _compare_with_db(table: sa.Table, using: str) -> list[Difference]:
+# PostgreSQL's other names for a type, mapped to the name format_type() reports.
+_PG_TYPE_NAMES = {
+    "int": "integer",
+    "int4": "integer",
+    "serial": "integer",
+    "serial4": "integer",
+    "int8": "bigint",
+    "bigserial": "bigint",
+    "serial8": "bigint",
+    "int2": "smallint",
+    "smallserial": "smallint",
+    "serial2": "smallint",
+    "float8": "double precision",
+    "float4": "real",
+    "bool": "boolean",
+    "decimal": "numeric",
+    "varchar": "character varying",
+    "char": "character",
+    "bpchar": "character",
+    "timestamptz": "timestamp with time zone",
+    "timestamp": "timestamp without time zone",
+    "timetz": "time with time zone",
+    "time": "time without time zone",
+}
+
+_PG_COLUMN_TYPES = """
+    SELECT a.attname, format_type(a.atttypid, a.atttypmod)
+    FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+    WHERE c.relname = %s AND pg_table_is_visible(c.oid) AND a.attnum > 0 AND NOT a.attisdropped
+"""
+
+
+def _normalize_type(vendor: str, sql_type: str) -> str:
+    """``sql_type`` spelled one way per type: lower case, single spaces, no spaces in ``(...)``."""
+    text = " ".join(sql_type.lower().split())
+    text = re.sub(r"\s*([(),])\s*", r"\1", text)
+    if vendor == "postgresql":
+        match = re.fullmatch(r"([a-z0-9_ ]+?)(\(.*\))?", text)
+        if match:
+            name, args = match.groups()
+            text = _PG_TYPE_NAMES.get(name, name) + (args or "")
+    return text
+
+
+def _db_column_types(connection: Any, cursor: Any, table_name: str, description: list) -> dict[str, str]:
+    """The live type of each column, normalized; empty on backends whose types are not compared."""
+    if connection.vendor == "sqlite":
+        # The declared type, which for a table Django made is the field's db_type().
+        return {info.name: _normalize_type("sqlite", info.type_code) for info in description}
+    if connection.vendor == "postgresql":
+        # format_type() keeps the length and precision that the type_code alone does not.
+        cursor.execute(_PG_COLUMN_TYPES, [table_name])
+        return {name: _normalize_type("postgresql", sql_type) for name, sql_type in cursor.fetchall()}
+    return {}
+
+
+def _compare_with_db(model: type[models.Model], table: sa.Table, using: str) -> list[Difference]:
     connection = connections[using]
     introspection = connection.introspection
     with connection.cursor() as cursor:
         if table.name not in introspection.table_names(cursor):
             return [Difference("db", "table_missing", None, table.name, None)]
         description = introspection.get_table_description(cursor, table.name)
+        db_types = _db_column_types(connection, cursor, table.name, description)
+    fields = {field.column: field for field in _model_fields(model)}
     diffs = []
     in_db = set()
     for info in description:
@@ -329,7 +388,14 @@ def _compare_with_db(table: sa.Table, using: str) -> list[Difference]:
             except KeyError:
                 db_type = str(info.type_code)
             diffs.append(Difference("db", "missing", info.name, db_type, None))
-        elif bool(info.null_ok) != have.nullable:
+            continue
+        field = fields.get(info.name)
+        want = field.db_type(connection) if field is not None else None
+        if info.name in db_types and want is not None:
+            want = _normalize_type(connection.vendor, want)
+            if db_types[info.name] != want:
+                diffs.append(Difference("db", "type", info.name, db_types[info.name], want))
+        if bool(info.null_ok) != have.nullable:
             diffs.append(Difference("db", "nullable", info.name, bool(info.null_ok), have.nullable))
     for have in table.c:
         if have.name not in in_db:
@@ -349,14 +415,16 @@ def compare_table(
     The table is compared with a table freshly built from the current model:
     table name, columns, types, nullability, primary key and foreign key targets.
     With ``check_db=True`` it is also compared with the live table in database
-    ``using`` (column names and nullability only). An empty list means no drift.
+    ``using``: column names, nullability and, on SQLite and PostgreSQL, the
+    column type the model field's ``db_type()`` asks for. An empty list means no
+    drift.
     """
     model = _check_model(model)
     if table is None:
         table = table_for(model)
     diffs = _compare_with_model(model, table)
     if check_db:
-        diffs.extend(_compare_with_db(table, using))
+        diffs.extend(_compare_with_db(model, table, using))
     return diffs
 
 

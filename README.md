@@ -116,7 +116,10 @@ assert_table_matches(Order, check_db=True)
 
 - 테이블명은 `db_table`, 컬럼명은 `db_column`(FK 는 `<이름>_id`)을 따르고, PK·nullable·FK 대상 컬럼을 반영합니다.
 - 각 `Column.info["django_field"]`에 원래 Django 필드가, `Table.info["django_model"]`에 모델이 들어 있습니다. 컬럼 타입은 아래 표의 SQLAlchemy 타입을 감싼 `FieldType`(`TypeDecorator`)이고 `column.type.impl`이 표의 타입, `column.type.field`가 Django 필드입니다. SQLAlchemy 타입은 SQL 컴파일에만 쓰고, 값 변환은 Django 필드가 맡습니다(아래 "실행하기").
-- `compare_table(model, table=None, check_db=False)`는 차이를 `Difference(source, kind, column, expected, actual)` 리스트로 돌려줍니다. 모델과는 테이블명·컬럼·타입(`FieldType`이면 감싼 타입)·nullable·PK·FK 를, 실제 DB 와는 컬럼 유무와 nullable 을 비교합니다(DB 타입 비교는 예정).
+- `compare_table(model, table=None, check_db=False)`는 차이를 `Difference(source, kind, column, expected, actual)` 리스트로 돌려줍니다. 모델과는 테이블명·컬럼·타입(`FieldType`이면 감싼 타입)·nullable·PK·FK 를, 실제 DB 와는 컬럼 유무·nullable·컬럼 타입을 비교합니다. 타입은 모델 필드의 `db_type()`(FK 는 대상 컬럼 타입)과 DB 컬럼 타입을 같은 표기로 맞춘 뒤 비교하고, 다르면 `Difference("db", "type", 컬럼, DB 타입, 모델이 바라는 타입)`을 냅니다(예: `"character varying(50)"` 대 `"character varying(100)"`).
+  - PostgreSQL: `format_type()`이 주는 이름으로 맞춥니다(`varchar`→`character varying`, `serial`·`int4`→`integer`, `timestamptz`→`timestamp with time zone`, `decimal`→`numeric` 등). varchar 길이와 `numeric(p,s)` 정밀도까지 비교합니다.
+  - SQLite: 테이블에 선언된 타입 텍스트를 대소문자·공백만 맞춰 비교합니다. Django 가 만든 테이블은 선언 타입이 곧 `db_type()`입니다. Django 가 `DecimalField`를 정밀도 없이 `decimal`로 선언하므로 SQLite 에서는 decimal 정밀도 차이를 잡지 못하고, 손으로 만든 테이블이 다른 동의어(`INT` 등)를 썼다면 타입 차이로 보고합니다.
+  - 그 밖의 백엔드에서는 타입을 비교하지 않습니다.
 - 다중 DB 는 아직 `default` 만 받습니다(`using` 인자 자리만 있음).
 - `forget_table(model)`은 캐시와 공용 `MetaData`에서 테이블을 지웁니다. 테스트(`isolate_apps` 등)에서 동적 모델을 정리하는 용도입니다.
 
