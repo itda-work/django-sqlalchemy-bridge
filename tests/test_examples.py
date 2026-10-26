@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import sqlalchemy as sa
 from django.db import connection, transaction
-from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.dialects import mysql, postgresql, sqlite
 
 from django_sqlalchemy_bridge import execute, table_for
 from tests.testapp.models import Category, DailyStock, PriceChange, Product, Sale
@@ -23,10 +23,17 @@ pytestmark = pytest.mark.django_db
 
 SEOUL = ZoneInfo("Asia/Seoul")
 IS_PG = connection.vendor == "postgresql"
+IS_MYSQL = connection.vendor == "mysql"
+_NAMES = {"postgresql": "PostgreSQL", "sqlite": "SQLite", "mysql": "MySQL"}
+
+
+def only_on(*vendors, syntax):
+    names = " and ".join(_NAMES[vendor] for vendor in vendors)
+    return pytest.mark.skipif(connection.vendor not in vendors, reason=f"{syntax}: {names} only")
 
 
 def pg_only(syntax):
-    return pytest.mark.skipif(not IS_PG, reason=f"SQLite has no {syntax}")
+    return only_on("postgresql", syntax=syntax)
 
 
 categories = table_for(Category)
@@ -168,7 +175,7 @@ def test_window_over_a_cte_ranks_products_by_revenue_in_their_category(shop):
     assert execute(stmt) == [("JEANS", 1), ("SHIRT", 1), ("SOCKS", 2), ("TEA", 1)]
 
 
-@pg_only("LATERAL")
+@only_on("postgresql", "mysql", syntax="LATERAL")
 def test_lateral_join_takes_the_two_largest_sales_of_each_product(shop):
     top = (
         sa.select(sales.c.sold_at, sales.c.amount)
@@ -216,6 +223,7 @@ def upsert_insert():
     return postgresql.insert if connection.vendor == "postgresql" else sqlite.insert
 
 
+@only_on("postgresql", "sqlite", syntax="ON CONFLICT and RETURNING")
 def test_insert_on_conflict_do_update_returning(shop):
     shirt = Product.objects.get(sku="SHIRT")
     DailyStock.objects.create(product=shirt, day=datetime.date(2026, 10, 26), quantity=7, counted_at=at(26, 9))
@@ -251,6 +259,36 @@ def test_insert_on_conflict_do_update_returning(shop):
     ]
 
 
+@only_on("mysql", syntax="ON DUPLICATE KEY UPDATE")
+def test_insert_on_duplicate_key_update_on_mysql(shop):
+    shirt = Product.objects.get(sku="SHIRT")
+    DailyStock.objects.create(product=shirt, day=datetime.date(2026, 10, 26), quantity=7, counted_at=at(26, 9))
+
+    # readme:upsert-mysql
+    daily_stock = table_for(DailyStock)
+
+    stmt = mysql.insert(daily_stock)  # 컬럼은 아래 params 가 정한다
+    stmt = stmt.on_duplicate_key_update(
+        quantity=daily_stock.c.quantity + stmt.inserted.quantity, counted_at=stmt.inserted.counted_at
+    )
+
+    counted_at = datetime.datetime(2026, 10, 26, 18, tzinfo=ZoneInfo("Asia/Seoul"))
+    params = {"product_id": shirt.pk, "day": counted_at.date(), "quantity": 3, "counted_at": counted_at}
+    with transaction.atomic():
+        count = execute(stmt, params)  # 2: MySQL 은 갱신한 행을 2, 넣은 행을 1 로 센다
+    # /readme:upsert-mysql
+    assert count == 2
+
+    tea = Product.objects.get(sku="TEA")
+    later = at(27, 1)
+    assert execute(stmt, {"product_id": tea.pk, "day": later.date(), "quantity": 5, "counted_at": later}) == 1
+    assert sorted(DailyStock.objects.values_list("product__sku", "day", "quantity", "counted_at")) == [
+        ("SHIRT", datetime.date(2026, 10, 26), 10, counted_at),
+        ("TEA", datetime.date(2026, 10, 27), 5, later),
+    ]
+
+
+@only_on("postgresql", "sqlite", syntax="ON CONFLICT and RETURNING")
 def test_insert_on_conflict_do_nothing_reports_what_it_skipped(shop):
     shirt = Product.objects.get(sku="SHIRT")
     day = datetime.date(2026, 10, 26)
@@ -284,15 +322,21 @@ def test_insert_select_with_on_conflict_rolls_sales_up_into_daily_stock(shop):
         .where(in_day)
         .group_by(sales.c.product_id)
     )
-    stmt = upsert_insert()(daily_stock).from_select(["product_id", "day", "quantity", "counted_at"], rollup)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=[daily_stock.c.product_id, daily_stock.c.day],
-        set_={"quantity": stmt.excluded.quantity, "counted_at": stmt.excluded.counted_at},
-    )
+    names = ["product_id", "day", "quantity", "counted_at"]
+    if IS_MYSQL:
+        stmt = mysql.insert(daily_stock).from_select(names, rollup)
+        stmt = stmt.on_duplicate_key_update(quantity=stmt.inserted.quantity, counted_at=stmt.inserted.counted_at)
+    else:
+        stmt = upsert_insert()(daily_stock).from_select(names, rollup)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[daily_stock.c.product_id, daily_stock.c.day],
+            set_={"quantity": stmt.excluded.quantity, "counted_at": stmt.excluded.counted_at},
+        )
 
     tea = Product.objects.get(sku="TEA")
     DailyStock.objects.create(product=tea, day=day, quantity=99, counted_at=at(25, 0))
-    assert execute(stmt) == 3
+    # Two inserted rows and one updated: MySQL counts the updated one twice.
+    assert execute(stmt) == (4 if IS_MYSQL else 3)
     assert sorted(DailyStock.objects.values_list("product__sku", "day", "quantity", "counted_at")) == [
         ("JEANS", day, 1, at(26, 0)),
         ("SHIRT", day, 2, at(26, 0)),
@@ -324,6 +368,7 @@ def test_insert_from_select_copies_rows_inside_the_django_transaction(shop):
     ]
 
 
+@only_on("postgresql", "sqlite", syntax="UPDATE ... RETURNING")
 def test_update_from_applies_a_staged_price_list(shop):
     PriceChange.objects.create(sku="SHIRT", price=Decimal("27.50"))
     PriceChange.objects.create(sku="TEA", price=Decimal("8.50"))  # unchanged: not updated, not returned
@@ -342,6 +387,25 @@ def test_update_from_applies_a_staged_price_list(shop):
     changed = execute(stmt)  # [("SHIRT", Decimal("27.50"))]
     # /readme:update-from
     assert changed == [("SHIRT", Decimal("27.50"))]
+    assert dict(Product.objects.values_list("sku", "price")) == {
+        "SHIRT": Decimal("27.50"),
+        "JEANS": Decimal("50.00"),
+        "TEA": Decimal("8.50"),
+    }
+
+
+@only_on("mysql", syntax="multiple-table UPDATE")
+def test_multiple_table_update_applies_a_staged_price_list_on_mysql(shop):
+    PriceChange.objects.create(sku="SHIRT", price=Decimal("27.50"))
+    PriceChange.objects.create(sku="TEA", price=Decimal("8.50"))  # unchanged: not counted
+    PriceChange.objects.create(sku="GONE", price=Decimal("1.00"))  # no such product
+    # The same statement as the UPDATE ... FROM example, without RETURNING: MySQL writes "UPDATE products, changes".
+    stmt = (
+        sa.update(products)
+        .where(products.c.sku == price_changes.c.sku, products.c.price != price_changes.c.price)
+        .values(price=price_changes.c.price)
+    )
+    assert execute(stmt) == 1
     assert dict(Product.objects.values_list("sku", "price")) == {
         "SHIRT": Decimal("27.50"),
         "JEANS": Decimal("50.00"),
@@ -387,7 +451,8 @@ def test_data_modifying_cte_moves_rows_in_one_statement(shop):
 
 def test_untyped_values_in_a_select_list_skip_the_field_conversion(shop):
     # Why the INSERT ... SELECT examples type their literals: an untyped aware datetime reaches the driver as is,
-    # and SQLite stores it with its offset instead of in UTC as the ORM does (it still reads back as the same instant).
+    # and SQLite stores it with its offset instead of in UTC as the ORM does (it still reads back as the same
+    # instant); MySQL stores its wall time, a different instant.
     stmt = sa.insert(daily_stock).from_select(
         ["product_id", "day", "quantity", "counted_at"],
         sa.select(products.c.id, sa.literal(datetime.date(2026, 10, 31)), sa.literal(1), sa.literal(at(31, 23))),
@@ -396,6 +461,10 @@ def test_untyped_values_in_a_select_list_skip_the_field_conversion(shop):
     stored = execute(sa.select(sa.cast(daily_stock.c.counted_at, sa.String)).limit(1))[0][0]
     if IS_PG:
         assert stored.endswith("+00")  # PostgreSQL stores timestamptz as an instant either way
+    elif IS_MYSQL:
+        # MySQLdb drops the offset: the Seoul wall time is stored, which Django reads as UTC (9 hours late).
+        assert stored == "2026-10-31 23:00:00.000000"
+        assert DailyStock.objects.filter(counted_at=at(31, 23)).count() == 0
     else:
         assert stored == "2026-10-31 23:00:00+09:00"
         assert DailyStock.objects.filter(counted_at=at(31, 23)).count() == 0  # the ORM compares UTC text

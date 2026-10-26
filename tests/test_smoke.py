@@ -10,7 +10,7 @@ import django_sqlalchemy_bridge
 from tests import dbenv
 from tests.testapp.models import Author, Book
 
-EXPECTED_VENDOR = {"sqlite": "sqlite", "postgres": "postgresql"}[dbenv.BACKEND]
+EXPECTED_VENDOR = {"sqlite": "sqlite", "postgres": "postgresql", "mysql": "mysql"}[dbenv.BACKEND]
 
 
 def test_package_imports():

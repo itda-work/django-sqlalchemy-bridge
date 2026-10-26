@@ -50,8 +50,11 @@ def refused_inserts():
     }
 
 
-@pytest.mark.parametrize("call", refused_inserts().values(), ids=refused_inserts().keys())
-def test_insert_leaving_out_a_python_side_default_is_refused_before_running(call):
+@pytest.mark.parametrize("name", refused_inserts())
+def test_insert_leaving_out_a_python_side_default_is_refused_before_running(name, request):
+    if name in ("execute_result", "stream"):
+        request.getfixturevalue("needs_returning")
+    call = refused_inserts()[name]
     Stamp.objects.create(name="kept")
     with CaptureQueriesContext(connection) as queries, pytest.raises(ValueError, match="Python-side default") as e:
         call()
@@ -83,8 +86,11 @@ def update_calls():
     }
 
 
-@pytest.mark.parametrize("call", update_calls().values(), ids=update_calls().keys())
-def test_update_leaving_out_a_python_side_onupdate_is_refused_instead_of_nulling_it(call):
+@pytest.mark.parametrize("name", update_calls())
+def test_update_leaving_out_a_python_side_onupdate_is_refused_instead_of_nulling_it(name, request):
+    if name in ("execute_result", "stream"):
+        request.getfixturevalue("needs_update_returning")
+    call = update_calls()[name]
     pk = Stamp.objects.create(name="n", note="kept").pk
     with pytest.raises(ValueError, match=r"Python-side default or onupdate of testapp_stamp\.note cannot"):
         call(pk)
@@ -94,13 +100,18 @@ def test_update_leaving_out_a_python_side_onupdate_is_refused_instead_of_nulling
 def test_values_given_for_those_columns_run():
     assert execute(sa.insert(stamps).values(name="a", note="b")) == 1
     assert execute(sa.insert(stamps), [{"name": "c", "note": "d"}]) == 1
-    rows = execute_result(sa.insert(stamps).values(name="e", note="f").returning(stamps.c.name)).all()
-    assert [tuple(row) for row in rows] == [("e",)]
+    if connection.features.can_return_columns_from_insert:  # MySQL has no RETURNING
+        rows = execute_result(sa.insert(stamps).values(name="e", note="f").returning(stamps.c.name)).all()
+        assert [tuple(row) for row in rows] == [("e",)]
+    else:
+        assert execute(sa.insert(stamps).values(name="e", note="f")) == 1
     assert stored() == [("a", "b", "db"), ("c", "d", "db"), ("e", "f", "db")]
     assert execute(sa.update(stamps).where(stamps.c.name == "a").values(name="A", note="B")) == 1
-    assert list(stream(sa.update(stamps).where(stamps.c.name == "c").values(note="D").returning(stamps.c.note))) == [
-        ("D",)
-    ]
+    update = sa.update(stamps).where(stamps.c.name == "c").values(note="D")
+    if connection.vendor == "mysql":  # MySQL and MariaDB have no UPDATE ... RETURNING
+        assert execute(update) == 1
+    else:
+        assert list(stream(update.returning(stamps.c.note))) == [("D",)]
     assert stored() == [("A", "B", "db"), ("c", "D", "db"), ("e", "f", "db")]
 
 

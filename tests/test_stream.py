@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import types
 import uuid
@@ -96,6 +97,7 @@ def test_stream_yields_the_rows_execute_returns():
     assert rows[2][2:] == (Decimal("2.50"), {"i": 2, "s": "한"}, AT)
 
 
+@pytest.mark.usefixtures("needs_update_returning")
 def test_stream_fills_params_and_streams_returning():
     make_authors(3)
     stmt = sa.select(authors.c.name).where(authors.c.name != sa.bindparam("skip")).order_by(authors.c.name)
@@ -275,6 +277,28 @@ def test_postgresql_outside_atomic_uses_a_holdable_cursor():
     next(gen)
     gen.close()
     assert server_cursors() == []
+
+
+# --- MySQL: no server-side cursor ---------------------------------------------
+
+
+@pytest.mark.skipif(connection.vendor != "mysql", reason="MySQL behaviour")
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("in_atomic", [False, True], ids=["autocommit", "atomic"])
+def test_mysql_streams_rows_the_driver_fetched_on_execute(in_atomic):
+    # Django's MySQL backend has no server-side cursor: chunked_cursor() is cursor(),
+    # whose MySQLdb cursor reads the whole result on execute(), as for QuerySet.iterator().
+    import MySQLdb.cursors
+
+    make_authors(5)
+    with transaction.atomic() if in_atomic else contextlib.nullcontext():
+        assert connection.get_autocommit() is not in_atomic
+        with connection.chunked_cursor() as cursor:
+            assert type(cursor.cursor.cursor) is MySQLdb.cursors.Cursor
+        gen = stream(sa.select(authors.c.id).order_by(authors.c.id), chunk_size=2)
+        first = next(gen)
+        Author.objects.create(name="late", joined_at=AT)
+        assert len([first, *gen]) == 5  # the rows were read before "late" was written
 
 
 @pytest.mark.django_db(transaction=True)

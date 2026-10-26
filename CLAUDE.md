@@ -1,6 +1,6 @@
 # django-sqlalchemy-bridge AI Guide
 
-> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.1.0 (알파, 2026-10-26 릴리스)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`. v0.1 이후 후보는 #17. Unreleased: 컴파일 캐시(#28).
+> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.1.0 (알파, 2026-10-26 릴리스)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`. v0.1 이후 후보는 #17. Unreleased: 컴파일 캐시(#28), MySQL(#37).
 
 ## 정본
 
@@ -24,14 +24,20 @@
 ## 테스트·CI 실행법
 
 - 설치 `uv sync`. 린트 `uv run ruff check . && uv run ruff format --check .`.
-- SQLite: `uv run pytest`. 백엔드는 `DSB_DB=sqlite|postgres` 로 고른다(미지정이면 sqlite, `REQUIRE_PG=1` 이면 postgres).
+- SQLite: `uv run pytest`. 백엔드는 `DSB_DB=sqlite|postgres|mysql` 로 고른다(미지정이면 sqlite, `REQUIRE_PG=1` 이면 postgres, `REQUIRE_MYSQL=1` 이면 mysql).
 - PostgreSQL: 접속은 `DSB_PG_HOST/PORT/USER/PASSWORD/NAME`. `DSB_PG_HOST` 가 없으면 DB 테스트는 skip, `REQUIRE_PG=1` 이면 그 skip 이 실패다.
   ```sh
   docker run -d --name dsb-pg -e POSTGRES_USER=dsb -e POSTGRES_PASSWORD=dsb -e POSTGRES_DB=dsb -p 127.0.0.1:55432:5432 postgres:18
   DSB_PG_HOST=127.0.0.1 DSB_PG_PORT=55432 DSB_PG_USER=dsb DSB_PG_PASSWORD=dsb DSB_PG_NAME=dsb REQUIRE_PG=1 uv run pytest
   ```
+- MySQL 8.4: 접속은 `DSB_MYSQL_HOST/PORT/USER/PASSWORD/NAME`(HOST 는 `127.0.0.1`, `localhost` 는 소켓으로 간다). 없으면 skip, `REQUIRE_MYSQL=1` 이면 실패. 드라이버 `mysqlclient` 는 C 확장이라 `dev` 가 아닌 `mysql` 그룹이다(`uv sync --group mysql`, 빌드에 MySQL/MariaDB 클라이언트 라이브러리와 `pkg-config` 필요. 호스트에 brew 로 새로 깔지 말고 없으면 Linux 컨테이너나 CI 로). 테스트 DB 를 만들어야 하므로 root 로 붙는다.
+  ```sh
+  docker run -d --name dsb-mysql -e MYSQL_ROOT_PASSWORD=dsb -e MYSQL_DATABASE=dsb -p 127.0.0.1:53306:3306 mysql:8.4
+  uv sync --group mysql
+  DSB_DB=mysql DSB_MYSQL_HOST=127.0.0.1 DSB_MYSQL_PORT=53306 DSB_MYSQL_USER=root DSB_MYSQL_PASSWORD=dsb DSB_MYSQL_NAME=dsb REQUIRE_MYSQL=1 uv run --no-sync pytest
+  ```
 - 테스트 모델을 바꾸면 `uv run django-admin makemigrations testapp --settings tests.settings --pythonpath .` (스모크 테스트가 누락을 잡는다).
-- CI(`.github/workflows/ci.yml`)는 lint + Python 3.12/3.14 × Django 5.2/6.1 × SQLAlchemy 2.0/2.1 매트릭스. 잡마다 PG 18 서비스로 SQLite·PG 를 각각 돈다. 매트릭스 버전은 `uv sync --locked` 뒤 `uv pip install` 로 덮어쓴다.
+- CI(`.github/workflows/ci.yml`)는 lint + Python 3.12/3.14 × Django 5.2/6.1 × SQLAlchemy 2.0/2.1 매트릭스. 잡마다 PG 18·MySQL 8.4 서비스로 SQLite·PG·MySQL 을 각각 돈다(MariaDB 는 CI 에 없다). 매트릭스 버전은 `uv sync --locked` 뒤 `uv pip install` 로 덮어쓴다.
 
 ## 작업 방식
 
@@ -52,3 +58,4 @@
 - 구현 중 발견(#12): SA 비교자는 dialect 를 고르기 전 식의 기본 타입에서 나온다. `JSON().with_variant(JSONB(), "postgresql")` 는 `contains()` 가 조용히 `LIKE` 가 되므로 `JSONB().with_variant(JSON(), "sqlite")` 로 둔다. JSON 키·경로 bind(`JSONIndexType`·`JSONPathType`)는 값이 아니라 문법이라 SA dialect bind processor 를 쓴다(안 쓰면 SQLite `bad JSON path`). RETURNING 하한은 Django 5.2·6.1 공통 feature `can_return_columns_from_insert`(`can_return_rows_from_update` 는 5.2 에 없음).
 - 구현 중 발견(#21): SA DML 의 `exported_columns`·`_all_selected_columns` 는 `HasMemoized` 에 등록되지 않는 `ro_memoized_property` 라 `_generate()` 가 파생 문장에 복사한다 — 한 번 읽은(실행한) `insert(t)` 에서 `.returning()` 을 파생하면 컬럼이 비어 보인다. `compiled.effective_returning` 도 같은 메모를 읽는다. RETURNING 컬럼은 dialect 컴파일러의 `returning_clause` 가 받는 컬럼으로 얻는다(`_ReturningCompiler`). SELECT 의 `selected_columns` 는 등록된 메모라 안전.
 - 구현 중 발견(#28): `Compiled.statement` 가 컴파일한 문장을 붙잡으므로 문장을 weak key 로 하는 캐시는 생성형 복사본(`inline()`·인자 없는 `execution_options()`)을 컴파일해야 항목이 풀린다. 결과 컨버터는 `connection.ops` bound method 라(SQLite 는 `self.connection.timezone` 을 읽음) vendor·연결을 넘어 캐시하지 않는다 — 매 호출 그 연결로 찾는다.
+- 구현 중 발견(#37): Django vendor `"mysql"` 은 MySQL·MariaDB 둘 다라 dialect 키를 `mysql_is_mariadb`·`sql_mode`(`NO_BACKSLASH_ESCAPES`)로 더 가른다(안 가르면 리터럴 백슬래시가 조용히 두 개). MariaDB 는 INSERT·DELETE RETURNING 만 있고 UPDATE 는 없다(Django feature 는 insert 하나뿐이라 문장 종류로 판정). MySQL 은 JSON 과 문자열을 비교하면 문자열을 JSON 문자열로 봐 `meta["k"] == 1` 이 `{"k": "1"}` 에 맞는다 — JSON 바인드를 ORM 처럼 `JSON_EXTRACT(%s, '$')` 로 감싼다(`_MySQLJSON.bind_expression`). MySQL 은 DDL 이 즉시 커밋돼 테스트 롤백이 스키마를 되돌리지 못한다 — DDL 테스트는 `undo_ddl` 픽스처로 테이블을 다시 만든다. mysqlclient 는 untyped aware datetime 의 오프셋을 버린다.

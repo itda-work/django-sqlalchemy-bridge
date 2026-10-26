@@ -119,6 +119,7 @@ def test_select_converts_on_a_hit():
     assert execute(stmt, {"uid": uuid.uuid4()}) == []
 
 
+@pytest.mark.usefixtures("needs_returning")
 def test_returning_converts_on_a_hit():
     author = make_author()
     stmt = sa.insert(books).returning(books.c.uid, books.c.price, books.c.meta)
@@ -157,9 +158,10 @@ def test_stream_on_a_hit():
     stmt = sa.select(books.c.price).where(books.c.price > sa.bindparam("min")).order_by(books.c.price)
     assert list(stream(stmt, {"min": 0}, chunk_size=2)) == [(Decimal("0.50"),), (Decimal("1.50"),), (Decimal("2.50"),)]
     assert list(stream(stmt, {"min": 1}, chunk_size=2)) == [(Decimal("1.50"),), (Decimal("2.50"),)]
-    returning = sa.update(authors).values(name=sa.bindparam("name")).returning(authors.c.name, authors.c.joined_at)
-    assert list(stream(returning, {"name": "r"})) == [("r", AT)]
-    assert list(stream(returning, {"name": "s"})) == [("s", AT)]
+    if connection.vendor != "mysql":  # MySQL and MariaDB have no UPDATE ... RETURNING
+        returning = sa.update(authors).values(name=sa.bindparam("name")).returning(authors.c.name, authors.c.joined_at)
+        assert list(stream(returning, {"name": "r"})) == [("r", AT)]
+        assert list(stream(returning, {"name": "s"})) == [("s", AT)]
 
 
 def test_json_keys_and_paths_on_a_hit():
@@ -205,8 +207,9 @@ def test_statements_derived_from_a_cached_one_compile_their_own_sql():
     assert execute(base.add_columns(authors.c.joined_at).where(authors.c.id == first.pk)) == [("x", AT)]
     insert = sa.insert(authors)
     assert execute(insert, {"name": "z", "joined_at": AT}) == 1
-    # #21: .returning() derived from an executed statement still returns and converts.
-    assert execute(insert.values(name="w", joined_at=AT).returning(authors.c.joined_at)) == [(AT,)]
+    if connection.features.can_return_columns_from_insert:
+        # #21: .returning() derived from an executed statement still returns and converts.
+        assert execute(insert.values(name="w", joined_at=AT).returning(authors.c.joined_at)) == [(AT,)]
     assert execute(insert, {"name": "v", "joined_at": AT}) == 1
 
 
@@ -259,6 +262,7 @@ def test_one_statement_on_two_aliases_converts_for_each():
 
 
 @pytest.mark.django_db(databases=["default", "other"])
+@pytest.mark.usefixtures("needs_returning")
 def test_the_returning_check_is_made_per_alias(monkeypatch):
     stmt = sa.insert(authors).values(name=sa.bindparam("name"), joined_at=AT).returning(authors.c.name)
     assert execute(stmt, {"name": "a"}) == [("a",)]
@@ -275,7 +279,7 @@ def test_the_returning_check_is_made_per_alias(monkeypatch):
 @pytest.mark.parametrize(
     "make",
     [
-        lambda: (sa.select(authors.c.name).where(authors.c.id == sa.bindparam("pk")), {"pk": 0}),
+        lambda: (sa.select(authors.c.name).where(authors.c.id == sa.bindparam("pk")), {"pk": 1}),
         lambda: (sa.insert(authors).returning(authors.c.id), {"name": "a", "joined_at": AT}),
         lambda: (sa.update(authors).values(name="u").returning(authors.c.joined_at), None),
         lambda: (sa.delete(authors).where(authors.c.id.in_(sa.bindparam("ids", expanding=True))), {"ids": [1, 2]}),
@@ -284,8 +288,10 @@ def test_the_returning_check_is_made_per_alias(monkeypatch):
     ],
     ids=["select", "insert returning", "update returning", "delete in", "text", "union"],
 )
-def test_the_cache_entry_goes_with_its_statement(make):
+def test_the_cache_entry_goes_with_its_statement(make, request):
     stmt, params = make()
+    if isinstance(stmt, sa.Insert | sa.Update) and stmt.returning_column_descriptions:
+        request.getfixturevalue("needs_update_returning" if isinstance(stmt, sa.Update) else "needs_returning")
     execute(stmt, params)
     assert stmt in execution._cache
     size = len(execution._cache)

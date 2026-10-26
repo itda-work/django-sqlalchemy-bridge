@@ -41,6 +41,11 @@ dev = [
     "pytest-django>=4.9",
     "ruff>=0.8",
 ]
+# The MySQL tests' driver. A C extension that builds against the MySQL client
+# library, so it is not in "dev": `uv sync --group mysql` when running them.
+mysql = [
+    "mysqlclient>=2.3.0",
+]
 
 [build-system]
 requires = ["hatchling"]

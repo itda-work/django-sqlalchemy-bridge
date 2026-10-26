@@ -1,10 +1,12 @@
+import types
+
 import pytest
 import sqlalchemy as sa
 from django.apps import apps
 from django.db import connection, models
 from django.test import override_settings
 from django.test.utils import isolate_apps
-from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.dialects import mysql, postgresql, sqlite
 
 from django_sqlalchemy_bridge import (
     Difference,
@@ -18,7 +20,38 @@ from django_sqlalchemy_bridge import (
 )
 from tests.testapp.models import Author, Book, Gadget, Specimen
 
-DIALECTS = {"sqlite": sqlite.dialect(), "postgresql": postgresql.dialect()}
+DIALECTS = {"sqlite": sqlite.dialect(), "postgresql": postgresql.dialect(), "mysql": mysql.dialect()}
+
+
+@pytest.fixture
+def undo_ddl(db):
+    """Put back, on MySQL, the tables a test changed with DDL.
+
+    MySQL commits each DDL statement at once, so the test's rollback cannot undo
+    it; the tables of the models passed to ``rebuild([...])`` are dropped and
+    created again from the model, the tables named in ``drop([...])`` dropped.
+    """
+    rebuild, drop = [], []
+    yield types.SimpleNamespace(rebuild=rebuild.extend, drop=drop.extend)
+    if connection.vendor != "mysql":
+        return
+    qn = connection.ops.quote_name
+    with connection.cursor() as cursor:
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+        try:
+            for model in rebuild:
+                through = [f.remote_field.through for f in model._meta.local_many_to_many]
+                for each in [*through, model]:
+                    cursor.execute(f"DROP TABLE IF EXISTS {qn(each._meta.db_table)}")
+                # Collected, not run: the schema editor refuses DDL inside the test's atomic().
+                with connection.schema_editor(collect_sql=True) as editor:
+                    editor.create_model(model)
+                for sql in editor.collected_sql:
+                    cursor.execute(sql.rstrip(";"))
+            for name in drop:
+                cursor.execute(f"DROP TABLE IF EXISTS {qn(name)}")
+        finally:
+            cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
 
 
 def type_repr(table, name):
@@ -211,7 +244,7 @@ def test_only_the_default_database_for_now():
 
 
 @pytest.mark.parametrize("dialect", DIALECTS.values(), ids=DIALECTS.keys())
-def test_tables_compile_on_both_dialects(dialect):
+def test_tables_compile_on_every_dialect(dialect):
     for model in (Author, Book, Gadget, Specimen):
         str(sa.schema.CreateTable(table_for(model)).compile(dialect=dialect))
         str(sa.select(table_for(model)).compile(dialect=dialect))
@@ -308,10 +341,11 @@ def test_drift_detects_a_json_column_without_the_jsonb_operators():
     ]
 
 
-def test_json_column_compiles_as_jsonb_on_postgresql_and_json_on_sqlite():
+def test_json_column_compiles_as_jsonb_on_postgresql_and_json_elsewhere():
     create = sa.schema.CreateTable(table_for(Book))
     assert "meta JSONB NOT NULL" in str(create.compile(dialect=DIALECTS["postgresql"]))
     assert "meta JSON NOT NULL" in str(create.compile(dialect=DIALECTS["sqlite"]))
+    assert "meta JSON NOT NULL" in str(create.compile(dialect=DIALECTS["mysql"]))
 
 
 def test_drift_detects_a_renamed_table():
@@ -331,7 +365,8 @@ def test_assert_table_matches_lists_every_difference():
 
 
 @pytest.mark.django_db
-def test_drift_against_the_database_detects_added_and_dropped_columns():
+def test_drift_against_the_database_detects_added_and_dropped_columns(undo_ddl):
+    undo_ddl.rebuild([Author])
     with connection.cursor() as cursor:
         cursor.execute("ALTER TABLE testapp_author ADD COLUMN extra integer NULL")
         cursor.execute("ALTER TABLE testapp_author DROP COLUMN joined_at")
@@ -343,10 +378,13 @@ def test_drift_against_the_database_detects_added_and_dropped_columns():
 
 
 @pytest.mark.django_db
-def test_drift_against_the_database_detects_nullability():
+def test_drift_against_the_database_detects_nullability(undo_ddl):
+    undo_ddl.rebuild([Author])
     with connection.cursor() as cursor:
         if connection.vendor == "postgresql":
             cursor.execute("ALTER TABLE testapp_author ALTER COLUMN name DROP NOT NULL")
+        elif connection.vendor == "mysql":
+            cursor.execute("ALTER TABLE testapp_author MODIFY name varchar(100) NULL")
         else:
             cursor.execute("ALTER TABLE testapp_author DROP COLUMN name")
             cursor.execute("ALTER TABLE testapp_author ADD COLUMN name varchar(100) NULL")
@@ -362,10 +400,23 @@ def drop_indexes_on(table, column):
     return run
 
 
+def drop_foreign_keys_on(table, column):
+    def run(cursor):
+        for name, info in connection.introspection.get_constraints(cursor, table).items():
+            if info["foreign_key"] and info["columns"] == [column]:
+                cursor.execute(f"ALTER TABLE {table} DROP FOREIGN KEY {connection.ops.quote_name(name)}")
+
+    return run
+
+
 # Each case changes the live columns the way a missed migration would: {vendor: (SQL, differences)}.
 # On SQLite a column is dropped and added again, as SQLite cannot change a column's type in place.
 DB_TYPE_DRIFT = {
     "varchar_length": {
+        "mysql": (
+            ["ALTER TABLE testapp_author MODIFY name varchar(50) NOT NULL"],
+            [Difference("db", "type", "name", expected="varchar(50)", actual="varchar(100)")],
+        ),
         "postgresql": (
             ["ALTER TABLE testapp_author ALTER COLUMN name TYPE varchar(50)"],
             [Difference("db", "type", "name", expected="character varying(50)", actual="character varying(100)")],
@@ -379,6 +430,11 @@ DB_TYPE_DRIFT = {
         ),
     },
     "type": {
+        "mysql": (
+            ["ALTER TABLE testapp_author MODIFY joined_at datetime NOT NULL"],
+            # Without (6) the column drops the microseconds Django writes.
+            [Difference("db", "type", "joined_at", expected="datetime", actual="datetime(6)")],
+        ),
         "postgresql": (
             ["ALTER TABLE testapp_author ALTER COLUMN joined_at TYPE timestamp without time zone"],
             [
@@ -400,12 +456,24 @@ DB_TYPE_DRIFT = {
         ),
     },
     "numeric_precision": {
+        "mysql": (
+            ["ALTER TABLE testapp_book MODIFY price numeric(12, 3) NOT NULL"],
+            [Difference("db", "type", "price", expected="decimal(12,3)", actual="decimal(10,2)")],
+        ),
         "postgresql": (
             ["ALTER TABLE testapp_book ALTER COLUMN price TYPE numeric(12, 3)"],
             [Difference("db", "type", "price", expected="numeric(12,3)", actual="numeric(10,2)")],
         ),
     },
     "foreign_key_target_type": {
+        "mysql": (
+            [
+                # MySQL refuses a foreign key between columns of different types.
+                drop_foreign_keys_on("testapp_book", "author_id"),
+                "ALTER TABLE testapp_book MODIFY author_id integer NOT NULL",
+            ],
+            [Difference("db", "type", "author_id", expected="int", actual="bigint")],
+        ),
         "postgresql": (
             ["ALTER TABLE testapp_book ALTER COLUMN author_id TYPE integer"],
             [Difference("db", "type", "author_id", expected="integer", actual="bigint")],
@@ -424,12 +492,13 @@ DB_TYPE_DRIFT = {
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("case", DB_TYPE_DRIFT)
-def test_drift_against_the_database_detects_column_types(case):
-    if connection.vendor not in DB_TYPE_DRIFT[case]:
-        pytest.skip(f"{connection.vendor} does not report this from its columns")
+def test_drift_against_the_database_detects_column_types(case, undo_ddl):
+    if connection.vendor not in DB_TYPE_DRIFT[case] or getattr(connection, "mysql_is_mariadb", False):
+        pytest.skip(f"{connection.display_name} does not report this from its columns")
     statements, expected = DB_TYPE_DRIFT[case][connection.vendor]
-    sql = next(each for each in statements if isinstance(each, str))
+    sql = next(each for each in statements if isinstance(each, str) and each.startswith("ALTER"))
     model = {"testapp_author": Author, "testapp_book": Book, "dsb_specimen": Specimen}[sql.split()[2]]
+    undo_ddl.rebuild([model])
     with connection.cursor() as cursor:
         for each in statements:
             each(cursor) if callable(each) else cursor.execute(each)
@@ -438,7 +507,7 @@ def test_drift_against_the_database_detects_column_types(case):
 
 @isolate_apps("tests.testapp")
 @pytest.mark.django_db
-def test_type_check_accepts_the_spellings_a_hand_written_table_uses():
+def test_type_check_accepts_the_spellings_a_hand_written_table_uses(undo_ddl):
     # Synonyms and spacing the database accepts are the same type, not drift.
     class Handmade(models.Model):
         id = models.AutoField(primary_key=True)
@@ -461,12 +530,19 @@ def test_type_check_accepts_the_spellings_a_hand_written_table_uses():
             ' at timestamptz NOT NULL, "when" time NOT NULL, flag bool NOT NULL, n int4 NOT NULL,'
             " big int8 NOT NULL, ratio float8 NOT NULL"
         )
+    elif connection.vendor == "mysql":
+        columns = (
+            "id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY, name VARCHAR( 20 ) NOT NULL, price NUMERIC(10,2) NOT NULL,"
+            " at DATETIME(6) NOT NULL, `when` TIME(6) NOT NULL, flag BOOLEAN NOT NULL, n INTEGER NOT NULL,"
+            " big BIGINT(20) NOT NULL, ratio REAL NOT NULL"
+        )
     else:
         columns = (
             "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, name VARCHAR( 20 ) NOT NULL, price Decimal NOT NULL,"
             ' at DATETIME NOT NULL, "when" TIME NOT NULL, flag BOOL NOT NULL, n INTEGER NOT NULL,'
             " big BIGINT NOT NULL, ratio REAL NOT NULL"
         )
+    undo_ddl.drop(["dsb_handmade"])
     with connection.cursor() as cursor:
         cursor.execute(f"CREATE TABLE dsb_handmade ({columns})")
     try:
@@ -476,7 +552,8 @@ def test_type_check_accepts_the_spellings_a_hand_written_table_uses():
 
 
 @pytest.mark.django_db
-def test_drift_against_a_missing_table():
+def test_drift_against_a_missing_table(undo_ddl):
+    undo_ddl.rebuild([Specimen])
     with connection.cursor() as cursor:
         cursor.execute("DROP TABLE dsb_specimen_tags")
         cursor.execute("DROP TABLE dsb_specimen")

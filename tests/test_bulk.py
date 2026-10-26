@@ -23,6 +23,11 @@ specimens = table_for(Specimen)
 IS_PG = connection.vendor == "postgresql"
 
 
+def author_ids():
+    """Every Author pk, in insert order (MySQL returns no ids from a bulk INSERT)."""
+    return list(Author.objects.order_by("id").values_list("id", flat=True))
+
+
 def make_author(name="a"):
     return Author.objects.create(name=name, joined_at=AT)
 
@@ -158,10 +163,11 @@ def test_bulk_update_matches_orm_bulk_update():
 
 def test_bulk_update_text_choices_and_decimal():
     author = make_author()
-    books_ = Book.objects.bulk_create(
+    Book.objects.bulk_create(
         [Book(uid=uuid.uuid4(), author=author, title=f"t{i}", price=Decimal("1.00")) for i in range(3)]
     )
-    rows = [{"id": b.pk, "status": Book.Status.PUBLISHED, "price": Decimal("2.50")} for b in books_[:2]]
+    pks = Book.objects.order_by("title").values_list("pk", flat=True)[:2]
+    rows = [{"id": pk, "status": Book.Status.PUBLISHED, "price": Decimal("2.50")} for pk in pks]
     assert bulk_update(books, rows) == 2
     assert list(Book.objects.order_by("title").values_list("status", "price")) == [
         ("published", Decimal("2.50")),
@@ -176,7 +182,7 @@ def test_aware_datetimes_are_stored_in_utc():
     bulk_insert(authors, rows)
     author = Author.objects.get()
     assert author.joined_at == AT
-    if connection.vendor == "sqlite":
+    if connection.vendor in ("sqlite", "mysql"):
         # Naive UTC, as the ORM stores it: no 9-hour shift.
         assert stored("testapp_author", "id")[0]["joined_at"] == datetime.datetime(2026, 10, 25, 0, 30, 15, 123456)
     later = AT + datetime.timedelta(hours=1)
@@ -208,10 +214,11 @@ def test_bulk_insert_runs_one_query():
 
 
 def test_bulk_update_runs_one_query():
-    rows = [{"name": f"n{i}", "joined_at": AT} for i in range(50)]
-    ids = [r[0] for r in bulk_insert(authors, rows, returning=["id"])]
+    bulk_insert(authors, [{"name": f"n{i}", "joined_at": AT} for i in range(50)])
+    rows = [{"id": pk, "name": "x"} for pk in author_ids()]
     with CaptureQueriesContext(connection) as ctx:
-        assert bulk_update(authors, [{"id": pk, "name": "x"} for pk in ids]) == 50
+        assert bulk_update(authors, rows) == 50
+    # One executemany() elsewhere; MySQLdb runs it as one UPDATE per row.
     assert len(ctx.captured_queries) == 1
     if IS_PG:
         assert "unnest" in ctx.captured_queries[0]["sql"].lower()
@@ -229,6 +236,7 @@ def test_empty_rows_run_nothing():
 # --- RETURNING ---------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("needs_returning")
 def test_returning_gives_rows_in_input_order_converted_by_the_field():
     author = make_author()
     names = [f"b{i:04d}" for i in range(300)][::-1]
@@ -243,6 +251,7 @@ def test_returning_gives_rows_in_input_order_converted_by_the_field():
     assert dict(Book.objects.values_list("id", "title")) == {r[0]: r[1] for r in out}
 
 
+@pytest.mark.usefixtures("needs_returning")
 def test_returning_keeps_the_order_across_batches(monkeypatch):
     # Force small batches on backends that split the multi-row INSERT.
     monkeypatch.setattr(type(connection.features), "max_query_params", 7, raising=False)
@@ -277,8 +286,8 @@ def test_bulk_writes_send_no_model_signals():
     pre_save.connect(receiver, sender=Author)
     post_save.connect(receiver, sender=Author)
     try:
-        (pk,) = bulk_insert(authors, [{"name": "n", "joined_at": AT}], returning=["id"])[0]
-        bulk_update(authors, [{"id": pk, "name": "m"}])
+        bulk_insert(authors, [{"name": "n", "joined_at": AT}])
+        bulk_update(authors, [{"id": author_ids()[0], "name": "m"}])
     finally:
         pre_save.disconnect(receiver, sender=Author)
         post_save.disconnect(receiver, sender=Author)
@@ -408,7 +417,7 @@ def test_bridge_reads_what_bulk_insert_wrote():
     assert row == (values["data"], values["amount"], values["happened_at"])
 
 
-@pytest.mark.skipif(not IS_PG, reason="SQLite does not enforce varchar lengths")
+@pytest.mark.skipif(connection.vendor == "sqlite", reason="SQLite does not enforce varchar lengths")
 def test_too_long_values_fail_instead_of_being_cut():
     # The arrays are cast to varchar[] (no length), so the column assignment checks the length,
     # as an ORM write does, instead of a varchar(100)[] cast truncating silently.
@@ -468,6 +477,7 @@ def test_bulk_insert_batch_size_larger_than_the_rows_is_one_statement():
     assert len(ctx.captured_queries) == 1
 
 
+@pytest.mark.usefixtures("needs_returning")
 def test_bulk_insert_returning_with_batch_size_keeps_the_input_order():
     rows = [{"name": f"n{i:02d}", "joined_at": AT} for i in range(10)][::-1]
     with CaptureQueriesContext(connection) as ctx:
@@ -480,6 +490,7 @@ def test_bulk_insert_returning_with_batch_size_keeps_the_input_order():
     assert dict(Author.objects.values_list("id", "name")) == {r[1]: r[0] for r in out}
 
 
+@pytest.mark.usefixtures("needs_returning")
 def test_bulk_insert_returning_batch_size_is_capped_by_the_backend_limit(monkeypatch):
     # SQLite: a batch_size above bulk_batch_size() still splits at the backend's limit.
     monkeypatch.setattr(type(connection.features), "max_query_params", 7, raising=False)
@@ -491,7 +502,8 @@ def test_bulk_insert_returning_batch_size_is_capped_by_the_backend_limit(monkeyp
 
 
 def test_bulk_update_batch_size_splits_the_rows_and_sums_the_rowcount():
-    ids = [r[0] for r in bulk_insert(authors, [{"name": "old", "joined_at": AT}] * 9, returning=["id"])]
+    bulk_insert(authors, [{"name": "old", "joined_at": AT}] * 9)
+    ids = author_ids()
     rows = [{"id": pk, "name": f"new{pk}"} for pk in ids] + [{"id": max(ids) + 1000, "name": "ghost"}]
     with CaptureQueriesContext(connection) as ctx:
         assert bulk_update(authors, rows, batch_size=4) == 9  # misses count nothing
@@ -519,6 +531,8 @@ def test_bulk_update_checks_keys_across_batches_before_running():
 @pytest.mark.parametrize("batch_size", [None, 2])
 def test_bulk_insert_that_fails_in_a_later_batch_writes_nothing(batch_size, returning, monkeypatch):
     # Outside any atomic(): the 2nd batch (or, unbatched on SQLite, the 4th executemany row) breaks Book.uid.
+    if returning and not connection.features.can_return_rows_from_bulk_insert:
+        pytest.skip(f"{connection.display_name} has no RETURNING")
     if returning:
         monkeypatch.setattr(type(connection.features), "max_query_params", 12, raising=False)  # SQLite: 2 rows a batch
     author = make_author()
@@ -534,7 +548,8 @@ def test_bulk_insert_that_fails_in_a_later_batch_writes_nothing(batch_size, retu
 def test_bulk_update_that_fails_in_a_later_batch_writes_nothing(batch_size):
     author = make_author()
     uids = [uuid.uuid4() for _ in range(4)]
-    pks = [r[0] for r in bulk_insert(books, [book_row(author, u) for u in uids], returning=["id"])]
+    bulk_insert(books, [book_row(author, u) for u in uids])
+    pks = list(Book.objects.order_by("id").values_list("id", flat=True))
     # Row 3 takes row 0's old uid; row 0 is not updated, so the 2nd batch breaks Book.uid.
     rows = [{"id": pks[1], "uid": uuid.uuid4()}, {"id": pks[2], "uid": uuid.uuid4()}, {"id": pks[3], "uid": uids[0]}]
     with pytest.raises(IntegrityError):
