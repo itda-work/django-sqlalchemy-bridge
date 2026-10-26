@@ -112,6 +112,7 @@ Do not create a SQLAlchemy `Engine` or `Session`. Writes through the bridge skip
 ## 설계 원칙
 
 - **연결과 트랜잭션은 Django가 관리합니다.** SQLAlchemy는 SQL을 만들고 컴파일하는 데만 쓰고, 실행은 항상 Django 커서로 합니다. 그래서 `atomic()`, savepoint, `on_commit`, `execute_wrapper`, `assertNumQueries`, Django 연결 풀, PgBouncer 설정이 그대로 동작합니다.
+  - SQLAlchemy `Connection`·ORM `Session`은 Django 커서를 감싼 가짜 DBAPI 연결 위에서도 쓰지 않습니다(#39 에서 실험). 그 경로에서는 SQLAlchemy 의 `commit()`·`rollback()`·`begin()`이 에러 없이 아무 일도 하지 않고, SQLAlchemy 타입 변환이 돌아 시간대가 9시간 밀리거나 Enum 이 이름으로 저장되며(SQLite 에서는 Django 가 쓴 datetime 을 읽지도 못함), dialect 의 연결 훅이 Django 연결을 바꿉니다(SQLite 의 `FLOOR`·`REGEXP` 함수 교체, PostgreSQL notice handler 누적). Oracle 은 첫 연결부터 실패합니다.
 - **SQLAlchemy 공개 API를 우선합니다.** 공개 API만으로 안 되는 부분(외부에서 받은 행으로 SQLAlchemy `Result`를 만드는 경로)은 어댑터 모듈 한 곳에 가두고, 지원하는 SQLAlchemy 버전 범위를 좁게 고정해 CI로 지킵니다.
 - **테이블 구조의 기준은 Django 모델 하나입니다.** `sa.Table`은 Django 모델에서 만들고, 마이그레이션은 Django가 맡습니다.
 - **값 변환은 Django 필드를 따릅니다.** 쓸 때는 `get_db_prep_value`, 읽을 때는 Django ORM이 쓰는 변환기를 거칩니다. 그래서 JSON·UUID·시간대가 있는 datetime·Decimal·Enum이 ORM과 똑같이 왕복합니다. (SQLAlchemy 타입 변환을 그대로 쓰면 SQLite에서 시간이 9시간 밀리거나 Enum이 값 대신 이름으로 저장되는 문제가 있어 피합니다.)
