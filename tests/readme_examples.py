@@ -56,25 +56,27 @@ def _name(path: Path) -> str:
     return path.relative_to(ROOT).as_posix()
 
 
-def _optional(doc: Path, required: dict[str, str]) -> dict[str, tuple[Path, str]]:
+def _optional(doc: Path, required: dict[str, str], extra: dict[Path, str]) -> dict[str, tuple[Path, str]]:
     """The snippets ``doc`` may show from its ``EXTRA`` files, by name, with the file each comes from."""
     found: dict[str, tuple[Path, str]] = {}
     for path in EXTRA.get(doc, ()):
-        for name, body in snippets(tested=path).items():
+        for name, body in snippets(extra.get(path), tested=path).items():
             if name in required or name in found:
                 raise ValueError(f"snippet {name!r} of {path.name} has a name another file of {doc.name} uses")
             found[name] = (path, body)
     return found
 
 
-def differences(text: str, source: str | None = None, *, doc: Path = README) -> list[str]:
+def differences(
+    text: str, source: str | None = None, *, doc: Path = README, extra: dict[Path, str] | None = None
+) -> list[str]:
     """What in ``text`` (the document ``doc``) differs from the tested snippets.
 
-    ``source`` stands in for the text of the file paired with ``doc``.
+    ``source`` stands in for the text of the file paired with ``doc``, ``extra`` for that of its ``EXTRA`` files.
     """
     doc_name, tested_name = _name(doc), _name(PAIRS[doc])
     tested = snippets(source, tested=PAIRS[doc])
-    optional = _optional(doc, tested)
+    optional = _optional(doc, tested, extra or {})
     shown = [match["name"] for match in _pattern().finditer(text)]
     found = [
         f"{name}: {doc_name} shows an example {tested_name} has no snippet for"
@@ -94,7 +96,7 @@ def differences(text: str, source: str | None = None, *, doc: Path = README) -> 
 
 def write(text: str, source: str | None = None, *, doc: Path = README) -> str:
     tested = snippets(source, tested=PAIRS[doc])
-    bodies = {**{name: body for name, (_, body) in _optional(doc, tested).items()}, **tested}
+    bodies = {**{name: body for name, (_, body) in _optional(doc, tested, {}).items()}, **tested}
     for name, body in bodies.items():
         text = _pattern(name).sub(lambda _, body=body: _block(name, body), text)
     return text

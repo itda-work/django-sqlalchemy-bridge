@@ -21,12 +21,14 @@ from sqlalchemy.dialects import postgresql, sqlite
 from django_sqlalchemy_bridge import execute, table_for
 from tests.testapp.models import Category, DailyStock, PriceChange, Product, Sale, SaleArchive
 
+# readme:cmp-tables
 categories = table_for(Category)
 products = table_for(Product)
 sales = table_for(Sale)
 daily_stock = table_for(DailyStock)
 price_changes = table_for(PriceChange)
 archive = table_for(SaleArchive)
+# /readme:cmp-tables
 
 
 # 1. The revenue of a category's whole subtree.
