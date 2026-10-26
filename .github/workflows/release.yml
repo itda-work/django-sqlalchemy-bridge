@@ -21,6 +21,8 @@ jobs:
         run: python3 scripts/release_check.py "$GITHUB_REF_NAME"
 
       - run: uv build
+      - name: Check the wheel carries llms.txt
+        run: python3 scripts/release_check.py --wheel dist/*.whl
       - run: uvx twine check dist/*
 
       - uses: actions/upload-artifact@v7
