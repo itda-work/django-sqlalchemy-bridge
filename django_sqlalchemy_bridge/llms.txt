@@ -10,7 +10,8 @@ Supported: SQLite, PostgreSQL (psycopg 3), MySQL 8.4 (mysqlclient), Oracle (orac
 
 - Use it for SQL the ORM writes badly: recursive CTEs, several CTEs, window functions, `INSERT … ON CONFLICT … RETURNING`, `UPDATE … FROM`, `INSERT … SELECT`, PostgreSQL `LATERAL`, `DISTINCT ON` and data-modifying CTEs, bulk UPDATE and INSERT (`bulk_update`, `bulk_insert`). Use it instead of raw SQL strings.
 - Do not use it for queries the ORM expresses naturally, single-row CRUD, or writes that need signals, `save()`, field `default`, `auto_now` or validation. Use the Django ORM there.
-- The point is expressiveness. Expect a speed gain only for bulk writes (`bulk_*`).
+- The point is expressiveness. Expect a speed gain for bulk writes (`bulk_*`) and where the ORM needs extra queries or a trip through Python; the same SQL runs as fast either way.
+- Measured on six requests, ORM best effort against the bridge (PostgreSQL, docs/comparisons.md): a subtree total by recursive CTE was 2.4x, `UPDATE … FROM … RETURNING` 1.5x and moving rows by `INSERT … SELECT` + `DELETE` 10x faster with the bridge. The ORM's locked read plus `bulk_create(update_conflicts=True)` beat a multi-row `ON CONFLICT … RETURNING` upsert by 1.4-2.3x (the bridge compiles a new `VALUES` statement on every call).
 
 ## Rules
 
@@ -194,5 +195,6 @@ execute(sa.insert(daily_stock).from_select(["product_id", "day", "quantity", "co
 
 - [README](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/README.md) (Korean): design principles, value conversion, limits, benchmarks
 - [Example tests](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/tests/test_examples.py): runnable originals of the examples above
+- [ORM versus bridge](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/docs/comparisons.md) (Korean): six requests written with the ORM alone and with the bridge, with query counts and timings
 - [DRF and class-based views](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/docs/drf.md) (Korean): recipes for ViewSet, pagination, writes and TemplateView, and what does not work (ModelViewSet, ModelSerializer, filter backends)
 - [CHANGELOG](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/CHANGELOG.md)

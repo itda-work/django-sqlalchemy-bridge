@@ -13,7 +13,8 @@ SECRET_KEY = "django-sqlalchemy-bridge-bench"
 USE_TZ = True
 TIME_ZONE = "UTC"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-INSTALLED_APPS = ["bench.benchapp"]
+# The test suite's shop models, for the ORM-versus-bridge comparison (bench/scenarios/compare.py).
+INSTALLED_APPS = ["bench.benchapp", "tests.testapp"]
 
 BACKEND = os.environ.get("DSB_DB", "sqlite")
 _child_db = os.environ.get("DSB_BENCH_DB_NAME")

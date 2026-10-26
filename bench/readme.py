@@ -1,23 +1,27 @@
-"""Render the README's benchmark tables from the result files, and check they match.
+"""Render the benchmark tables of README.md and docs/comparisons.md from the result files, and check they match.
 
-    uv run python -m bench.readme          # exit 1 if a README table differs from its result file
-    uv run python -m bench.readme --write  # rewrite the tables in README.md
+    uv run python -m bench.readme          # exit 1 if a table differs from its result file
+    uv run python -m bench.readme --write  # rewrite the tables in README.md and docs/comparisons.md
 
-Every number in the "성능과 메모리" tables comes from here. A table sits
-between ``<!-- bench:NAME -->`` and ``<!-- /bench:NAME -->``; ``TABLES`` says
-which result file, variants and measurement it shows. Standard library only, so
-the test suite can run the check without the benchmark dependencies.
+Every number in the "성능과 메모리" tables and the ORM-versus-bridge
+comparisons comes from here. A table sits between ``<!-- bench:NAME -->`` and
+``<!-- /bench:NAME -->``; ``TABLES`` says which result file, variants and
+measurement it shows, and which documents must show it. Standard library only,
+so the test suite can run the check without the benchmark dependencies.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
+COMPARISONS = ROOT / "docs" / "comparisons.md"
+DOCS = (README, COMPARISONS)
 RESULTS = ROOT / "bench" / "results"
 
 
@@ -121,8 +125,63 @@ RUNNING_ROWS = [
 ]
 
 
+TREE_ROWS = [
+    ("orm_levels", "ORM: 한 단계에 쿼리 하나씩"),
+    ("orm_python", "ORM: 카테고리 전체를 읽어 파이썬에서"),
+    ("bridge", "브리지: 재귀 CTE"),
+]
+LATEST_ROWS = [
+    ("orm_window", "ORM: `Window(RowNumber())`로 거르기"),
+    ("orm_prefetch", "ORM: 잘라 낸 `Prefetch`"),
+    ("bridge", "브리지: `LATERAL`"),
+]
+UPSERT_ROWS = [
+    ("orm_loop", "ORM: 행마다 `update()`, 없으면 `create()`"),
+    ("orm_bulk", "ORM: 잠가 읽기 + `bulk_create(update_conflicts=True)`"),
+    ("bridge", "브리지: `ON CONFLICT DO UPDATE … RETURNING`"),
+]
+PRICES_ROWS = [
+    ("orm_subquery", "ORM: 읽기 + `Subquery` UPDATE"),
+    ("orm_bulk_update", "ORM: 읽기 + `bulk_update(batch_size=1000)`"),
+    ("bridge", "브리지: `UPDATE … FROM … RETURNING`"),
+]
+ARCHIVE_ROWS = [
+    ("orm", "ORM: 읽기 + `bulk_create()` + `delete()`"),
+    ("bridge", "브리지: `INSERT … SELECT` + `DELETE`"),
+    ("bridge_cte", "브리지: 데이터를 바꾸는 CTE"),
+]
+REPORT_ROWS = [
+    ("orm", "ORM: 상관 `Subquery` + `Window`"),
+    ("bridge", "브리지: CTE + 윈도 함수"),
+]
+
+
 def _sizes(*ns: int) -> list[tuple[str, dict]]:
     return [(f"{n:,}행", {"n": n}) for n in ns]
+
+
+# request -> (rows, [(header, case selector)]); a header is formatted with its case's fields.
+COMPARISONS_SPEC = {
+    "tree": (TREE_ROWS, [(f"깊이 {d}", {"depth": d}) for d in (3, 5, 7)]),
+    "latest": (LATEST_ROWS, [("상품 {products:,}", {"products": n}) for n in (1_000, 10_000)]),
+    "upsert": (UPSERT_ROWS, [("{rows:,}행", {"rows": n}) for n in (100, 1_000, 5_000)]),
+    "prices": (PRICES_ROWS, [("상품 {products:,}", {"products": n}) for n in (1_000, 10_000)]),
+    "archive": (ARCHIVE_ROWS, [("판매 {sales:,}", {"sales": n}) for n in (10_000, 100_000)]),
+    "report": (REPORT_ROWS, [("상품 {products:,}", {"products": n}) for n in (1_000, 10_000)]),
+}
+_CMP_METRICS = [("queries", "쿼리"), ("ms", "시간 (ms)")]
+# The comparisons README.md shows as cards, PostgreSQL only.
+CARDS = ("tree", "prices", "archive", "upsert")
+
+
+def _comparison(db: str, request: str, docs: tuple[Path, ...]) -> dict:
+    """A table of every size's queries and time, and the largest size's tracemalloc peak."""
+    rows, cases = COMPARISONS_SPEC[request]
+    cases = [(header, {"request": request, **selector}) for header, selector in cases]
+    columns = [(f"{header} {label}", selector, metric) for header, selector in cases for metric, label in _CMP_METRICS]
+    largest, selector = cases[-1]
+    columns.append((f"{largest} tracemalloc 피크 (MiB)", selector, "tracemalloc"))
+    return {"file": _file(db, "compare"), "columns": columns, "rows": rows, "docs": docs}
 
 
 # name -> (result file, case columns [(header, case selector)], rows, metrics [(header, metric)])
@@ -236,6 +295,11 @@ TABLES: dict[str, dict] = {
         "metric": ["ms", "tracemalloc"],
     },
 }
+for _request in COMPARISONS_SPEC:
+    TABLES[f"pg-compare-{_request}"] = _comparison(
+        "postgres", _request, (README, COMPARISONS) if _request in CARDS else (COMPARISONS,)
+    )
+    TABLES[f"sqlite-compare-{_request}"] = _comparison("sqlite", _request, (COMPARISONS,))
 
 METRIC_HEADERS = {
     "ms": "시간 (ms)",
@@ -243,6 +307,7 @@ METRIC_HEADERS = {
     "rss": "RSS 증가 (MiB)",
     "us_per_call": "호출당 (µs)",
     "us_per_query": "쿼리당 (µs)",
+    "queries": "쿼리",
     "server": "서버 백엔드 메모리 증가 (MiB)",
 }
 
@@ -276,6 +341,8 @@ def _cell(measurement: dict | None, metric: str, case: dict) -> str:
             return f"시간 초과 (>{measurement['timeout_s']:.0f} s)"
         mark = " ²" if "too many SQL variables" in measurement["error"] else ""
         return f"실패: `{measurement['error'].split(':')[0]}`{mark}"
+    if metric == "queries":
+        return f"{measurement['queries']:,}"
     if metric == "ms":
         text = _num(measurement["best_s"] * 1000)
         return f"{text} (1회)" if measurement.get("cut_short") else text
@@ -295,23 +362,37 @@ def _cell(measurement: dict | None, metric: str, case: dict) -> str:
     raise ValueError(metric)
 
 
-def render(name: str) -> str:
-    spec = TABLES[name]
-    result = _load(spec["file"])
+def _columns(spec: dict, result: dict) -> list[tuple[str, dict, str]]:
+    """``(header, case, metric)`` of each column: ``spec["columns"]``, or every case by every metric."""
+    if "columns" in spec:
+        found = []
+        for header, selector, metric in spec["columns"]:
+            case = _case(result, selector)
+            found.append((header.format(**case), case, metric))
+        return found
     metrics = spec["metric"] if isinstance(spec["metric"], list) else [spec["metric"]]
     cases = [(header, _case(result, selector)) for header, selector in spec["cases"]]
-    headers = []
-    for header, _ in cases:
+    columns = []
+    for header, case in cases:
         for metric in metrics:
             label = METRIC_HEADERS[metric]
-            headers.append(f"{header} {label}".strip() if len(cases) > 1 or header else label)
-    lines = ["| | " + " | ".join(headers) + " |", "|---|" + "---:|" * len(headers)]
+            columns.append((f"{header} {label}".strip() if len(cases) > 1 or header else label, case, metric))
+    return columns
+
+
+def render(name: str, doc: Path = README) -> str:
+    """Table ``name`` as document ``doc`` shows it (the result file linked relative to ``doc``)."""
+    spec = TABLES[name]
+    result = _load(spec["file"])
+    columns = _columns(spec, result)
+    lines = ["| | " + " | ".join(header for header, _, _ in columns) + " |", "|---|" + "---:|" * len(columns)]
     for key, label in spec["rows"]:
-        if all(key not in case["variants"] for _, case in cases):
+        if all(key not in case["variants"] for _, case, _ in columns):
             continue  # not run on this backend (django-pgbulk is PostgreSQL-only)
-        cells = [_cell(case["variants"].get(key), metric, case) for _, case in cases for metric in metrics]
+        cells = [_cell(case["variants"].get(key), metric, case) for _, case, metric in columns]
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
-    lines.append(f"\n<sub>결과 파일: [`{spec['file']}`]({spec['file']})</sub>")
+    link = Path(os.path.relpath(ROOT / spec["file"], doc.parent)).as_posix()
+    lines.append(f"\n<sub>결과 파일: [`{spec['file']}`]({link})</sub>")
     return "\n".join(lines)
 
 
@@ -330,12 +411,17 @@ def environment(db: str, scenario: str = "update") -> str:
     )
 
 
-def blocks() -> dict[str, str]:
-    out = {name: render(name) for name in TABLES}
-    for db in ("postgres", "sqlite"):
-        out[f"env-{db}"] = environment(db)
-    out["env-postgres-batch"] = environment("postgres", "batch")
-    out["env-postgres-insert"] = environment("postgres", "insert")
+def blocks(doc: Path = README) -> dict[str, str]:
+    """The blocks document ``doc`` must show, by name."""
+    out = {name: render(name, doc) for name, spec in TABLES.items() if doc in spec.get("docs", (README,))}
+    if doc == README:
+        for db in ("postgres", "sqlite"):
+            out[f"env-{db}"] = environment(db)
+        out["env-postgres-batch"] = environment("postgres", "batch")
+        out["env-postgres-insert"] = environment("postgres", "insert")
+    out["env-postgres-compare"] = environment("postgres", "compare")
+    if doc == COMPARISONS:
+        out["env-sqlite-compare"] = environment("sqlite", "compare")
     return out
 
 
@@ -343,15 +429,24 @@ def _pattern(name: str) -> re.Pattern:
     return re.compile(rf"(<!-- bench:{re.escape(name)} -->\n)(.*?)(<!-- /bench:{re.escape(name)} -->)", re.DOTALL)
 
 
-def differences(text: str) -> list[str]:
-    """Blocks of ``text`` (the README) that differ from what the result files render."""
-    found = []
-    for name, body in blocks().items():
+_ANY = re.compile(r"<!-- bench:(?P<name>[\w-]+) -->")
+
+
+def differences(text: str, doc: Path = README) -> list[str]:
+    """Blocks of ``text`` (the document ``doc``) that differ from what the result files render."""
+    doc_name = doc.relative_to(ROOT).as_posix()
+    expected = blocks(doc)
+    found = [
+        f"{name}: {doc_name} shows a table it is not listed for in bench/readme.py"
+        for name in (m["name"] for m in _ANY.finditer(text))
+        if name not in expected
+    ]
+    for name, body in expected.items():
         match = _pattern(name).search(text)
         if match is None:
-            found.append(f"{name}: no <!-- bench:{name} --> block in README.md")
+            found.append(f"{name}: no <!-- bench:{name} --> block in {doc_name}")
         elif match.group(2) != body + "\n":
-            found.append(f"{name}: README.md differs from {TABLES.get(name, {}).get('file', 'the result files')}")
+            found.append(f"{name}: {doc_name} differs from {TABLES.get(name, {}).get('file', 'the result files')}")
     return found
 
 
@@ -360,25 +455,27 @@ def referenced_files() -> set[str]:
         {spec["file"] for spec in TABLES.values()}
         | {_file(db, "update") for db in ("postgres", "sqlite")}
         | {_file("postgres", "batch")}
+        | {_file(db, "compare") for db in ("postgres", "sqlite")}
     )
 
 
-def write(text: str) -> str:
-    for name, body in blocks().items():
+def write(text: str, doc: Path = README) -> str:
+    doc_name = doc.relative_to(ROOT).as_posix()
+    for name, body in blocks(doc).items():
         text, count = _pattern(name).subn(lambda m, body=body: m.group(1) + body + "\n" + m.group(3), text)
         if count != 1:
-            raise SystemExit(f"README.md needs exactly one <!-- bench:{name} --> ... <!-- /bench:{name} --> block")
+            raise SystemExit(f"{doc_name} needs exactly one <!-- bench:{name} --> ... <!-- /bench:{name} --> block")
     return text
 
 
 def main(argv: list[str]) -> int:
-    text = README.read_text(encoding="utf-8")
     if argv == ["--write"]:
-        README.write_text(write(text), encoding="utf-8")
+        for doc in DOCS:
+            doc.write_text(write(doc.read_text(encoding="utf-8"), doc), encoding="utf-8")
         return 0
     if argv:
         raise SystemExit("usage: python -m bench.readme [--write]")
-    found = differences(text)
+    found = [line for doc in DOCS for line in differences(doc.read_text(encoding="utf-8"), doc)]
     for line in found:
         print(line, file=sys.stderr)
     return 1 if found else 0
