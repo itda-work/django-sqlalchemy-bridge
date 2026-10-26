@@ -21,6 +21,8 @@ books = table_for(Book)
 specimens = table_for(Specimen)
 
 IS_PG = connection.vendor == "postgresql"
+# Oracle stores an empty string as NULL, and Django reads a NULL CharField there as "".
+NULL_TEXT = "" if connection.features.interprets_empty_strings_as_nulls else None
 
 
 def author_ids():
@@ -76,8 +78,9 @@ def stored(table, order_by, exclude=()):
     qn = connection.ops.quote_name
     with connection.cursor() as cursor:
         cursor.execute(f"SELECT * FROM {qn(table)} ORDER BY {qn(order_by)}")
-        names = [c[0] for c in cursor.description]
-        return [{k: v for k, v in zip(names, row) if k not in exclude} for row in cursor.fetchall()]
+        names = [c[0].lower() for c in cursor.description]  # Oracle reports them upper case
+        rows = [[v.read() if hasattr(v, "read") else v for v in row] for row in cursor.fetchall()]  # Oracle LOBs
+        return [{k: v for k, v in zip(names, row) if k not in exclude} for row in rows]
 
 
 def specimen_fixtures(count=6):
@@ -195,7 +198,7 @@ def test_null_only_columns():
     author = make_author()
     rows = [columns_of(specimen_values(n, author=author, data=None, email=None, maybe=None)) for n in range(3)]
     bulk_insert(specimens, rows)
-    assert list(Specimen.objects.values_list("data", "email", "maybe")) == [(None, None, None)] * 3
+    assert list(Specimen.objects.values_list("data", "email", "maybe")) == [(None, NULL_TEXT, None)] * 3
     updates = [{"uid": r["uid"], "happened_at": None, "gadget_id": None} for r in rows]
     assert bulk_update(specimens, updates) == 3
     assert set(Specimen.objects.values_list("happened_at", flat=True)) == {None}
@@ -421,13 +424,15 @@ def test_bridge_reads_what_bulk_insert_wrote():
 def test_too_long_values_fail_instead_of_being_cut():
     # The arrays are cast to varchar[] (no length), so the column assignment checks the length,
     # as an ORM write does, instead of a varchar(100)[] cast truncating silently.
-    from django.db import DataError
+    from django.db import DatabaseError, DataError
 
+    # Oracle's driver reports ORA-12899 as a plain DatabaseError, for the ORM's writes too.
+    too_long = DatabaseError if connection.vendor == "oracle" else DataError
     author = make_author()
-    with pytest.raises(DataError):
+    with pytest.raises(too_long):
         with transaction.atomic():
             bulk_insert(authors, [{"name": "x" * 101, "joined_at": AT}])
-    with pytest.raises(DataError):
+    with pytest.raises(too_long):
         with transaction.atomic():
             bulk_update(authors, [{"id": author.pk, "name": "y" * 101}])
     assert list(Author.objects.values_list("name", flat=True)) == ["a"]
@@ -532,7 +537,7 @@ def test_bulk_update_checks_keys_across_batches_before_running():
 def test_bulk_insert_that_fails_in_a_later_batch_writes_nothing(batch_size, returning, monkeypatch):
     # Outside any atomic(): the 2nd batch (or, unbatched on SQLite, the 4th executemany row) breaks Book.uid.
     if returning and not connection.features.can_return_rows_from_bulk_insert:
-        pytest.skip(f"{connection.display_name} has no RETURNING")
+        pytest.skip(f"{connection.display_name} cannot return rows from a multi-row INSERT")
     if returning:
         monkeypatch.setattr(type(connection.features), "max_query_params", 12, raising=False)  # SQLite: 2 rows a batch
     author = make_author()

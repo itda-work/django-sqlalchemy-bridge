@@ -110,3 +110,10 @@ class PriceChange(models.Model):
 
     sku = models.CharField(max_length=20, unique=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
+
+
+class OracleSpelledNameModelWithALongName(models.Model):
+    """Names Django's Oracle backend respells: a mixed case db_column, and a table and a column past 30 characters."""
+
+    cased = models.CharField(max_length=20, db_column="MixedCase")
+    a_column_name_longer_than_thirty_characters = models.IntegerField()

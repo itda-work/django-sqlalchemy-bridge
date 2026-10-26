@@ -158,12 +158,16 @@ def test_stream_on_a_hit():
     stmt = sa.select(books.c.price).where(books.c.price > sa.bindparam("min")).order_by(books.c.price)
     assert list(stream(stmt, {"min": 0}, chunk_size=2)) == [(Decimal("0.50"),), (Decimal("1.50"),), (Decimal("2.50"),)]
     assert list(stream(stmt, {"min": 1}, chunk_size=2)) == [(Decimal("1.50"),), (Decimal("2.50"),)]
-    if connection.vendor != "mysql":  # MySQL and MariaDB have no UPDATE ... RETURNING
+    if connection.vendor not in ("mysql", "oracle"):  # no UPDATE ... RETURNING the bridge runs
         returning = sa.update(authors).values(name=sa.bindparam("name")).returning(authors.c.name, authors.c.joined_at)
         assert list(stream(returning, {"name": "r"})) == [("r", AT)]
         assert list(stream(returning, {"name": "s"})) == [("s", AT)]
 
 
+@pytest.mark.skipif(
+    connection.vendor == "oracle" and tuple(int(n) for n in sa.__version__.split(".")[:2]) < (2, 1),
+    reason="SQLAlchemy 2.0 cannot compile JSON paths for Oracle",
+)
 def test_json_keys_and_paths_on_a_hit():
     author = make_author()
     metas = [{"k": 1, "x": {"y": "a"}}, {"k": 2, "x": {"y": "b"}}]
@@ -207,7 +211,7 @@ def test_statements_derived_from_a_cached_one_compile_their_own_sql():
     assert execute(base.add_columns(authors.c.joined_at).where(authors.c.id == first.pk)) == [("x", AT)]
     insert = sa.insert(authors)
     assert execute(insert, {"name": "z", "joined_at": AT}) == 1
-    if connection.features.can_return_columns_from_insert:
+    if connection.features.can_return_columns_from_insert and connection.vendor != "oracle":
         # #21: .returning() derived from an executed statement still returns and converts.
         assert execute(insert.values(name="w", joined_at=AT).returning(authors.c.joined_at)) == [(AT,)]
     assert execute(insert, {"name": "v", "joined_at": AT}) == 1
@@ -294,6 +298,7 @@ def test_the_cache_entry_goes_with_its_statement(make, request):
         request.getfixturevalue("needs_update_returning" if isinstance(stmt, sa.Update) else "needs_returning")
     execute(stmt, params)
     assert stmt in execution._cache
+    gc.collect()  # statements of earlier tests may be garbage still waiting for the collector
     size = len(execution._cache)
     ref = weakref.ref(stmt)
     del stmt

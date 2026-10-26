@@ -10,7 +10,7 @@ import django_sqlalchemy_bridge
 from tests import dbenv
 from tests.testapp.models import Author, Book
 
-EXPECTED_VENDOR = {"sqlite": "sqlite", "postgres": "postgresql", "mysql": "mysql"}[dbenv.BACKEND]
+EXPECTED_VENDOR = {"sqlite": "sqlite", "postgres": "postgresql", "mysql": "mysql", "oracle": "oracle"}[dbenv.BACKEND]
 
 
 def test_package_imports():
@@ -21,7 +21,7 @@ def test_package_imports():
 def test_connects_to_the_selected_backend():
     assert connection.vendor == EXPECTED_VENDOR
     with connection.cursor() as cursor:
-        cursor.execute("SELECT 1")
+        cursor.execute("SELECT 1 FROM DUAL" if connection.vendor == "oracle" else "SELECT 1")
         assert cursor.fetchone() == (1,)
 
 

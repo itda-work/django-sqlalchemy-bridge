@@ -179,7 +179,7 @@ def test_stream_counts_as_many_queries_as_django_iterator():
     with CaptureQueriesContext(connection) as bridge_ctx:
         list(stream(sa.select(authors.c.id), chunk_size=2))
     assert len(bridge_ctx.captured_queries) == len(django_ctx.captured_queries) == 1
-    assert "testapp_author" in bridge_ctx.captured_queries[0]["sql"]
+    assert "testapp_author" in bridge_ctx.captured_queries[0]["sql"].lower()
 
 
 def test_stream_uses_django_chunked_cursor(monkeypatch):
@@ -229,7 +229,7 @@ def test_cursor_closes_when_the_consumer_stops_early(stream_cursors, stop):
 
 def test_cursor_closes_when_the_statement_fails(stream_cursors):
     gen = stream(sa.text("SELECT * FROM no_such_table"))
-    with pytest.raises(Exception, match="no_such_table"):
+    with pytest.raises(Exception, match="(?i)no_such_table"):  # Oracle: "NO_SUCH_TABLE"
         with transaction.atomic():
             next(gen)
     assert [closed for _, closed in stream_cursors] == [True]
