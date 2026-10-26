@@ -1,6 +1,6 @@
 # django-sqlalchemy-bridge AI Guide
 
-> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.0.x, 미릴리스** — v0.1 API(`table_for`·`execute`·`stream`·`bulk_*`·`arun`)가 `main` 에 있다(2026-10-25 기준, #3~#8).
+> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.1.0 (알파, 2026-10-26 릴리스)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`. v0.1 이후 후보는 #17.
 
 ## 정본
 
