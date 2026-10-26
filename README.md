@@ -81,14 +81,14 @@ changed = execute(stmt)  # [("SHIRT", Decimal("27.50"))]
 
 ## AI 코딩 에이전트에게
 
-이 라이브러리는 새로 나와 AI 모델의 학습 데이터에 거의 없습니다. 그래서 설치된 패키지 안에 에이전트용 요약 [`django_sqlalchemy_bridge/llms.txt`](django_sqlalchemy_bridge/llms.txt)(저장소 루트 [`llms.txt`](llms.txt)와 같은 내용)를 넣어 두었습니다. 언제 쓰고 언제 ORM 을 쓰는지, 꼭 지킬 것(SQLAlchemy `Engine`·`Session`을 만들지 않기, 쓰기가 signal·`save()`를 우회한다는 것, `bindparam` 재사용), 지원하지 않는 것, 공개 API 시그니처, 위 예제의 요약이 들어 있습니다. 내 프로젝트의 `AGENTS.md`나 `CLAUDE.md`에 아래를 붙여 두면 에이전트가 설치된 버전의 안내를 읽습니다.
+이 라이브러리는 새로 나와 AI 모델의 학습 데이터에 거의 없습니다. 그래서 설치된 패키지 안에 에이전트용 요약 [`django_sqlalchemy_bridge/llms.txt`](django_sqlalchemy_bridge/llms.txt)(저장소 루트 [`llms.txt`](llms.txt)와 같은 내용)를 넣어 두었습니다. 언제 쓰고 언제 ORM 을 쓰는지, 꼭 지킬 것(SQLAlchemy `Engine`·`Session`을 만들지 않기, 쓰기가 signal·`save()`를 우회한다는 것, `bindparam` 재사용), 지원하지 않는 것, 공개 API 시그니처, 위 예제의 요약이 들어 있습니다. 전 세계 사용자의 에이전트가 읽는 파일이라 영어로 씁니다. 내 프로젝트의 `AGENTS.md`나 `CLAUDE.md`에 아래를 붙여 두면 에이전트가 설치된 버전의 안내를 읽습니다.
 
 ```markdown
 ## django-sqlalchemy-bridge
-SQLAlchemy Core 식을 Django 연결·트랜잭션에서 실행하는 django-sqlalchemy-bridge 를 쓴다.
-이 라이브러리로 코드를 쓰기 전에 설치된 버전의 안내를 읽고 따른다(uv 프로젝트면 앞에 `uv run`):
+This project runs SQLAlchemy Core statements on Django's connections and transactions with django-sqlalchemy-bridge.
+Before writing code with it, read and follow the guide of the installed version (prefix `uv run` in a uv project):
 `python -c "import importlib.resources as r; print(r.files('django_sqlalchemy_bridge').joinpath('llms.txt').read_text('utf-8'))"`
-SQLAlchemy `Engine`·`Session` 을 만들지 않는다. 브리지의 쓰기는 signal·`save()` 를 거치지 않는다.
+Do not create a SQLAlchemy `Engine` or `Session`. Writes through the bridge skip signals and `save()`.
 ```
 
 ## 설계 원칙
