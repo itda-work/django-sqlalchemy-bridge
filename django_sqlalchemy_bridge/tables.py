@@ -19,7 +19,7 @@ from typing import Any
 import sqlalchemy as sa
 from django.conf import settings
 from django.db import connections, models
-from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects import mysql, postgresql
 from sqlalchemy.dialects.postgresql import operators as pg_operators
 from sqlalchemy.sql import operators
 
@@ -98,6 +98,21 @@ def _generic_type(type_: sa.types.TypeEngine) -> sa.types.TypeEngine:
     return type_.impl if isinstance(type_, FieldType) else type_
 
 
+class _MySQLJSON(mysql.JSON):
+    """MySQL's JSON, with each bound value read as a JSON document.
+
+    Django binds a JSON value as its text. MySQL compares a JSON value with a
+    string as a JSON string, so ``meta["k"] == 1`` would match ``{"k": "1"}``;
+    the ORM wraps the value in ``JSON_EXTRACT(%s, '$')`` (MySQL and MariaDB), and
+    so does this. Storing the wrapped value stores the same document.
+    """
+
+    cache_ok = True
+
+    def bind_expression(self, bindvalue: Any) -> Any:
+        return sa.func.JSON_EXTRACT(bindvalue, sa.literal_column("'$'"), type_=self)
+
+
 def _string(field: models.Field) -> sa.types.TypeEngine:
     return sa.String(field.max_length)
 
@@ -132,8 +147,11 @@ _TYPES = {
     "UUIDField": lambda f: sa.Uuid(),
     # Django stores JSONField as jsonb on PostgreSQL. The comparator comes from the
     # type an expression is built with, before any dialect is chosen, so JSONB has
-    # to be the base type for contains() and has_key() to exist; SQLite compiles JSON.
-    "JSONField": lambda f: postgresql.JSONB().with_variant(sa.JSON(), "sqlite"),
+    # to be the base type for contains() and has_key() to exist; SQLite compiles
+    # JSON, MySQL and MariaDB JSON with bound values read as documents.
+    "JSONField": lambda f: (
+        postgresql.JSONB().with_variant(sa.JSON(), "sqlite").with_variant(_MySQLJSON(), "mysql", "mariadb")
+    ),
     "BinaryField": lambda f: sa.LargeBinary(),
 }
 
@@ -344,6 +362,24 @@ _PG_COLUMN_TYPES = """
 """
 
 
+# MySQL's other spellings of a type, rewritten to what information_schema's
+# COLUMN_TYPE reports (MySQL 8.0.19+ drops integer display widths but tinyint(1)).
+_MYSQL_TYPE_SPELLINGS = [
+    (r"\)(?=[a-z])", ") "),  # "int(10) unsigned" keeps its space
+    (r"\s*\bauto_increment\b", ""),
+    (r"^(?!tinyint\(1\))(tinyint|smallint|mediumint|int|integer|bigint)\(\d+\)", r"\1"),
+    (r"^integer\b", "int"),
+    (r"^bool(ean)?$", "tinyint(1)"),
+    (r"^numeric\b", "decimal"),
+    (r"^(double precision|real)\b", "double"),
+]
+
+_MYSQL_COLUMN_TYPES = """
+    SELECT column_name, column_type FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = %s
+"""
+
+
 def _normalize_type(vendor: str, sql_type: str) -> str:
     """``sql_type`` spelled one way per type: lower case, single spaces, no spaces in ``(...)``."""
     text = " ".join(sql_type.lower().split())
@@ -353,6 +389,9 @@ def _normalize_type(vendor: str, sql_type: str) -> str:
         if match:
             name, args = match.groups()
             text = _PG_TYPE_NAMES.get(name, name) + (args or "")
+    elif vendor == "mysql":
+        for pattern, replacement in _MYSQL_TYPE_SPELLINGS:
+            text = re.sub(pattern, replacement, text)
     return text
 
 
@@ -365,6 +404,11 @@ def _db_column_types(connection: Any, cursor: Any, table_name: str, description:
         # format_type() keeps the length and precision that the type_code alone does not.
         cursor.execute(_PG_COLUMN_TYPES, [table_name])
         return {name: _normalize_type("postgresql", sql_type) for name, sql_type in cursor.fetchall()}
+    if connection.vendor == "mysql" and not connection.mysql_is_mariadb:
+        # COLUMN_TYPE keeps the length, precision and UNSIGNED. MariaDB is left out:
+        # its JSON is longtext and its UUID a native type, so its columns are not compared.
+        cursor.execute(_MYSQL_COLUMN_TYPES, [table_name])
+        return {name: _normalize_type("mysql", sql_type) for name, sql_type in cursor.fetchall()}
     return {}
 
 
@@ -415,9 +459,9 @@ def compare_table(
     The table is compared with a table freshly built from the current model:
     table name, columns, types, nullability, primary key and foreign key targets.
     With ``check_db=True`` it is also compared with the live table in database
-    ``using``: column names, nullability and, on SQLite and PostgreSQL, the
-    column type the model field's ``db_type()`` asks for. An empty list means no
-    drift.
+    ``using``: column names, nullability and, on SQLite, PostgreSQL and MySQL
+    (not MariaDB), the column type the model field's ``db_type()`` asks for. An
+    empty list means no drift.
     """
     model = _check_model(model)
     if table is None:

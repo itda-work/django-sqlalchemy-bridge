@@ -4,17 +4,42 @@ from tests import dbenv
 
 
 def pytest_report_header(config):
-    return f"django-sqlalchemy-bridge: DSB_DB={dbenv.BACKEND} REQUIRE_PG={int(dbenv.REQUIRE_PG)}"
+    return (
+        f"django-sqlalchemy-bridge: DSB_DB={dbenv.BACKEND} REQUIRE_PG={int(dbenv.REQUIRE_PG)}"
+        f" REQUIRE_MYSQL={int(dbenv.REQUIRE_MYSQL)}"
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    if not dbenv.PG_MISSING:
+    if dbenv.PG_MISSING:
+        name, host, required, flag = "PostgreSQL", "DSB_PG_HOST", dbenv.REQUIRE_PG, "REQUIRE_PG"
+    elif dbenv.MYSQL_MISSING:
+        name, host, required, flag = "MySQL", "DSB_MYSQL_HOST", dbenv.REQUIRE_MYSQL, "REQUIRE_MYSQL"
+    else:
         return
     db_items = [item for item in items if item.get_closest_marker("django_db")]
     if not db_items:
         return
-    if dbenv.REQUIRE_PG:
-        raise pytest.UsageError("REQUIRE_PG=1 but DSB_PG_HOST is not set; refusing to skip the PostgreSQL tests")
-    skip = pytest.mark.skip(reason="PostgreSQL not configured (set DSB_PG_HOST)")
+    if required:
+        raise pytest.UsageError(f"{flag}=1 but {host} is not set; refusing to skip the {name} tests")
+    skip = pytest.mark.skip(reason=f"{name} not configured (set {host})")
     for item in db_items:
         item.add_marker(skip)
+
+
+@pytest.fixture
+def needs_returning(db):
+    """Skip unless the database has INSERT and DELETE ... RETURNING (MySQL has none)."""
+    from django.db import connection
+
+    if not connection.features.can_return_columns_from_insert:
+        pytest.skip(f"{connection.display_name} has no RETURNING")
+
+
+@pytest.fixture
+def needs_update_returning(needs_returning):
+    """Skip unless the database has UPDATE ... RETURNING too (MariaDB has not)."""
+    from django.db import connection
+
+    if connection.vendor == "mysql":
+        pytest.skip(f"{connection.display_name} has no UPDATE ... RETURNING")

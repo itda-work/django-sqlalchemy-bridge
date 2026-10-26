@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import types
 import uuid
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from django.db.models.signals import post_save, pre_save
 from django.test.utils import CaptureQueriesContext
 
 from django_sqlalchemy_bridge import bulk_insert, execute, execute_result, stream, table_for
+from django_sqlalchemy_bridge.execution import prepare
 from tests.testapp.models import Author, Book, Gadget, Specimen
 
 pytestmark = pytest.mark.django_db
@@ -27,7 +29,7 @@ specimens = table_for(Specimen)
 def raw(sql, params=()):
     with connection.cursor() as cursor:
         cursor.execute(sql, params)
-        return cursor.fetchall()
+        return list(cursor.fetchall())
 
 
 def make_author(name="a"):
@@ -57,6 +59,7 @@ def test_dml_without_returning_returns_the_rowcount():
     assert execute(sa.delete(books).where(books.c.title == "nope")) == 0
 
 
+@pytest.mark.usefixtures("needs_returning")
 def test_returning_returns_rows_converted_by_the_field():
     author = make_author()
     uid = uuid.uuid4()
@@ -161,11 +164,31 @@ def test_literal_percent_signs_survive():
     assert execute(sa.select(title).where(title.like(sa.literal_column("'a%'"))).order_by(title)) == [("a%b",), ("ab",)]
     assert execute(sa.select(title).where(title == "a%b")) == [("a%b",)]  # bound values are not %-processed
     assert execute(sa.select(title).where(title.like("a\\%b", escape="\\"))) == [("a%b",)]
-    assert execute(sa.text("SELECT title FROM testapp_book WHERE title LIKE 'a\\%%' ESCAPE '\\'")) == [("a%b",)]
+    # text() is the database's own SQL: MySQL reads a backslash in a string literal as an escape.
+    backslash = "\\\\" if connection.vendor == "mysql" else "\\"
+    like = f"SELECT title FROM testapp_book WHERE title LIKE 'a{backslash}%%' ESCAPE '{backslash}'"
+    assert execute(sa.text(like)) == [("a%b",)]
     assert execute(sa.text("SELECT '100%'")) == [("100%",)]
-    # Literals the compiler renders itself keep a single backslash (standard_conforming_strings).
+    # Literals the compiler renders itself come back as given: one backslash as written under
+    # PostgreSQL's standard_conforming_strings, escaped as two under MySQL's default sql_mode.
     assert execute(sa.select(sa.literal("a\\b%", literal_execute=True))) == [("a\\b%",)]
     assert execute(sa.text("SELECT '100%' WHERE 1 = :one"), {"one": 1}) == [("100%",)]
+
+
+@pytest.mark.skipif(connection.vendor != "mysql", reason="MySQL sql_mode")
+def test_literal_backslashes_follow_mysql_no_backslash_escapes(monkeypatch):
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT @@SESSION.sql_mode")
+        (mode,) = cursor.fetchone()
+        cursor.execute("SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_BACKSLASH_ESCAPES')")
+    # Django reads the mode once per connection; a connection opened in this mode reports it.
+    monkeypatch.setattr(connection, "sql_mode", connection.sql_mode | {"NO_BACKSLASH_ESCAPES"})
+    try:
+        assert execute(sa.select(sa.literal("a\\b%", literal_execute=True))) == [("a\\b%",)]
+        assert execute(sa.select(sa.literal_column("'a%'"))) == [("a%",)]
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute("SET SESSION sql_mode = %s", [mode])
 
 
 # --- Django owns the connection and the transaction --------------------------
@@ -401,13 +424,14 @@ def test_typed_values_in_an_insert_select_list_are_written_as_the_orm_writes_the
 
 
 def test_aware_datetime_is_stored_in_utc_and_read_back_aware():
-    author_id = execute(sa.insert(authors).values(name="tz", joined_at=AT).returning(authors.c.id))[0][0]
+    execute(sa.insert(authors).values(name="tz", joined_at=AT))
+    (author_id,) = execute(sa.select(authors.c.id).where(authors.c.name == "tz"))[0]
     assert Author.objects.get(pk=author_id).joined_at == AT
     (joined_at,) = execute(sa.select(authors.c.joined_at).where(authors.c.id == author_id))[0]
     assert joined_at == AT
     assert joined_at.utcoffset() == datetime.timedelta(0)
-    if connection.vendor == "sqlite":
-        # Stored as naive UTC, as the ORM stores it (Django's sqlite3 module parses the text back).
+    if connection.vendor in ("sqlite", "mysql"):
+        # Stored as naive UTC, as the ORM stores it (no time zone in the column).
         assert raw("SELECT joined_at FROM testapp_author")[0][0] == datetime.datetime(2026, 10, 25, 0, 30, 15, 123456)
     # A filter on the column converts the bound value the same way.
     assert execute(sa.select(authors.c.id).where(authors.c.joined_at == AT)) == [(author_id,)]
@@ -455,6 +479,7 @@ def test_execute_result_mappings():
     assert result.mappings().all() == [{"name": "m1", "joined_at": AT}, {"name": "m2", "joined_at": AT}]
 
 
+@pytest.mark.usefixtures("needs_returning")
 def test_execute_result_for_returning():
     result = execute_result(sa.insert(authors).values(name="n", joined_at=AT).returning(authors.c.id, authors.c.name))
     assert result.mappings().one() == {"id": Author.objects.get().pk, "name": "n"}
@@ -511,6 +536,41 @@ def test_returning_is_refused_before_running_where_the_database_lacks_it(no_retu
     assert list(Author.objects.values_list("name", flat=True)) == ["kept"]
 
 
+@pytest.mark.skipif(connection.vendor != "mysql", reason="MySQL has no RETURNING")
+@pytest.mark.parametrize("call", ["execute insert", "execute update", "execute delete", "stream", "bulk_insert"])
+def test_mysql_refuses_returning_before_running(call):
+    if connection.mysql_is_mariadb:
+        pytest.skip("MariaDB has INSERT and DELETE ... RETURNING")
+    make_author("kept")
+    with CaptureQueriesContext(connection) as queries, pytest.raises(NotSupportedError, match="RETURNING"):
+        returning_calls()[call]()
+    assert queries.captured_queries == []
+    assert list(Author.objects.values_list("name", flat=True)) == ["kept"]
+
+
+def mariadb_connection():
+    """A stand-in for a MariaDB connection: Django reports vendor "mysql" and INSERT ... RETURNING."""
+    features = types.SimpleNamespace(can_return_columns_from_insert=True)
+    return types.SimpleNamespace(
+        vendor="mysql", alias="maria", display_name="MariaDB", features=features, mysql_is_mariadb=True, sql_mode=set()
+    )
+
+
+def test_mariadb_runs_insert_and_delete_returning_but_refuses_update_returning():
+    # No server needed: prepare() compiles and checks, it does not run. A plain
+    # table, so no Django field asks the stand-in for its converters.
+    maria = mariadb_connection()
+    names = sa.table("names", sa.column("id", sa.Integer), sa.column("name", sa.String))
+    insert = prepare(sa.insert(names).values(name="n").returning(names.c.id), None, maria)
+    assert insert.sql.endswith("RETURNING names.id")
+    delete = prepare(sa.delete(names).returning(names.c.name), None, maria)
+    assert delete.sql.endswith("RETURNING names.name")
+    with pytest.raises(NotSupportedError, match=r"'maria' \(MariaDB\) does not support UPDATE \.\.\. RETURNING"):
+        prepare(sa.update(names).values(name="u").returning(names.c.id), None, maria)
+    # Without RETURNING an UPDATE compiles as usual.
+    assert prepare(sa.update(names).values(name="u"), None, maria).rowcount_only
+
+
 def test_statements_without_returning_still_run_where_the_database_lacks_it(no_returning):
     no_returning()
     assert execute(sa.insert(authors).values(name="a", joined_at=AT)) == 1
@@ -519,7 +579,7 @@ def test_statements_without_returning_still_run_where_the_database_lacks_it(no_r
     assert list(stream(sa.select(authors.c.name).order_by(authors.c.name))) == [("a",), ("b",)]
 
 
-def test_text_statements_are_not_checked_for_returning(no_returning):
+def test_text_statements_are_not_checked_for_returning(needs_returning, no_returning):
     no_returning()
     # The bridge cannot see RETURNING inside text(); the database decides (here it has it).
     rows = execute(sa.text("INSERT INTO testapp_author (name, joined_at) VALUES ('t', :at) RETURNING name"), {"at": AT})
@@ -541,6 +601,7 @@ def book_values(author, uid):
     return {"uid": uid, "author_id": author.pk, "title": "t", "price": Decimal("1.00"), "meta": {}, "status": "draft"}
 
 
+@pytest.mark.usefixtures("needs_update_returning")
 def test_returning_derived_after_reading_the_columns_is_converted():
     author = make_author()
     uid = uuid.uuid4()
@@ -551,6 +612,7 @@ def test_returning_derived_after_reading_the_columns_is_converted():
     assert execute(delete.returning(books.c.uid, books.c.meta)) == [(uid, {"a": 1})]
 
 
+@pytest.mark.usefixtures("needs_returning")
 def test_returning_derived_from_an_executed_statement_is_converted():
     author = make_author()
     insert = sa.insert(books)
@@ -560,6 +622,7 @@ def test_returning_derived_from_an_executed_statement_is_converted():
     assert execute(insert.values(**values).returning(books.c.uid, books.c.meta)) == [(uid, {"a": 1})]
 
 
+@pytest.mark.usefixtures("needs_returning")
 def test_returning_added_to_after_reading_the_columns_converts_every_column():
     author = make_author()
     uid = uuid.uuid4()
@@ -568,6 +631,7 @@ def test_returning_added_to_after_reading_the_columns_converts_every_column():
     assert execute(base.returning(books.c.uid, books.c.meta)) == [(Book.objects.get().pk, uid, {"a": 1})]
 
 
+@pytest.mark.usefixtures("needs_update_returning")
 def test_execute_result_and_stream_accept_returning_derived_after_reading_the_columns():
     make_author()
     update = read_columns(sa.update(authors))
@@ -594,6 +658,7 @@ def test_select_derived_after_reading_the_columns_is_converted():
     assert execute(sa.select(subquery.c.joined_at)) == [(AT,)]
 
 
+@pytest.mark.usefixtures("needs_update_returning")
 def test_returning_a_whole_table_or_a_label_derived_after_reading_the_columns_is_converted():
     author = make_author("w")
     update = read_columns(sa.update(authors))
