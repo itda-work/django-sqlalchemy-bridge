@@ -2,6 +2,7 @@
 
 On PostgreSQL ``batch_size=None`` sends every row in one ``unnest()`` statement,
 one array per column; a batch size sends one such statement per that many rows.
+``method="copy"`` (PostgreSQL only) streams the rows in one ``COPY`` per batch.
 Besides the time and the client's tracemalloc peak this measures the server
 backend's memory: one extra repetition on a fresh connection samples the
 backend process's ``/proc/<pid>/status`` (found by the backend pid in its
@@ -25,6 +26,7 @@ from bench.harness import Variant, django_rollback, run_variants
 SIZES = [200_000, 1_000_000]
 BATCH_SIZES = [None, 10_000, 50_000, 200_000]
 RETURNING_BATCH_SIZES = [None, 50_000]
+COPY_BATCH_SIZES = [None, 10_000]
 FIELDS = ["label", "amount", "price"]
 
 SCOPE = (
@@ -92,6 +94,17 @@ def variants(op: str, n: int) -> list[Variant]:
             note=f"returning=['id'], {_note(size)}",
         )
         for size in RETURNING_BATCH_SIZES
+    ]
+    out += [
+        Variant(
+            _key("copy", size),
+            lambda rows, _, size=size: bulk_insert(NewItem, rows, method="copy", batch_size=size),
+            dicts,
+            check=check,
+            vendors=("postgresql",),
+            note=f"method='copy' (COPY FROM STDIN, one per batch), batch_size={size}",
+        )
+        for size in COPY_BATCH_SIZES
     ]
     return out
 

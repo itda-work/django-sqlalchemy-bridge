@@ -135,6 +135,7 @@ def bulk_insert(
     returning: Sequence[ColumnRef] | None = None,
     batch_size: int | None = None,
     using: str = DEFAULT_DB_ALIAS,
+    method: str = "insert",
 ) -> int | list[tuple[Any, ...]]:
     """Insert ``rows`` into ``table`` and return the rowcount, or the ``returning`` columns of each row.
 
@@ -159,8 +160,20 @@ def bulk_insert(
     ``returning``; the rowcount is the sum and the returned rows stay in the
     order of ``rows``. More than one statement runs in
     ``atomic(using, savepoint=False)``. No model signals are sent.
+
+    ``method="copy"`` runs ``COPY ... FROM STDIN`` instead (text format, one
+    per batch), with the same checks and the same converted values: PostgreSQL
+    with psycopg 3 only, anything else raises ``NotSupportedError`` before
+    running, and it cannot take ``returning`` (``ValueError``). The ``COPY``
+    shows up in ``connection.queries`` but not in ``execute_wrapper()``.
     """
     _check_batch_size(batch_size)
+    if method not in ("insert", "copy"):
+        raise ValueError(f"method must be 'insert' or 'copy', got {method!r}")
+    if method == "copy":
+        if returning is not None:
+            raise ValueError("method='copy' cannot take returning: COPY has no RETURNING")
+        _check_copy(connections[using])
     table = _table(table)
     rows = list(rows)
     returned = [_column(table, name) for name in returning] if returning is not None else None
@@ -179,6 +192,9 @@ def bulk_insert(
     if returned is not None:
         check_returning(connection)
     values = [_db_values(column, rows, connection) for column in given]
+
+    if method == "copy":
+        return _copy(table, given, values, batch_size, connection, using)
 
     qn = connection.ops.quote_name
     head = f"INSERT INTO {qn(table.name)} ({', '.join(qn(c.name) for c in given)})"
@@ -218,6 +234,45 @@ def bulk_insert(
             )
             out.extend(_convert(cursor.fetchall(), returned, connection))
     return out
+
+
+def _check_copy(connection: BaseDatabaseWrapper) -> None:
+    if connection.vendor != "postgresql":
+        raise NotSupportedError(f"method='copy' needs PostgreSQL, not {connection.display_name}")
+    # psycopg2 has copy_expert() rather than psycopg 3's Cursor.copy().
+    if getattr(connection.Database, "Copy", None) is None:
+        raise NotSupportedError("method='copy' needs psycopg 3, not psycopg2")
+
+
+def _copy(
+    table: sa.Table,
+    columns: list[sa.Column],
+    values: list[list[Any]],
+    batch_size: int | None,
+    connection: BaseDatabaseWrapper,
+    using: str,
+) -> int:
+    # The values are the ORM's, from get_db_prep_save(); psycopg dumps them in
+    # text format and escapes tabs, newlines, backslashes and "\N" as COPY reads
+    # them, so the database parses each as it would the parameter of an INSERT.
+    qn = connection.ops.quote_name
+    sql = f"COPY {qn(table.name)} ({', '.join(qn(c.name) for c in columns)}) FROM STDIN"
+    batches = _batches(len(values[0]), batch_size)
+    count = 0
+    with _atomic(using, len(batches) > 1), connection.cursor() as cursor:
+        # The psycopg cursor's copy() goes around Django's execute(): check the
+        # transaction, log the statement and wrap errors as execute() does.
+        connection.validate_no_broken_transaction()
+        for batch in batches:
+            # CursorDebugWrapper.debug_sql() is not in Django's documentation;
+            # the Django matrix in CI keeps it in check. Django's own
+            # CursorDebugWrapper.copy() logs on entering COPY, before the rows.
+            logged = cursor.debug_sql(sql) if connection.queries_logged else contextlib.nullcontext()
+            with logged, connection.wrap_database_errors, cursor.cursor.copy(sql) as copy:
+                for row in zip(*(column[batch] for column in values)):
+                    copy.write_row(row)
+            count += cursor.cursor.rowcount
+    return count
 
 
 def _check_batch_size(batch_size: int | None) -> None:

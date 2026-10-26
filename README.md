@@ -282,9 +282,12 @@ ids = bulk_insert(orders, rows, returning=["id"])
 
 # 수십만 행 이상: batch_size 행씩 문장을 나눠 메모리를 줄인다(전부 쓰이거나 하나도 안 쓰임)
 bulk_insert(orders, rows, batch_size=10_000)
+
+# PostgreSQL 에서 RETURNING 이 필요 없는 수십만 행: COPY FROM STDIN
+bulk_insert(orders, rows, method="copy")
 ```
 
-- `bulk_update(table, rows, *, key=None, columns=None, batch_size=None, using="default")`, `bulk_insert(table, rows, *, returning=None, batch_size=None, using="default")`. `table`은 `table_for()` 테이블이나 모델입니다. `rows`는 컬럼 이름(`db_column`, FK 는 `<이름>_id`)을 키로 한 매핑의 시퀀스입니다.
+- `bulk_update(table, rows, *, key=None, columns=None, batch_size=None, using="default")`, `bulk_insert(table, rows, *, returning=None, batch_size=None, using="default", method="insert")`. `table`은 `table_for()` 테이블이나 모델입니다. `rows`는 컬럼 이름(`db_column`, FK 는 `<이름>_id`)을 키로 한 매핑의 시퀀스입니다.
 - **PostgreSQL에서는 문장 하나입니다.** 컬럼마다 배열 파라미터 하나를 Django 컬럼 타입으로 캐스트하고(`(%s)::jsonb[]`, `(%s)::numeric[]` …) `unnest()`로 행을 만듭니다. UPDATE 는 `UPDATE t SET c = v.c FROM unnest(...) AS v(...) WHERE t.k = v.k`, INSERT 는 `INSERT INTO t (...) SELECT * FROM unnest(...)` 꼴로, Django `bulk_create`가 PostgreSQL에서 쓰는 방식과 같습니다. 캐스트에서는 길이·자릿수를 떼므로(`varchar(50)[]`가 아니라 `varchar[]`) 값이 잘리지 않고, 너무 긴 값은 ORM 쓰기처럼 컬럼에 넣을 때 오류가 납니다. `CaptureQueriesContext`에는 1건으로 잡힙니다.
 - **그 밖의 백엔드(SQLite·MySQL·Oracle)에서는 같은 호출이 `cursor.executemany()`입니다(`atomic()` 안에서, 아래 "원자성").** `returning`이 있는 INSERT 는 executemany 로 행을 받을 수 없어서 다중 `VALUES` 문장을 `connection.ops.bulk_batch_size()`(SQLite 변수 한도) 단위로 나눠 실행합니다. 결과는 PostgreSQL과 같습니다.
   - MySQL: mysqlclient 는 INSERT 의 executemany 를 다중 행 `INSERT … VALUES (…), (…)`로 바꿔 보내고, UPDATE 의 executemany 는 행마다 문장 하나를 보냅니다(`CaptureQueriesContext`에는 1건). rowcount 는 Django 가 켠 `CLIENT.FOUND_ROWS` 덕에 바뀐 행이 아니라 맞은 행을 셉니다. `bulk_insert(returning=...)`는 MySQL 에 `RETURNING`이 없어 실행 전 `NotSupportedError`이고, MariaDB 에서는 다중 `VALUES … RETURNING`으로 돕니다. `UPDATE … JOIN (VALUES ROW(…))`로 한 문장을 만드는 방식은 MariaDB 에 `VALUES ROW`가 없고 행 값의 타입을 정할 방법이 없어 쓰지 않았습니다. `INSERT … ON DUPLICATE KEY UPDATE`는 없는 키를 새 행으로 넣어 의미가 다릅니다.
@@ -296,6 +299,9 @@ bulk_insert(orders, rows, batch_size=10_000)
 - **`batch_size`**: 양의 정수면 그 행 수마다 문장 하나(SQLite 는 `executemany()` 호출 하나)로 나눕니다. `None`(기본값)이면 위와 같습니다. 0 이하나 정수가 아니면 실행 전에 `ValueError`입니다. SQLite 의 `returning` 배치는 `bulk_batch_size()`를 넘지 않습니다. 키 중복·누락 검사는 나누기 전에 전체 행으로 하고, rowcount 는 배치의 합, `returning` 결과는 배치와 상관없이 `rows` 순서입니다.
 - **원자성**: 문장을 둘 이상 실행하는 호출(배치가 여럿이거나 SQLite `executemany()`)은 Django `bulk_create`·`bulk_update`처럼 `transaction.atomic(using=..., savepoint=False)` 안에서 돕니다. 한 배치가 실패하면 그 호출이 쓴 행은 모두 롤백됩니다. 바깥 `atomic()` 안에서는 savepoint 를 만들지 않으므로, 실패를 잡아 트랜잭션을 이어가려면 호출을 `atomic()`으로 한 번 더 감싸세요(ORM 쓰기와 같습니다).
 - **언제 `batch_size`를 주나.** PostgreSQL 의 한 문장은 행 수에 비례해 클라이언트(파라미터 배열)와 서버 백엔드(배열과 `unnest` 결과) 메모리를 씁니다. 1,000,000행(컬럼 6개)에서 `bulk_insert`는 클라이언트 tracemalloc 피크 849 MiB, 서버 백엔드 233 MiB 였고, `batch_size=10_000`이면 226 MiB·6 MiB 로 줄면서 시간은 4% 빨랐습니다. `bulk_update`는 나누면 느려집니다(1,000,000행에서 `10_000`은 22% 느림, `200_000`은 3% 느림). 한 문장은 대상 테이블과 해시 조인 한 번으로, 작은 배치는 행마다 PK 인덱스 조회로 갱신하기 때문입니다(로컬 PostgreSQL 18 의 `EXPLAIN ANALYZE`로 확인). 그래서 기본값은 `None`이고, 수십만 행 이상에서 메모리가 문제일 때 `bulk_insert`는 `10_000`~`50_000`, `bulk_update`는 `200_000` 안팎을 권합니다. SQLite 는 차이가 작습니다(아래 "성능과 메모리" 7).
+- **`method="copy"`(PostgreSQL + psycopg 3)**: `INSERT` 대신 `COPY t (컬럼…) FROM STDIN`(text 포맷)으로 넣습니다. Django 커서 아래의 psycopg 커서(`cursor.cursor.copy()`)로 실행하므로 Django 연결·트랜잭션 안에서 돕니다. 행 검사와 값 변환(`get_db_prep_save()`)은 `"insert"`와 같고, 탭·개행·백슬래시·`\N` 문자열의 이스케이프는 psycopg 가 맡습니다(테스트로 고정). `batch_size`를 주면 배치마다 `COPY` 하나, 둘 이상이면 같은 `atomic(savepoint=False)`입니다. 트리거·제약·FK 검사는 INSERT 와 같고, 제약 위반은 Django 예외(`IntegrityError`·`DataError`)로 올라옵니다. 반환값은 psycopg 가 COPY 뒤 `cursor.rowcount`로 주는 행 수입니다. **언제 쓰나**: `RETURNING`이 필요 없는 수십만 행 이상의 INSERT. COPY_NUMBERS_TBD
+  - `returning`과 함께 쓰면 실행 전 `ValueError`입니다(COPY 에는 `RETURNING`·`ON CONFLICT`가 없음). PostgreSQL 이 아닌 연결이나 psycopg2 에서는 실행 전 `NotSupportedError`입니다. 조용히 `"insert"`로 바꾸지 않습니다. binary 포맷은 쓰지 않습니다(psycopg 의 binary COPY 는 컬럼마다 `set_types()`로 서버 타입을 정해야 하고, text 포맷은 서버가 INSERT 파라미터처럼 텍스트로 받아 컬럼 타입으로 읽습니다).
+  - 쿼리 기록: `COPY`는 Django `CursorWrapper.execute()`를 지나지 않습니다. 브리지가 디버그 기록이 켜져 있을 때(`connection.queries_logged`) `COPY … FROM STDIN` 문장을 배치마다 `connection.queries`에 한 건씩 남기므로 `CaptureQueriesContext`·`assertNumQueries`에 잡히지만, **`connection.execute_wrapper()`에는 보이지 않습니다.**
 - 빈 `rows`는 쿼리를 실행하지 않고 `0`(또는 `returning`이면 `[]`)을 돌려줍니다.
 - **`RETURNING` 순서**: 결과는 `rows` 순서입니다(테스트로 고정). 다만 PostgreSQL·SQLite 모두 `RETURNING` 순서를 문서로 보장하지는 않으며, Django `bulk_create`가 PK 를 객체에 채울 때도 같은 동작에 기댑니다. 아래 "제약"을 보세요.
 - signal·`save()`를 거치지 않는 것은 다른 브리지 쓰기와 같습니다(아래).
@@ -323,6 +329,7 @@ bulk_insert(orders, rows, batch_size=10_000)
   - 컬럼이 없는 식이나 `sa.text()`로 고른 `NCLOB`·`BLOB` 값은 oracledb 의 LOB 객체로 옵니다(`.read()`). 컬럼을 고르면 ORM 변환기가 `str`·`bytes`로 바꿉니다.
   - `sum()`·`avg()`처럼 정밀도가 없는 숫자를 Django 의 Oracle 커서는 텍스트에 소수점이 있는지로 `int`나 `Decimal`로 줍니다. 브리지는 ORM 처럼(`BaseExpression.convert_value`) 컬럼 필드의 타입으로 맞춥니다(`DecimalField`의 합은 `Decimal`).
   - `SELECT` 목록의 불리언 식(`(price > 2).label("gt")`, `sa.exists()`)은 Oracle 23ai 부터 됩니다. 19c 는 확인하지 않았습니다(아래 "지원 대상").
+- **`bulk_insert(method="copy")`는 `execute_wrapper()`에 보이지 않습니다.** psycopg 의 `Cursor.copy()`는 Django 커서의 `execute()`를 거치지 않기 때문입니다. `connection.queries`에는 배치마다 한 건씩 남깁니다(위 "대량 쓰기"). PostgreSQL + psycopg 3 전용이고, 다른 연결에서는 실행 전 `NotSupportedError`입니다.
 - **`bulk_insert(returning=...)`의 행 순서는 DB 가 문서로 보장하지 않습니다.** PostgreSQL·SQLite 모두 지금은 입력 순서로 돌려주고 Django `bulk_create`도 같은 가정에 기대지만, 순서가 중요하면 행을 식별할 키(자연 키, `uid` 등)를 함께 `RETURNING`해서 그 값으로 짝지으세요. 예: `bulk_insert(books, rows, returning=["uid", "id"])`.
 
 ## 비동기
