@@ -11,8 +11,8 @@
   "memory": "tracemalloc peak of one extra run, minus what was traced at its start"
  },
  "environment": {
-  "revision": "v0.0.1-10-gda2d034-dirty",
-  "python": "3.14.7",
+  "revision": "49ebe83",
+  "python": "3.12.3",
   "packages": {
    "django-sqlalchemy-bridge": "0.0.1",
    "django": "6.1.2",
@@ -23,29 +23,30 @@
    "django-cte": "4.0.0",
    "asgiref": "3.13.0"
   },
-  "python_sqlite3": "3.53.1",
+  "python_sqlite3": "3.45.1",
   "database": {
    "vendor": "postgresql",
    "server": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2)"
   },
+  "ci_run": "https://github.com/itda-work/django-sqlalchemy-bridge/actions/runs/40244692406",
   "machine": {
-   "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
-   "cpu": "Apple M1 Pro",
-   "cpu_count": 10,
-   "memory_bytes": 34359738368
+   "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+   "cpu": "AMD EPYC 9V45 96-Core Processor",
+   "cpu_count": 4,
+   "memory_bytes": 16766414848
   }
  },
- "elapsed_s": 16.2,
+ "elapsed_s": 15.9,
  "load_average": {
   "before": [
-   3.9814453125,
-   3.99658203125,
-   4.16943359375
+   1.263671875,
+   1.18896484375,
+   0.66015625
   ],
   "after": [
-   3.6103515625,
-   3.9140625,
-   4.13525390625
+   1.27294921875,
+   1.19580078125,
+   0.67138671875
   ]
  },
  "scope": "Timed: running the query and building the full result (list of objects, dicts, tuples or rows), or for the streamed variants walking every row without keeping it. No transaction. tracemalloc counts what the call allocates; rss_* is measured in a fresh child process (see bench/child.py).",
@@ -56,351 +57,351 @@
     "django_models": {
      "note": "list(Item.objects.all())",
      "warmup_s": [
-      0.06000470835715532
+      0.07279149400005736
      ],
      "times_s": [
-      0.058045707643032074,
-      0.060042125172913074,
-      0.06225020810961723,
-      0.058098082430660725,
-      0.05852149985730648
+      0.0729746060000025,
+      0.07317140899999686,
+      0.0734499830000459,
+      0.0717400449999559,
+      0.07369350999999824
      ],
-     "best_s": 0.058045707643032074,
-     "median_s": 0.05852149985730648,
+     "best_s": 0.0717400449999559,
+     "median_s": 0.07317140899999686,
      "prepare_s": [
-      7.087364792823792e-07,
-      2.086162567138672e-07,
-      3.7439167499542236e-07,
-      2.4959444999694824e-07,
-      2.505257725715637e-07
+      7.410000080199097e-07,
+      6.709999524900923e-07,
+      7.620000133101712e-07,
+      7.209999921542476e-07,
+      8.410000873482204e-07
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 16048364,
+     "tracemalloc_peak_bytes": 14926478,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 17219584,
-       "maxrss_delta_bytes": 17219584
+       "rss_delta_bytes": 16510976,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 17154048,
-       "maxrss_delta_bytes": 17154048
+       "rss_delta_bytes": 16515072,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 15548416,
-       "maxrss_delta_bytes": 15548416
+       "rss_delta_bytes": 16531456,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 17154048,
-     "maxrss_delta_bytes_median": 17154048
+     "rss_delta_bytes_median": 16515072,
+     "maxrss_delta_bytes_median": 0
     },
     "django_values": {
      "note": "list(Item.objects.values())",
      "warmup_s": [
-      0.029255375266075134
+      0.042486703000008674
      ],
      "times_s": [
-      0.02921037469059229,
-      0.029607375152409077,
-      0.02799970842897892,
-      0.027630125172436237,
-      0.027600249275565147
+      0.04226605100006964,
+      0.0427930750000769,
+      0.04210067200006051,
+      0.04128296900000805,
+      0.03972249200000988
      ],
-     "best_s": 0.027600249275565147,
-     "median_s": 0.02799970842897892,
+     "best_s": 0.03972249200000988,
+     "median_s": 0.04210067200006051,
      "prepare_s": [
-      2.076849341392517e-07,
-      2.505257725715637e-07,
-      2.905726432800293e-07,
-      4.991888999938965e-07,
-      2.4959444999694824e-07
+      4.309999894758221e-07,
+      9.120000186157995e-07,
+      6.509999366244301e-07,
+      5.910000027142814e-07,
+      5.199999577598646e-07
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 13487980,
+     "tracemalloc_peak_bytes": 13006852,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 17825792,
-       "maxrss_delta_bytes": 17825792
+       "rss_delta_bytes": 17182720,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 17842176,
-       "maxrss_delta_bytes": 17842176
+       "rss_delta_bytes": 17178624,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 17940480,
-       "maxrss_delta_bytes": 17940480
+       "rss_delta_bytes": 17182720,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 17842176,
-     "maxrss_delta_bytes_median": 17842176
+     "rss_delta_bytes_median": 17182720,
+     "maxrss_delta_bytes_median": 0
     },
     "django_values_list": {
      "note": "list(...values_list())",
      "warmup_s": [
-      0.0229979595169425
+      0.033354682999970464
      ],
      "times_s": [
-      0.022417250089347363,
-      0.020696540363132954,
-      0.021188125014305115,
-      0.022480042651295662,
-      0.021209624595940113
+      0.03317889800007379,
+      0.03328864299999168,
+      0.032968711000080475,
+      0.03333305000001019,
+      0.0332881729999599
      ],
-     "best_s": 0.020696540363132954,
-     "median_s": 0.021209624595940113,
+     "best_s": 0.032968711000080475,
+     "median_s": 0.0332881729999599,
      "prepare_s": [
-      3.334134817123413e-07,
-      4.163011908531189e-07,
-      2.9243528842926025e-07,
-      3.3248215913772583e-07,
-      4.172325134277344e-07
+      5.100000635138713e-07,
+      5.410000767369638e-07,
+      7.109999842214165e-07,
+      5.30999955117295e-07,
+      9.220000265486306e-07
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 8047156,
+     "tracemalloc_peak_bytes": 7565988,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 12304384,
-       "maxrss_delta_bytes": 12304384
+       "rss_delta_bytes": 11718656,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 12468224,
-       "maxrss_delta_bytes": 12468224
+       "rss_delta_bytes": 11714560,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 12500992,
-       "maxrss_delta_bytes": 12500992
+       "rss_delta_bytes": 11714560,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 12468224,
-     "maxrss_delta_bytes_median": 12468224
+     "rss_delta_bytes_median": 11714560,
+     "maxrss_delta_bytes_median": 0
     },
     "bridge_execute_tuples": {
      "note": "execute(select(...)) -> list of tuples",
      "warmup_s": [
-      0.02218674961477518
+      0.037947648999988814
      ],
      "times_s": [
-      0.02185070887207985,
-      0.021032582968473434,
-      0.020355291664600372,
-      0.020552124828100204,
-      0.022235832177102566
+      0.03410713699997814,
+      0.03406696500007911,
+      0.03257573799999136,
+      0.03241265299993756,
+      0.032078538999940065
      ],
-     "best_s": 0.020355291664600372,
-     "median_s": 0.021032582968473434,
+     "best_s": 0.032078538999940065,
+     "median_s": 0.03257573799999136,
      "prepare_s": [
-      4.163011908531189e-07,
-      4.163011908531189e-07,
-      4.332512617111206e-06,
-      3.334134817123413e-07,
-      3.343448042869568e-07
+      5.009999313188018e-07,
+      5.609999789157882e-07,
+      5.709999868486193e-07,
+      5.809999947814504e-07,
+      8.509999815942138e-07
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 8034695,
+     "tracemalloc_peak_bytes": 7554215,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 12337152,
-       "maxrss_delta_bytes": 12337152
+       "rss_delta_bytes": 11882496,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 12435456,
-       "maxrss_delta_bytes": 12435456
+       "rss_delta_bytes": 11878400,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 12189696,
-       "maxrss_delta_bytes": 12189696
+       "rss_delta_bytes": 11878400,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 12337152,
-     "maxrss_delta_bytes_median": 12337152
+     "rss_delta_bytes_median": 11878400,
+     "maxrss_delta_bytes_median": 0
     },
     "bridge_execute_result_rows": {
      "note": "execute_result(select(...)).all() -> SQLAlchemy Row objects",
      "warmup_s": [
-      0.022925040684640408
+      0.037417058000073666
      ],
      "times_s": [
-      0.023164709098637104,
-      0.023148832842707634,
-      0.023715291172266006,
-      0.024500207975506783,
-      0.023485791869461536
+      0.03625245900002483,
+      0.036439550999944004,
+      0.03709634099993764,
+      0.03631478900001639,
+      0.0369295799999918
      ],
-     "best_s": 0.023148832842707634,
-     "median_s": 0.023485791869461536,
+     "best_s": 0.03625245900002483,
+     "median_s": 0.036439550999944004,
      "prepare_s": [
-      1.2479722499847412e-07,
-      1.2479722499847412e-07,
-      1.257285475730896e-07,
-      2.9243528842926025e-07,
-      2.915039658546448e-07
+      6.81000074109761e-07,
+      6.410000423784368e-07,
+      7.81000039751234e-07,
+      7.610000238855719e-07,
+      7.110000979082542e-07
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 9300784,
+     "tracemalloc_peak_bytes": 8819600,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 13746176,
-       "maxrss_delta_bytes": 13746176
+       "rss_delta_bytes": 9428992,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 13533184,
-       "maxrss_delta_bytes": 13533184
+       "rss_delta_bytes": 9428992,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 13434880,
-       "maxrss_delta_bytes": 13434880
+       "rss_delta_bytes": 9424896,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 13533184,
-     "maxrss_delta_bytes_median": 13533184
+     "rss_delta_bytes_median": 9428992,
+     "maxrss_delta_bytes_median": 0
     },
     "sqlalchemy_core_rows": {
      "note": "Connection.execute(select(...)).all(); own engine, not the bridge",
      "warmup_s": [
-      0.02728433348238468
+      0.027883437000014055
      ],
      "times_s": [
-      0.022962374612689018,
-      0.023982292041182518,
-      0.022055665962398052,
-      0.023110167123377323,
-      0.022681540809571743
+      0.025977798999974766,
+      0.026633763000063482,
+      0.0253102649999164,
+      0.02625941199994486,
+      0.026678696999965723
      ],
-     "best_s": 0.022055665962398052,
-     "median_s": 0.022962374612689018,
+     "best_s": 0.0253102649999164,
+     "median_s": 0.02625941199994486,
      "prepare_s": [
-      1.2479722499847412e-07,
-      1.2479722499847412e-07,
-      1.6670674085617065e-07,
-      8.288770914077759e-08,
-      2.0954757928848267e-07
+      7.510000159527408e-07,
+      4.810000291399774e-07,
+      5.910000027142814e-07,
+      5.61000092602626e-07,
+      5.809999947814504e-07
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 9325562,
+     "tracemalloc_peak_bytes": 8844776,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 13516800,
-       "maxrss_delta_bytes": 13516800
+       "rss_delta_bytes": 13225984,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 13778944,
-       "maxrss_delta_bytes": 13778944
+       "rss_delta_bytes": 13225984,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 13484032,
-       "maxrss_delta_bytes": 13484032
+       "rss_delta_bytes": 13221888,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 13516800,
-     "maxrss_delta_bytes_median": 13516800
+     "rss_delta_bytes_median": 13225984,
+     "maxrss_delta_bytes_median": 0
     },
     "sqlalchemy_orm_objects": {
      "note": "Session.scalars(select(SAItem)).all(); own engine, not the bridge",
      "warmup_s": [
-      0.0630769170820713
+      0.10835180699996272
      ],
      "times_s": [
-      0.06645762454718351,
-      0.061512624844908714,
-      0.06272658240050077,
-      0.06247350014746189,
-      0.0650139581412077
+      0.10416946399993776,
+      0.10400509600003716,
+      0.10306394700000965,
+      0.1026219760000231,
+      0.10013536300004944
      ],
-     "best_s": 0.061512624844908714,
-     "median_s": 0.06272658240050077,
+     "best_s": 0.10013536300004944,
+     "median_s": 0.10306394700000965,
      "prepare_s": [
-      8.381903171539307e-08,
-      2.076849341392517e-07,
-      3.343448042869568e-07,
-      2.4959444999694824e-07,
-      1.2479722499847412e-07
+      3.8099994981166674e-07,
+      9.310000450568623e-07,
+      8.819999948173063e-07,
+      6.7100006617693e-07,
+      7.410000080199097e-07
      ],
      "kept": true,
-     "tracemalloc_peak_bytes": 29633738,
+     "tracemalloc_peak_bytes": 26432796,
      "rss_runs": [
       {
        "rows": 20000,
-       "rss_delta_bytes": 35520512,
-       "maxrss_delta_bytes": 35520512
+       "rss_delta_bytes": 31166464,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 35340288,
-       "maxrss_delta_bytes": 35340288
+       "rss_delta_bytes": 31162368,
+       "maxrss_delta_bytes": 0
       },
       {
        "rows": 20000,
-       "rss_delta_bytes": 35373056,
-       "maxrss_delta_bytes": 35373056
+       "rss_delta_bytes": 31162368,
+       "maxrss_delta_bytes": 0
       }
      ],
-     "rss_delta_bytes_median": 35373056,
-     "maxrss_delta_bytes_median": 35373056
+     "rss_delta_bytes_median": 31162368,
+     "maxrss_delta_bytes_median": 0
     },
     "django_iterator": {
      "note": "values_list().iterator(chunk_size=2000), rows not kept",
      "warmup_s": [
-      0.03185445908457041
+      0.03763604100004159
      ],
      "times_s": [
-      0.03148016706109047,
-      0.0302780419588089,
-      0.032015166245400906,
-      0.031219791620969772,
-      0.032955292612314224
+      0.03670253400002821,
+      0.03673929599995063,
+      0.05648442700010037,
+      0.05666518399993947,
+      0.03456907499992212
      ],
-     "best_s": 0.0302780419588089,
-     "median_s": 0.03148016706109047,
+     "best_s": 0.03456907499992212,
+     "median_s": 0.03673929599995063,
      "prepare_s": [
-      3.343448042869568e-07,
-      4.5821070671081543e-07,
-      3.334134817123413e-07,
-      2.9243528842926025e-07,
-      3.334134817123413e-07
+      3.9100007143133553e-07,
+      5.910000027142814e-07,
+      5.399999736255268e-07,
+      3.9999997625272954e-07,
+      3.200000264769187e-07
      ],
      "kept": false,
-     "tracemalloc_peak_bytes": 1589876
+     "tracemalloc_peak_bytes": 1493549
     },
     "bridge_stream": {
      "note": "stream(select(...), chunk_size=2000), rows not kept",
      "warmup_s": [
-      0.031203624792397022
+      0.03546308699992551
      ],
      "times_s": [
-      0.031519750133156776,
-      0.03055729065090418,
-      0.031090292148292065,
-      0.03352029249072075,
-      0.031236374750733376
+      0.034390285000085896,
+      0.03417358299998341,
+      0.033347672999980205,
+      0.03250296500004879,
+      0.03240682000000561
      ],
-     "best_s": 0.03055729065090418,
-     "median_s": 0.031236374750733376,
+     "best_s": 0.03240682000000561,
+     "median_s": 0.033347672999980205,
      "prepare_s": [
-      3.3248215913772583e-07,
-      2.505257725715637e-07,
-      2.915039658546448e-07,
-      2.4959444999694824e-07,
-      2.9243528842926025e-07
+      5.509999709829572e-07,
+      4.70000031782547e-07,
+      3.410000317671802e-07,
+      3.9100007143133553e-07,
+      3.1000001854408765e-07
      ],
      "kept": false,
-     "tracemalloc_peak_bytes": 1587082
+     "tracemalloc_peak_bytes": 1490453
     }
    }
   }
