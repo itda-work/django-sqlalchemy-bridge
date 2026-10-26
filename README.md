@@ -976,6 +976,8 @@ PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQL
 
 SQLite, PostgreSQL(psycopg 3), MySQL 8.4 LTS(mysqlclient; Django 5.2·6.1 모두 지원하는 버전), Oracle(oracledb thin 모드) · Django 5.2 이상 · SQLAlchemy 2.0 이상 2.2 미만(Oracle 의 JSON 키·경로는 2.1 이상) · Python 3.12 이상
 
+PostgreSQL 은 Django 기본(클라이언트측 바인딩)뿐 아니라 `OPTIONS={"server_side_binding": True, "prepare_threshold": 5}`(서버측 바인딩, prepared statement)에서도 동작합니다(CI 가 두 설정 모두 돌립니다).
+
 Oracle 은 Django 5.2·6.1 이 19c 이상을 받지만, 검증한 버전은 CI 의 Oracle 23ai Free(`gvenzl/oracle-free:23-slim-faststart`)뿐입니다. 무료 19c 이미지가 없어 19c 에서는 돌려 보지 않았고, `SELECT` 목록의 불리언 식은 19c 에 없습니다.
 
 MariaDB 는 컴파일과 `RETURNING` 판정(INSERT·DELETE 는 되고 UPDATE 는 안 됨)만 맞춰 두었고 CI 에서 돌리지 않습니다. 로컬에서 MariaDB 11.4 로 테스트를 한 번 돌렸을 때 JSON 키·문서 비교가 ORM 과 다르게 나오고(MariaDB 의 JSON 은 텍스트이고 ORM 은 양쪽에 `JSON_UNQUOTE`를 씌움) `LATERAL`이 없었습니다. JSON 컬럼을 비교하는 쿼리는 MariaDB 에서 ORM 결과와 대조해 쓰세요.

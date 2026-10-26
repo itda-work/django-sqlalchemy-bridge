@@ -100,6 +100,12 @@ jobs:
         run: uv run --no-sync pytest
         env:
           DSB_DB: postgres
+      # The same PostgreSQL service with psycopg's server-side binding and prepared statements.
+      - name: pytest (PostgreSQL, server-side binding)
+        run: uv run --no-sync pytest
+        env:
+          DSB_DB: postgres
+          DSB_PG_SERVER_SIDE_BINDING: "1"
       - name: pytest (MySQL)
         run: uv run --no-sync pytest
         env:

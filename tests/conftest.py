@@ -7,6 +7,7 @@ def pytest_report_header(config):
     return (
         f"django-sqlalchemy-bridge: DSB_DB={dbenv.BACKEND} REQUIRE_PG={int(dbenv.REQUIRE_PG)}"
         f" REQUIRE_MYSQL={int(dbenv.REQUIRE_MYSQL)} REQUIRE_ORACLE={int(dbenv.REQUIRE_ORACLE)}"
+        f" DSB_PG_SERVER_SIDE_BINDING={int(dbenv.PG_SERVER_SIDE_BINDING)}"
     )
 
 

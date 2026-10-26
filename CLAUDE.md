@@ -30,6 +30,7 @@
   docker run -d --name dsb-pg -e POSTGRES_USER=dsb -e POSTGRES_PASSWORD=dsb -e POSTGRES_DB=dsb -p 127.0.0.1:55432:5432 postgres:18
   DSB_PG_HOST=127.0.0.1 DSB_PG_PORT=55432 DSB_PG_USER=dsb DSB_PG_PASSWORD=dsb DSB_PG_NAME=dsb REQUIRE_PG=1 uv run pytest
   ```
+- PostgreSQL 서버측 바인딩: `DSB_PG_SERVER_SIDE_BINDING=1` 이면 `OPTIONS={"server_side_binding": True, "prepare_threshold": 5}`(값이 프로토콜 파라미터로 가고 `ServerBindingCursor`). 같은 연결에서 같은 문장이 5번째 실행부터 서버 prepared statement 가 되므로 스위트가 prepared 경로도 지난다. CI 는 잡마다 PG 단계 뒤에 이 설정으로 한 번 더 돈다.
 - MySQL 8.4: 접속은 `DSB_MYSQL_HOST/PORT/USER/PASSWORD/NAME`(HOST 는 `127.0.0.1`, `localhost` 는 소켓으로 간다). 없으면 skip, `REQUIRE_MYSQL=1` 이면 실패. 드라이버 `mysqlclient` 는 C 확장이라 `dev` 가 아닌 `mysql` 그룹이다(`uv sync --group mysql`, 빌드에 MySQL/MariaDB 클라이언트 라이브러리와 `pkg-config` 필요. 호스트에 brew 로 새로 깔지 말고 없으면 Linux 컨테이너나 CI 로). 테스트 DB 를 만들어야 하므로 root 로 붙는다.
   ```sh
   docker run -d --name dsb-mysql -e MYSQL_ROOT_PASSWORD=dsb -e MYSQL_DATABASE=dsb -p 127.0.0.1:53306:3306 mysql:8.4
@@ -42,7 +43,7 @@
   DSB_DB=oracle DSB_ORACLE_HOST=127.0.0.1 DSB_ORACLE_PORT=51521 DSB_ORACLE_USER=system DSB_ORACLE_PASSWORD=dsb DSB_ORACLE_NAME=FREEPDB1 REQUIRE_ORACLE=1 uv run --no-sync pytest
   ```
 - 테스트 모델을 바꾸면 `uv run django-admin makemigrations testapp --settings tests.settings --pythonpath .` (스모크 테스트가 누락을 잡는다).
-- CI(`.github/workflows/ci.yml`)는 lint + Python 3.12/3.14 × Django 5.2/6.1 × SQLAlchemy 2.0/2.1 매트릭스. 잡마다 PG 18·MySQL 8.4·Oracle 23ai Free 서비스로 SQLite·PG·MySQL·Oracle 을 각각 돈다(MariaDB 는 CI 에 없다). 매트릭스 버전은 `uv sync --locked` 뒤 `uv pip install` 로 덮어쓴다.
+- CI(`.github/workflows/ci.yml`)는 lint + Python 3.12/3.14 × Django 5.2/6.1 × SQLAlchemy 2.0/2.1 매트릭스. 잡마다 PG 18·MySQL 8.4·Oracle 23ai Free 서비스로 SQLite·PG·PG(서버측 바인딩)·MySQL·Oracle 을 각각 돈다(MariaDB 는 CI 에 없다). 매트릭스 버전은 `uv sync --locked` 뒤 `uv pip install` 로 덮어쓴다.
 
 ## 작업 방식
 

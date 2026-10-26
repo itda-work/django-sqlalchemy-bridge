@@ -173,12 +173,15 @@ def test_bindparams_of_bytes_json_and_uuid_are_written_as_psycopg_adapts_them():
 def server_side_binding():
     """Reconnect the default database with psycopg's ServerBindingCursor (OPTIONS["server_side_binding"])."""
     options = connection.settings_dict.setdefault("OPTIONS", {})
+    saved = dict(options)
     connection.close()
     options["server_side_binding"] = True
     try:
         yield
     finally:
-        options.pop("server_side_binding")
+        # Restore, not pop: under DSB_PG_SERVER_SIDE_BINDING=1 the option was already set.
+        options.clear()
+        options.update(saved)
         connection.close()
 
 

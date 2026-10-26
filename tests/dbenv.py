@@ -9,7 +9,9 @@ DSB_ORACLE_HOST/PORT/USER/PASSWORD/NAME (NAME is the service name; the user
 creates the test user, as Django's Oracle test runner does, so it is an
 administrator such as SYSTEM). Without the backend's HOST the database tests are
 skipped, and REQUIRE_PG=1 / REQUIRE_MYSQL=1 / REQUIRE_ORACLE=1 turns that skip
-into a failure.
+into a failure. DSB_PG_SERVER_SIDE_BINDING=1 connects PostgreSQL with psycopg's
+server-side binding and prepared statements from the fifth run of a statement
+(OPTIONS server_side_binding=True, prepare_threshold=5) instead of Django's default.
 
 A second alias, "other", is always an in-memory SQLite database with its own
 TIME_ZONE, for tests that run one statement on two connections.
@@ -31,6 +33,7 @@ if BACKEND not in ("sqlite", "postgres", "mysql", "oracle"):
 PG_CONFIGURED = bool(os.environ.get("DSB_PG_HOST"))
 MYSQL_CONFIGURED = bool(os.environ.get("DSB_MYSQL_HOST"))
 ORACLE_CONFIGURED = bool(os.environ.get("DSB_ORACLE_HOST"))
+PG_SERVER_SIDE_BINDING = os.environ.get("DSB_PG_SERVER_SIDE_BINDING") == "1"
 # Database tests cannot run: a server backend was asked for but no server was given.
 PG_MISSING = BACKEND == "postgres" and not PG_CONFIGURED
 MYSQL_MISSING = BACKEND == "mysql" and not MYSQL_CONFIGURED
@@ -61,7 +64,7 @@ def database() -> dict:
             "USER": os.environ.get("DSB_ORACLE_USER", "system"),
             "PASSWORD": os.environ.get("DSB_ORACLE_PASSWORD", ""),
         }
-    return {
+    settings = {
         "ENGINE": "django.db.backends.postgresql",
         "HOST": os.environ.get("DSB_PG_HOST", ""),
         "PORT": os.environ.get("DSB_PG_PORT", "5432"),
@@ -69,6 +72,9 @@ def database() -> dict:
         "PASSWORD": os.environ.get("DSB_PG_PASSWORD", ""),
         "NAME": os.environ.get("DSB_PG_NAME", "postgres"),
     }
+    if PG_SERVER_SIDE_BINDING:
+        settings["OPTIONS"] = {"server_side_binding": True, "prepare_threshold": 5}
+    return settings
 
 
 def other_database() -> dict:
