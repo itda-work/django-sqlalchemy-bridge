@@ -1,7 +1,7 @@
 """Refuse a release whose version is not declared everywhere it has to be.
 
 Run this before tagging; release.yml runs it again with
-the tag it is building. (Copied from itda-work/channels-nats.)
+the tag it is building, and with ``--wheel`` on the wheel it built. (Copied from itda-work/channels-nats.)
 
 Deliberately dependency-free and stdlib-only, so it runs on any Python this
 project supports, including 3.10 without tomllib.
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,7 +49,33 @@ def problems(tag: str | None) -> list[str]:
     return found
 
 
+# Files a wheel must carry besides the modules: the agent guide README.md and llms.txt point at.
+PACKAGE_DATA = ["django_sqlalchemy_bridge/llms.txt"]
+
+
+def wheel_problems(wheel: Path) -> list[str]:
+    """What the built ``wheel`` lacks, or carries out of date, of :data:`PACKAGE_DATA`."""
+    found = []
+    with zipfile.ZipFile(wheel) as archive:
+        names = set(archive.namelist())
+        for path in PACKAGE_DATA:
+            if path not in names:
+                found.append(f"{wheel.name} has no {path}")
+            elif archive.read(path) != (ROOT / path).read_bytes():
+                found.append(f"{wheel.name}: {path} differs from the source tree")
+    return found
+
+
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["--wheel"]:
+        if len(argv) != 2:
+            raise SystemExit("usage: release_check.py --wheel dist/<name>.whl")
+        found = wheel_problems(Path(argv[1]))
+        for problem in found:
+            print(f"release check: {problem}", file=sys.stderr)
+        if not found:
+            print(f"release check: {Path(argv[1]).name} carries {', '.join(PACKAGE_DATA)}")
+        return 1 if found else 0
     found = problems(argv[0] if argv else None)
     for problem in found:
         print(f"release check: {problem}", file=sys.stderr)

@@ -70,3 +70,43 @@ class Stamp(models.Model):
     note = models.CharField(max_length=50, null=True)
     at = models.DateTimeField(null=True)
     kind = models.CharField(max_length=10, db_default="db")
+
+
+# The models below back tests/test_examples.py: a small shop whose queries are hard to write with the ORM.
+
+
+class Category(models.Model):
+    name = models.CharField(max_length=50)
+    parent = models.ForeignKey("self", on_delete=models.CASCADE, null=True, related_name="children")
+
+
+class Product(models.Model):
+    sku = models.CharField(max_length=20, unique=True)
+    category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name="products")
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+
+
+class Sale(models.Model):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="sales")
+    sold_at = models.DateTimeField()
+    quantity = models.IntegerField()
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+
+class DailyStock(models.Model):
+    """One row per product and day, written by upserts."""
+
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    day = models.DateField()
+    quantity = models.IntegerField()
+    counted_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["product", "day"], name="dailystock_product_day")]
+
+
+class PriceChange(models.Model):
+    """A staged price list, applied to Product with UPDATE ... FROM."""
+
+    sku = models.CharField(max_length=20, unique=True)
+    price = models.DecimalField(max_digits=10, decimal_places=2)

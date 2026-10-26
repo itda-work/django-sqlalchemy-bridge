@@ -1,7 +1,13 @@
-"""django-sqlalchemy-bridge — experimental, the API may change without notice.
+"""django-sqlalchemy-bridge — experimental, the API may change without notice. Agents: read llms.txt here.
 
-See README.md for the architecture.
-"""
+llms.txt next to this file is the guide for AI coding agents: what to use the
+bridge for, the rules it depends on (no SQLAlchemy Engine or Session; writes
+skip signals and save()), the public signatures and worked examples. Print it with
+
+    python -c "import importlib.resources as r; print(r.files('django_sqlalchemy_bridge').joinpath('llms.txt').read_text('utf-8'))"
+
+(``uv run python -c ...`` in a uv project). See README.md for the architecture.
+"""  # noqa: E501 - the command above is copied whole
 
 from importlib.metadata import PackageNotFoundError, version
 

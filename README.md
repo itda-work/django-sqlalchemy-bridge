@@ -6,9 +6,90 @@
 
 Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식(대량 DML, CTE, 윈도 함수, 복잡한 조인)을 쓰게 해 주는 라이브러리입니다.
 
-## 왜 만드나
+## 왜 쓰나
 
-[aldjemy](https://github.com/aldjemy/aldjemy)가 같은 문제를 먼저 풀었지만, SQLAlchemy 내부 비공개 풀 구조에 기대 Django 연결을 공유하는 탓에 SQLAlchemy 2 미만에 묶여 있습니다. Django 6.0부터는 SQLAlchemy 버전과 상관없이 모델 변환 단계에서도 깨집니다. 이 프로젝트는 다른 길을 갑니다.
+**표현력 때문입니다.** Django ORM 으로 쓰기 어려운 SQL(재귀 CTE, 여러 CTE, `INSERT … ON CONFLICT … RETURNING`, `UPDATE … FROM`, `INSERT … SELECT`, PostgreSQL 의 `LATERAL`·`DISTINCT ON`·데이터를 바꾸는 CTE)을 raw SQL 문자열 대신 SQLAlchemy 식으로 씁니다. 그러면서도 연결·트랜잭션·값 변환은 Django 의 것을 그대로 씁니다. `atomic()` 안에서 ORM 쿼리와 섞여 돌고, 결과의 datetime·Decimal·JSON 은 ORM 이 읽은 값과 같습니다. raw SQL 과 달리 테이블·컬럼 이름이 모델에서 나오므로 오타가 실행 전에 드러나고, 백엔드마다 SQL 을 따로 쓰지 않아도 되는 경우가 많습니다.
+
+성능은 목적이 아닙니다. 대량 쓰기에서는 따라옵니다. `bulk_update`는 Django `bulk_update`보다 한 자릿수 이상, `bulk_insert`는 Django `bulk_create`보다 같거나 조금 빠릅니다. 그 밖의 쿼리는 실행 시간이 DB 에서 정해져 ORM 과 거의 같습니다(아래 "성능과 메모리").
+
+**언제 ORM 을 쓰나.** ORM 으로 자연스럽게 써지는 쿼리, 한 행씩 읽고 쓰는 CRUD, signal·`save()`·필드 `default`·검증이 따라와야 하는 쓰기는 ORM 을 쓰세요. 브리지의 쓰기는 모델 계층을 거치지 않습니다(아래 "대량 쓰기"의 경고). 자세한 경우는 "[브리지가 도움이 안 되는 경우](#브리지가-도움이-안-되는-경우)"에 있습니다.
+
+### 예제
+
+아래 코드는 테스트(`tests/test_examples.py`)에서 그대로 돌고, README 가 그 코드와 어긋나면 테스트가 실패합니다. 모델은 작은 상점([`tests/testapp/models.py`](tests/testapp/models.py)의 `Category`·`Product`·`Sale`·`DailyStock`·`PriceChange`)이고, 테스트 파일에는 LATERAL·DISTINCT ON·여러 CTE·윈도 함수·`INSERT … SELECT`·`ON CONFLICT DO NOTHING`·데이터를 바꾸는 CTE 예제가 더 있습니다. 모든 예제는 SQLite·PostgreSQL 에서 돌고, PostgreSQL 전용 문법만 SQLite 에서 건너뜁니다. 예제 코드의 import 는 `import datetime`, `from zoneinfo import ZoneInfo`, `import sqlalchemy as sa`, `from django.db import connection, transaction`, `from sqlalchemy.dialects import postgresql, sqlite`, `from django_sqlalchemy_bridge import execute, table_for`입니다.
+
+재귀 CTE: 카테고리 하나의 하위 트리를 깊이와 함께.
+
+<!-- example:recursive-cte -->
+```python
+categories = table_for(Category)
+
+tree = (
+    sa.select(categories.c.id, categories.c.name, sa.literal_column("0").label("depth"))
+    .where(categories.c.id == sa.bindparam("root"))
+    .cte("tree", recursive=True)
+)
+tree = tree.union_all(
+    sa.select(categories.c.id, categories.c.name, tree.c.depth + 1).join(tree, categories.c.parent_id == tree.c.id)
+)
+subtree = sa.select(tree.c.name, tree.c.depth).order_by(tree.c.depth, tree.c.name)
+
+rows = execute(subtree, {"root": clothes.pk})
+# [("의류", 0), ("상의", 1), ("하의", 1)]
+```
+<!-- /example:recursive-cte -->
+
+업서트: 같은 (상품, 날짜) 행이 있으면 수량을 더하고, 결과 행을 돌려받습니다. `ON CONFLICT`는 백엔드마다 SQLAlchemy 구성자가 달라 vendor 로 고릅니다. `RETURNING`의 날짜·시각도 ORM 처럼 변환됩니다.
+
+<!-- example:upsert -->
+```python
+daily_stock = table_for(DailyStock)
+insert = postgresql.insert if connection.vendor == "postgresql" else sqlite.insert
+
+stmt = insert(daily_stock)  # 컬럼은 아래 params 가 정한다
+stmt = stmt.on_conflict_do_update(
+    index_elements=[daily_stock.c.product_id, daily_stock.c.day],
+    set_={"quantity": daily_stock.c.quantity + stmt.excluded.quantity, "counted_at": stmt.excluded.counted_at},
+).returning(daily_stock.c.day, daily_stock.c.quantity, daily_stock.c.counted_at)
+
+counted_at = datetime.datetime(2026, 10, 26, 18, tzinfo=ZoneInfo("Asia/Seoul"))
+params = {"product_id": shirt.pk, "day": counted_at.date(), "quantity": 3, "counted_at": counted_at}
+with transaction.atomic():
+    rows = execute(stmt, params)
+# [(datetime.date(2026, 10, 26), 10, datetime.datetime(2026, 10, 26, 9, 0, tzinfo=datetime.timezone.utc))]
+```
+<!-- /example:upsert -->
+
+`UPDATE … FROM`: 따로 올려 둔 가격표를 바뀐 행에만 적용하고 바뀐 행을 돌려받습니다(SQLite 3.33+, PostgreSQL).
+
+<!-- example:update-from -->
+```python
+products = table_for(Product)
+changes = table_for(PriceChange)
+
+stmt = (
+    sa.update(products)
+    .where(products.c.sku == changes.c.sku, products.c.price != changes.c.price)
+    .values(price=changes.c.price)
+    .returning(products.c.sku, products.c.price)
+)
+changed = execute(stmt)  # [("SHIRT", Decimal("27.50"))]
+```
+<!-- /example:update-from -->
+
+**aldjemy 와의 관계.** [aldjemy](https://github.com/aldjemy/aldjemy)가 같은 문제를 먼저 풀었지만, SQLAlchemy 내부 비공개 풀 구조에 기대 Django 연결을 공유하는 탓에 SQLAlchemy 2 미만에 묶여 있고, Django 6.0부터는 모델 변환 단계에서도 깨집니다. 이 프로젝트는 SQLAlchemy 에 연결을 넘기지 않고 Django 커서로 실행합니다(아래 "설계 원칙").
+
+## AI 코딩 에이전트에게
+
+이 라이브러리는 새로 나와 AI 모델의 학습 데이터에 거의 없습니다. 그래서 설치된 패키지 안에 에이전트용 요약 [`django_sqlalchemy_bridge/llms.txt`](django_sqlalchemy_bridge/llms.txt)(저장소 루트 [`llms.txt`](llms.txt)와 같은 내용)를 넣어 두었습니다. 언제 쓰고 언제 ORM 을 쓰는지, 꼭 지킬 것(SQLAlchemy `Engine`·`Session`을 만들지 않기, 쓰기가 signal·`save()`를 우회한다는 것, `bindparam` 재사용), 지원하지 않는 것, 공개 API 시그니처, 위 예제의 요약이 들어 있습니다. 내 프로젝트의 `AGENTS.md`나 `CLAUDE.md`에 아래를 붙여 두면 에이전트가 설치된 버전의 안내를 읽습니다.
+
+```markdown
+## django-sqlalchemy-bridge
+SQLAlchemy Core 식을 Django 연결·트랜잭션에서 실행하는 django-sqlalchemy-bridge 를 쓴다.
+이 라이브러리로 코드를 쓰기 전에 설치된 버전의 안내를 읽고 따른다(uv 프로젝트면 앞에 `uv run`):
+`python -c "import importlib.resources as r; print(r.files('django_sqlalchemy_bridge').joinpath('llms.txt').read_text('utf-8'))"`
+SQLAlchemy `Engine`·`Session` 을 만들지 않는다. 브리지의 쓰기는 signal·`save()` 를 거치지 않는다.
+```
 
 ## 설계 원칙
 
