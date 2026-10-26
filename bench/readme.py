@@ -106,6 +106,12 @@ BATCH_UPDATE_ROWS = [
     ("update_batch50000", "`bulk_update(batch_size=50_000)`"),
     ("update_batch200000", "`bulk_update(batch_size=200_000)`"),
 ]
+PIPELINE_ROWS = [
+    ("execute_sequential", "`execute()`를 문장마다 (트랜잭션 안)"),
+    ("execute_pipeline", "`execute_pipeline()` (트랜잭션 안)"),
+    ("execute_sequential_autocommit", "`execute()`를 문장마다 (트랜잭션 밖)"),
+    ("execute_pipeline_autocommit", "`execute_pipeline()` (트랜잭션 밖, 자체 `atomic()`)"),
+]
 RUNNING_ROWS = [
     ("django_window", "Django ORM `Window(Sum(...), partition_by=...)`"),
     ("bridge", "브리지 `func.sum().over(partition_by=...)`"),
@@ -188,6 +194,18 @@ TABLES: dict[str, dict] = {
         "file": _file("postgres", "report"),
         "cases": [("누적 합 `SUM() OVER` (20,000행)", {"query": "running"})],
         "rows": RUNNING_ROWS,
+        "metric": "ms",
+    },
+    "pg-pipeline": {
+        "file": _file("postgres", "pipeline"),
+        "cases": [("PK 조회 1,000번", {"query": "lookup", "n": 1_000}), ("5,000번", {"query": "lookup", "n": 5_000})],
+        "rows": PIPELINE_ROWS,
+        "metric": "ms",
+    },
+    "pg-pipeline-dashboard": {
+        "file": _file("postgres", "pipeline"),
+        "cases": [("집계 쿼리 5개 1회", {"query": "dashboard"})],
+        "rows": PIPELINE_ROWS,
         "metric": "ms",
     },
     "pg-batch-insert": {

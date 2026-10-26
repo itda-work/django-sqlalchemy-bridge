@@ -241,6 +241,33 @@ for order_id, paid_at in stream(sa.select(orders.c.id, orders.c.paid_at), chunk_
 - 반대로 `atomic()` 안에서 연 스트림은 그 트랜잭션이 끝나면 서버 커서가 사라집니다. 블록을 나온 뒤 계속 소비하면 `ProgrammingError: cursor ... does not exist`가 납니다. 블록 안에서 다 읽으세요.
 - PgBouncer를 transaction pooling 모드로 쓰면 트랜잭션이 끝난 뒤의 `FETCH`가 커서를 연 것과 다른 서버 연결로 갈 수 있으니, Django 문서대로 `DISABLE_SERVER_SIDE_CURSORS: True`를 설정해야 합니다. 그러면 `stream`도 일반 커서를 씁니다(드라이버가 결과를 한꺼번에 받습니다).
 
+### 여러 문장 한 번에: `execute_pipeline`
+
+```python
+from django_sqlalchemy_bridge import execute_pipeline
+
+by_pk = sa.select(orders.c.id, orders.c.status).where(orders.c.id == sa.bindparam("pk"))
+mark = sa.update(orders).where(orders.c.id == sa.bindparam("pk")).values(status="seen")
+results = execute_pipeline(
+    [
+        *[(by_pk, {"pk": pk}) for pk in (1, 2, 3)],
+        sa.select(sa.func.count()).select_from(orders),  # params 가 없으면 문장만
+        (mark, [{"pk": 1}, {"pk": 2}]),  # executemany
+    ]
+)
+# [[(1, "paid")], [(2, "void")], [(3, "paid")], [(42,)], 2]
+```
+
+- `execute_pipeline(items, *, using="default")`의 항목은 문장 또는 `(문장, params)` 쌍입니다. 항목마다 의미와 결과는 `execute`와 같고(행 튜플 리스트 또는 rowcount, 값 변환, `text()`, 매핑의 시퀀스는 executemany), 결과는 입력 순서의 리스트입니다. 빈 입력은 `[]`이고 아무것도 실행하지 않습니다.
+- **PostgreSQL + psycopg 3 + 파이프라인을 지원하는 libpq(14 이상)** 에서는 psycopg 의 파이프라인 모드(`connection.connection.pipeline()`) 안에서 문장마다 Django 커서로 실행해, 모든 문장을 보낸 뒤 결과를 읽습니다. 왕복이 문장 수만큼이 아니라 한 번이라 독립 조회가 많을수록, 서버가 멀수록 빨라집니다(아래 "성능과 메모리" 8). 그 밖(SQLite·MySQL·Oracle·psycopg2)에서는 같은 순서로 하나씩 실행해 같은 결과를 줍니다. 속도만 다릅니다.
+- 항목 사이의 의존(앞 결과를 뒤 `params`로)은 받지 않습니다. 모든 문장이 호출할 때 준비돼 있어야 합니다.
+- **실행 전 검사는 모든 항목에 대해 먼저 합니다.** `RETURNING`을 지원하지 않는 DB, SQLAlchemy Python 측 default, executemany 와 `RETURNING`처럼 `execute`가 실행 전에 거부하는 항목이 하나라도 있으면 아무것도 실행하지 않습니다.
+- Django 커서를 지나므로 `connection.queries`·`CaptureQueriesContext`·`assertNumQueries`·`execute_wrapper`에 문장마다 하나씩(executemany 항목은 하나) 잡힙니다. 컴파일 캐시도 항목마다 그대로 탑니다.
+- **문장을 둘 이상 실행하는 호출은 `atomic(using, savepoint=False)` 안에서 돕니다**(`bulk_*`와 같음). 그래서 `atomic()` 밖에서도, 모든 백엔드에서 한 호출의 쓰기는 모두 되거나 모두 안 됩니다. 트랜잭션 밖에서 부르면 Django 가 `BEGIN`·`COMMIT`을 쿼리 기록에 남기고, PostgreSQL 에서는 `COMMIT` 왕복이 하나 늘어납니다. 바깥 `atomic()` 안에서 이 호출의 에러를 잡고 계속하려면 호출을 `atomic()`으로 한 번 더 감싸세요(savepoint).
+  - PostgreSQL 파이프라인은 그 자체로도 Sync 까지의 문장을 암묵적 트랜잭션으로 묶습니다. 저장소에서 감싸지 않고 확인했을 때 autocommit 에서 뒤 문장이 실패하면 앞 쓰기도 남지 않았습니다(PostgreSQL 18, psycopg 3.3). 다만 executemany 항목은 결과를 남기지 않아 어느 항목이 실패했는지 알려면 그 뒤에 Sync 를 하나 더 보내야 하고(항목마다 왕복 하나), 트랜잭션 밖의 Sync 는 커밋이라 브리지가 트랜잭션을 엽니다.
+- **한 항목이 실패하면** 그 항목의 DB 에러(Django 의 `IntegrityError` 등)가 그대로 나고, 에러의 note(`e.__notes__`, 트레이스백 끝에 보임)에 `execute_pipeline(): item 2 failed`처럼 몇 번째 항목인지 적힙니다. psycopg 가 실패 뒤 문장에 내는 `PipelineAborted`는 드러나지 않습니다. 뒤 항목은 효과가 없습니다. PostgreSQL 은 이미 보낸 문장을 서버가 건너뛰고(그래서 `execute_wrapper`에는 보인 문장으로 잡힙니다), 하나씩 실행하는 백엔드는 보내지 않습니다. `atomic()` 안이면 블록이 롤백됩니다.
+- 결과 하나짜리 `Result`(`execute_result`)판, `stream`의 파이프라인화, 결과 지연 읽기는 없습니다. async 코드에서는 다른 API 처럼 `SynchronousOnlyOperation`이니 `arun`으로 감싸세요.
+
 ### 대량 쓰기: `bulk_update`, `bulk_insert`
 
 ```python
@@ -625,6 +652,36 @@ SQLite 에서는 차이가 작습니다. 시간은 3% 안, tracemalloc 피크는
 
 <sub>결과 파일: [`bench/results/2026-10-26-sqlite-batch.json`](bench/results/2026-10-26-sqlite-batch.json)</sub>
 <!-- /bench:sqlite-batch-update -->
+
+### 8. 여러 독립 문장: `execute()` 순차 대 `execute_pipeline()` (PostgreSQL)
+
+같은 문장(`bindparam` 으로 1회 생성)으로 PK 조회를 하나씩 `execute()` 하는 것과 `(문장, params)` 항목으로 `execute_pipeline()` 한 번에 넘기는 것, 그리고 서로 독립인 집계 쿼리 5개(대시보드 한 화면)를 비교합니다. 모든 변형이 같은 행을 돌려주는지 확인합니다.
+
+<!-- bench:pg-pipeline -->
+| | PK 조회 1,000번 시간 (ms) | 5,000번 시간 (ms) |
+|---|---:|---:|
+| `execute()`를 문장마다 (트랜잭션 안) | 144 | 726 |
+| `execute_pipeline()` (트랜잭션 안) | 46.7 | 446 |
+| `execute()`를 문장마다 (트랜잭션 밖) | 141 | 752 |
+| `execute_pipeline()` (트랜잭션 밖, 자체 `atomic()`) | 47.7 | 447 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-pipeline.json`](bench/results/2026-10-26-postgres-pipeline.json)</sub>
+<!-- /bench:pg-pipeline -->
+
+<!-- bench:pg-pipeline-dashboard -->
+| | 집계 쿼리 5개 1회 시간 (ms) |
+|---|---:|
+| `execute()`를 문장마다 (트랜잭션 안) | 7.16 |
+| `execute_pipeline()` (트랜잭션 안) | 6.62 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-pipeline.json`](bench/results/2026-10-26-postgres-pipeline.json)</sub>
+<!-- /bench:pg-pipeline-dashboard -->
+
+- 이 표는 위 환경 줄과 다른 실행(결과 파일의 `ci_run`)에서 같은 종류의 러너로 잰 값입니다.
+- 파이프라인은 왕복 수를 줄이는 것이라, 이득은 문장 하나의 실행 시간에 비해 왕복이 클수록 커집니다. 이 러너의 PostgreSQL 은 같은 VM 의 서비스 컨테이너라 왕복이 짧은데도 PK 조회 1,000번에서 약 3배였습니다. 네트워크를 건너는 서버에서는 재지 않았습니다.
+- 5,000번에서는 1.6배로 줄었습니다. CI 러너에서는 5,000번이 1,000번의 약 9.5배였으나 로컬(PG 컨테이너)에서는 문장 수에 비례했습니다. 러너의 특성으로 보이며 원인은 재지 않았습니다.
+- 대시보드처럼 문장마다 서버 실행(20,000행 집계)이 시간 대부분이면 차이가 작습니다(약 8%). 파이프라인은 서버에서 문장을 동시에 실행하지 않습니다.
+- 트랜잭션 밖에서는 `execute_pipeline()`이 자체 `atomic()`을 열어 `COMMIT` 왕복이 하나 늘지만, 표에서 차이가 보이지 않을 만큼 작습니다.
 
 ### 브리지가 도움이 안 되는 경우
 

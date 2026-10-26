@@ -1,0 +1,293 @@
+{
+ "scenario": "pipeline",
+ "db": "postgres",
+ "date": "2026-10-26",
+ "quick": false,
+ "command": "python -m bench pipeline --db postgres",
+ "method": {
+  "repeat": 5,
+  "warmup": 1,
+  "time": "perf_counter around the measured call; best_s = min(times_s)",
+  "memory": "tracemalloc peak of one extra run, minus what was traced at its start"
+ },
+ "environment": {
+  "revision": "9682398",
+  "python": "3.12.3",
+  "packages": {
+   "django-sqlalchemy-bridge": "0.1.0",
+   "django": "6.1.2",
+   "sqlalchemy": "2.1.6",
+   "psycopg": "3.3.6",
+   "psycopg-binary": "3.3.6",
+   "django-pgbulk": "3.3.0",
+   "django-cte": "4.0.0",
+   "asgiref": "3.13.0"
+  },
+  "python_sqlite3": "3.45.1",
+  "database": {
+   "vendor": "postgresql",
+   "server": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2)"
+  },
+  "ci_run": "https://github.com/itda-work/django-sqlalchemy-bridge/actions/runs/40284030076",
+  "machine": {
+   "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+   "cpu": "AMD EPYC 9V45 96-Core Processor",
+   "cpu_count": 4,
+   "memory_bytes": 16766414848
+  }
+ },
+ "elapsed_s": 19.7,
+ "load_average": {
+  "before": [
+   0.568359375,
+   0.22607421875,
+   0.08740234375
+  ],
+  "after": [
+   0.85205078125,
+   0.310546875,
+   0.1181640625
+  ]
+ },
+ "scope": "Timed: the lookups or the five dashboard queries, each returning its rows. Inside one Django transaction that is rolled back (untimed), except the variants marked autocommit, which run outside any transaction.",
+ "cases": [
+  {
+   "query": "lookup",
+   "n": 1000,
+   "variants": {
+    "execute_sequential": {
+     "note": "execute(stmt, {'pk': pk}) each",
+     "warmup_s": [
+      0.156246431999989
+     ],
+     "times_s": [
+      0.14386498100000722,
+      0.1722715730000175,
+      0.14737811999998485,
+      0.1653396789999988,
+      0.1485685760000024
+     ],
+     "best_s": 0.14386498100000722,
+     "median_s": 0.1485685760000024,
+     "prepare_s": [
+      8.519999994405225e-07,
+      9.009999928366597e-07,
+      8.610000179487542e-07,
+      1.2019999928725156e-06,
+      9.819999888804887e-07
+     ]
+    },
+    "execute_pipeline": {
+     "note": "execute_pipeline([(stmt, {'pk': pk}), ...])",
+     "warmup_s": [
+      0.04675254500000392
+     ],
+     "times_s": [
+      0.05030622000001017,
+      0.04883609999998839,
+      0.04731849999998872,
+      0.05224198199999819,
+      0.046710982999996986
+     ],
+     "best_s": 0.046710982999996986,
+     "median_s": 0.04883609999998839,
+     "prepare_s": [
+      7.710000033966935e-07,
+      1.2120000008053466e-06,
+      1.1010000093847339e-06,
+      1.2319999882492993e-06,
+      1.362000006110975e-06
+     ]
+    },
+    "execute_sequential_autocommit": {
+     "note": "execute() each, outside a transaction",
+     "warmup_s": [
+      0.14753448099997968
+     ],
+     "times_s": [
+      0.16527915700001472,
+      0.14080838300000664,
+      0.14474828499999148,
+      0.1683596280000188,
+      0.14627914999999803
+     ],
+     "best_s": 0.14080838300000664,
+     "median_s": 0.14627914999999803,
+     "prepare_s": [
+      5.09999978248743e-07,
+      1.0120000126789819e-06,
+      1.0720000034325494e-06,
+      1.061000006075119e-06,
+      1.2520000041149615e-06
+     ]
+    },
+    "execute_pipeline_autocommit": {
+     "note": "execute_pipeline() outside a transaction: its own atomic(), so one COMMIT more",
+     "warmup_s": [
+      0.04818761199999244
+     ],
+     "times_s": [
+      0.04913632399998846,
+      0.04767142299999705,
+      0.052810379999982615,
+      0.04944642200001681,
+      0.050829789999994546
+     ],
+     "best_s": 0.04767142299999705,
+     "median_s": 0.04944642200001681,
+     "prepare_s": [
+      9.020000106829684e-07,
+      9.409999961462745e-07,
+      1.022000020611813e-06,
+      1.0210000027655042e-06,
+      1.0210000027655042e-06
+     ]
+    }
+   }
+  },
+  {
+   "query": "lookup",
+   "n": 5000,
+   "variants": {
+    "execute_sequential": {
+     "note": "execute(stmt, {'pk': pk}) each",
+     "warmup_s": [
+      0.736130175999989
+     ],
+     "times_s": [
+      0.751639057999995,
+      0.7676820049999833,
+      0.7465118979999943,
+      0.7264608389999978,
+      0.7422405660000209
+     ],
+     "best_s": 0.7264608389999978,
+     "median_s": 0.7465118979999943,
+     "prepare_s": [
+      1.2920000074245763e-06,
+      1.1119999783204548e-06,
+      1.0410000186311663e-06,
+      1.1710000080711325e-06,
+      1.142000002118948e-06
+     ]
+    },
+    "execute_pipeline": {
+     "note": "execute_pipeline([(stmt, {'pk': pk}), ...])",
+     "warmup_s": [
+      0.4860638880000181
+     ],
+     "times_s": [
+      0.49056583399999454,
+      0.464716994999975,
+      0.44605312900000627,
+      0.4722690440000008,
+      0.4503014329999928
+     ],
+     "best_s": 0.44605312900000627,
+     "median_s": 0.464716994999975,
+     "prepare_s": [
+      2.152999996951621e-06,
+      1.48199998761811e-06,
+      2.9139999924154836e-06,
+      2.854000001661916e-06,
+      1.2819999994917453e-06
+     ]
+    },
+    "execute_sequential_autocommit": {
+     "note": "execute() each, outside a transaction",
+     "warmup_s": [
+      0.7419314159999999
+     ],
+     "times_s": [
+      0.7854318109999952,
+      0.7605267509999862,
+      0.826002705999997,
+      0.7769379820000211,
+      0.7523146950000239
+     ],
+     "best_s": 0.7523146950000239,
+     "median_s": 0.7769379820000211,
+     "prepare_s": [
+      1.022000020611813e-06,
+      1.0720000034325494e-06,
+      1.2620000120477926e-06,
+      1.0320000001229346e-06,
+      1.0809999935190717e-06
+     ]
+    },
+    "execute_pipeline_autocommit": {
+     "note": "execute_pipeline() outside a transaction: its own atomic(), so one COMMIT more",
+     "warmup_s": [
+      0.43109535900001106
+     ],
+     "times_s": [
+      0.449914514999989,
+      0.4473018850000017,
+      0.4786194560000183,
+      0.4623369210000021,
+      0.4659150329999875
+     ],
+     "best_s": 0.4473018850000017,
+     "median_s": 0.4623369210000021,
+     "prepare_s": [
+      1.4720000081069884e-06,
+      1.2120000008053466e-06,
+      1.382000021976637e-06,
+      1.1310000047615176e-06,
+      9.910000073887204e-07
+     ]
+    }
+   }
+  },
+  {
+   "query": "dashboard",
+   "n": 5,
+   "variants": {
+    "execute_sequential": {
+     "note": "execute() per query",
+     "warmup_s": [
+      0.007168011000004526
+     ],
+     "times_s": [
+      0.007218136999995295,
+      0.007185707999980195,
+      0.007585551000005353,
+      0.007464908000002879,
+      0.007155801999999767
+     ],
+     "best_s": 0.007155801999999767,
+     "median_s": 0.007218136999995295,
+     "prepare_s": [
+      4.309999894758221e-07,
+      4.81000000718268e-07,
+      5.009999881622207e-07,
+      5.109999960950518e-07,
+      5.710000152703287e-07
+     ]
+    },
+    "execute_pipeline": {
+     "note": "execute_pipeline(statements)",
+     "warmup_s": [
+      0.008814145000002327
+     ],
+     "times_s": [
+      0.007092226999986906,
+      0.006733824999997751,
+      0.00668957799999248,
+      0.00662011400001461,
+      0.006684210000003077
+     ],
+     "best_s": 0.00662011400001461,
+     "median_s": 0.00668957799999248,
+     "prepare_s": [
+      4.009999940990383e-07,
+      8.319999835748604e-07,
+      8.30999994150261e-07,
+      8.510000100159232e-07,
+      4.999999987376214e-07
+     ]
+    }
+   }
+  }
+ ]
+}

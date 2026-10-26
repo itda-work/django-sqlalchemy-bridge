@@ -22,13 +22,14 @@ statement that leaves such a column for them to fill is refused before it runs.
 
 from __future__ import annotations
 
+import contextlib
 import weakref
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import sqlalchemy as sa
-from django.db import DEFAULT_DB_ALIAS, DatabaseError, NotSupportedError, connections
+from django.db import DEFAULT_DB_ALIAS, DatabaseError, NotSupportedError, connections, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
 from django.db.models import Expression
 from sqlalchemy.engine import BindTyping, Dialect
@@ -40,7 +41,7 @@ from sqlalchemy.sql.elements import ClauseList, ExpressionClauseList, Grouping
 from django_sqlalchemy_bridge import _sa_result
 from django_sqlalchemy_bridge.tables import FieldType, _generic_type, _oracle_name
 
-__all__ = ["execute", "execute_result", "stream"]
+__all__ = ["execute", "execute_pipeline", "execute_result", "stream"]
 
 Params = Mapping[str, Any]
 
@@ -575,6 +576,112 @@ def execute(
     """
     connection = connections[using]
     return _run(prepare(stmt, params, connection), connection)[1]
+
+
+def execute_pipeline(
+    items: Iterable[sa.sql.ClauseElement | tuple[sa.sql.ClauseElement, Params | Sequence[Params] | None]],
+    *,
+    using: str = DEFAULT_DB_ALIAS,
+) -> list[list[tuple[Any, ...]] | int]:
+    """Run several statements, in one round trip on PostgreSQL, and return each one's result.
+
+    Each item is a statement or a ``(statement, params)`` pair, with the meaning
+    and the result :func:`execute` gives it (rows or rowcount; a sequence of
+    params runs executemany). The results come in input order. Every statement
+    is compiled, and checked (RETURNING, Python-side defaults), before any runs.
+
+    On PostgreSQL with psycopg 3 and a libpq that supports pipeline mode, the
+    statements are sent inside ``connection.connection.pipeline()``, each on its
+    own Django cursor, and their results read once all are sent. Elsewhere they
+    run one after another, with the same results. Either way each statement
+    shows up in ``connection.queries`` and ``execute_wrapper``.
+
+    A call that runs more than one statement does so in
+    ``atomic(using, savepoint=False)``, so it writes all of its rows or none. A
+    failing item raises its own database error, with a note naming its index;
+    the items after it do not take effect. Like the ORM, this refuses to run
+    from async code (``SynchronousOnlyOperation``).
+    """
+    connection = connections[using]
+    prepared = []
+    for index, item in enumerate(items):
+        stmt, params = item if isinstance(item, tuple) else (item, None)
+        try:
+            prepared.append(prepare(stmt, params, connection))
+        except Exception as e:
+            e.add_note(f"execute_pipeline(): item {index} failed")
+            raise
+    if not prepared:
+        return []
+    several = len(prepared) > 1 or prepared[0].many
+    with transaction.atomic(using=using, savepoint=False) if several else contextlib.nullcontext():
+        if _pipeline_supported(connection):
+            return _run_pipeline(prepared, connection)
+        results = []
+        for index, item in enumerate(prepared):
+            try:
+                results.append(_run(item, connection)[1])
+            except Exception as e:
+                e.add_note(f"execute_pipeline(): item {index} failed")
+                raise
+        return results
+
+
+def _pipeline_supported(connection: BaseDatabaseWrapper) -> bool:
+    if connection.vendor != "postgresql":
+        return False
+    connection.ensure_connection()
+    # psycopg2 has no pipeline; psycopg 3 has one when libpq is 14 or later.
+    pipeline = getattr(connection.Database, "Pipeline", None)
+    return hasattr(connection.connection, "pipeline") and pipeline is not None and pipeline.is_supported()
+
+
+def _run_pipeline(prepared: list[Prepared], connection: BaseDatabaseWrapper) -> list[list[tuple] | int]:
+    # The statements are all sent before any result is read. psycopg attaches a
+    # result to a cursor when it reads it, so after an error the first cursor
+    # still without one is the item that failed. An executemany keeps no result
+    # (only its rowcount), so a sync follows it: inside the atomic() the caller
+    # opened for several statements, a sync commits nothing.
+    results: list[list[tuple] | int] = [0] * len(prepared)
+    cursors: list[tuple[int, Any]] = []
+    synced = 0  # cursors[:synced] have their results
+    failed = None
+    try:
+        with connection.wrap_database_errors, connection.connection.pipeline() as pipeline:
+            try:
+                for index, item in enumerate(prepared):
+                    if item.many and not item.param_rows:
+                        continue
+                    cursor = connection.cursor()
+                    cursors.append((index, cursor))
+                    if item.many:
+                        cursor.executemany(item.sql, item.param_rows)
+                        pipeline.sync()
+                        synced = len(cursors)
+                    else:
+                        # Always pass params, even empty: the backends turn "%%" into "%" only then.
+                        cursor.execute(item.sql, item.param_rows[0])
+                pipeline.sync()
+            except Exception:
+                pending = cursors[synced:]
+                failed = next(
+                    (index for index, cursor in pending if prepared[index].many or cursor.pgresult is None),
+                    pending[-1][0] if pending else None,
+                )
+                raise
+            for index, cursor in cursors:
+                if cursor.description is None:
+                    results[index] = cursor.rowcount
+                else:
+                    results[index] = from_db(cursor.fetchall(), prepared[index].converters, connection)
+    except Exception as e:
+        if failed is not None:
+            e.add_note(f"execute_pipeline(): item {failed} failed")
+        raise
+    finally:
+        for _, cursor in cursors:
+            cursor.close()
+    return results
 
 
 def _prepare_one(stmt: sa.sql.ClauseElement, params: Any, connection: BaseDatabaseWrapper, caller: str) -> Prepared:
