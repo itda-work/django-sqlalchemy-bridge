@@ -268,7 +268,7 @@ class Prepared:
     sql: str
     param_rows: list[tuple[Any, ...]]
     many: bool
-    converters: list[tuple[list[Any], Any] | None]
+    converters: list[tuple[tuple[Any, ...], Any] | None]
     rowcount_only: bool = False
     names: tuple[str, ...] = ()
 
@@ -349,8 +349,9 @@ def prepare(
 
     ``params`` is ``None``, one mapping, or a sequence of mappings (executemany).
     The compilation is reused when the same statement object runs again on the
-    same database vendor with params of the same names; the parameters, the
-    result converters and the RETURNING check are worked out on every call.
+    same database vendor with params of the same names, and the result
+    converters of a column type are found once per connection object; the
+    parameters and the RETURNING check are worked out on every call.
     """
     many = params is not None and not isinstance(params, Mapping)
     rows: list[Params] = list(params) if many else [params or {}]
@@ -374,7 +375,7 @@ def prepare(
         elif state.statement != sql:
             raise ValueError("every executemany row must compile to the same SQL (check expanding IN lists)")
         param_rows.append(_positional(compiled, state, entry.lookups, connection))
-    converters = [_field_converters(type_, connection) for type_ in entry.types]
+    converters = _result_converters(entry.types, connection)
     return Prepared(
         sql or compiled.string,
         param_rows,
@@ -478,12 +479,38 @@ def lookup_value(field: Any, value: Any, connection: BaseDatabaseWrapper) -> Any
     return target.get_db_prep_value(field.get_prep_value(value), connection, prepared=True)
 
 
-def _field_converters(type_: sa.types.TypeEngine, connection: BaseDatabaseWrapper) -> tuple[list[Any], Any] | None:
+# Result converters by column type, kept on the connection object they were
+# found for (connections[alias], one per thread). They are bound methods or
+# closures of that object's ops, so in a module-level map keyed weakly by the
+# connection they would keep it alive. Through the django.db.connection proxy,
+# getattr and setattr reach the calling thread's own object. The column types
+# are held weakly: a table rebuilt after forget_table() has new ones.
+_CONVERTERS = "_django_sqlalchemy_bridge_converters"
+_MISSING = object()
+
+
+def _result_converters(
+    types: Sequence[sa.types.TypeEngine], connection: BaseDatabaseWrapper
+) -> list[tuple[tuple[Any, ...], Any] | None]:
+    cache = getattr(connection, _CONVERTERS, None)
+    if cache is None:
+        cache = weakref.WeakKeyDictionary()
+        setattr(connection, _CONVERTERS, cache)
+    out = []
+    for type_ in types:
+        if not isinstance(type_, FieldType):
+            out.append(None)
+            continue
+        found = cache.get(type_, _MISSING)
+        if found is _MISSING:
+            found = cache[type_] = _find_converters(type_.field, connection)
+        out.append(found)
+    return out
+
+
+def _find_converters(field: Any, connection: BaseDatabaseWrapper) -> tuple[tuple[Any, ...], Any] | None:
     # The ORM reads a column through Col(field) with the backend's converters
     # first, then the field's (SQLCompiler.get_converters()); do the same.
-    if not isinstance(type_, FieldType):
-        return None
-    field = type_.field
     expression = field.get_col(field.model._meta.db_table)
     functions = connection.ops.get_db_converters(expression)
     if connection.vendor == "oracle":
@@ -495,12 +522,12 @@ def _field_converters(type_: sa.types.TypeEngine, connection: BaseDatabaseWrappe
         if coerce is not Expression._convert_value_noop:
             functions.append(coerce)
     functions += expression.get_db_converters(connection)
-    return (functions, expression) if functions else None
+    return (tuple(functions), expression) if functions else None
 
 
 def from_db(
     rows: Sequence[Sequence[Any]],
-    converters: list[tuple[list[Any], Any] | None],
+    converters: list[tuple[tuple[Any, ...], Any] | None],
     connection: BaseDatabaseWrapper,
 ) -> list[tuple[Any, ...]]:
     """Convert fetched rows with the converters :func:`prepare` found."""
