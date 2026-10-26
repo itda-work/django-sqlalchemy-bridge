@@ -157,6 +157,8 @@ def test_a_window_over_a_decimal_aggregate_matches_the_orm(shelf):
 
 
 def test_a_filtered_decimal_aggregate_matches_the_orm(shelf):
+    if not connection.features.supports_aggregate_filter_clause:
+        pytest.skip(f"{connection.display_name} has no FILTER (WHERE ...)")
     orm = Sum("books__price", filter=Q(books__title__startswith="a"))
     expected = sorted(Author.objects.annotate(r=orm).filter(r__gte=51).values_list("id", flat=True))
     assert expected == [shelf.id]
