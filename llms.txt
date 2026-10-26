@@ -14,7 +14,7 @@ Supported: SQLite, PostgreSQL (psycopg 3), MySQL 8.4 (mysqlclient), Oracle (orac
 
 ## Rules
 
-1. Do not create a SQLAlchemy `create_engine()`, `Engine`, `Connection`, `Session` or `AsyncEngine`. Build a statement and pass it to `execute()`, `execute_result()` or `stream()`. It runs on Django's cursor, so `transaction.atomic()`, savepoints, `on_commit` and `assertNumQueries` apply exactly as for the ORM. Use Django's `atomic()`.
+1. Do not create a SQLAlchemy `create_engine()`, `Engine`, `Connection`, `Session` or `AsyncEngine`. Build a statement and pass it to `execute()`, `execute_result()`, `stream()` or `execute_pipeline()`. It runs on Django's cursor, so `transaction.atomic()`, savepoints, `on_commit` and `assertNumQueries` apply exactly as for the ORM. Use Django's `atomic()`.
 2. Get tables with `table_for(Model)`. Do not define `sa.Table(...)` by hand or call `metadata.create_all()`. The Django model and `makemigrations` own the schema. Column names are the database column names (`author_id` for a foreign key, the `db_column` when one is set).
 3. INSERT, UPDATE and DELETE run through the bridge bypass the model layer: `save()` and `delete()` are not called, `pre_save`/`post_save`/`pre_delete`/`post_delete` signals are not sent, and Django field `default` and `auto_now` are not filled. Give every value yourself (`None` too, for nullable columns). If code relies on signals, use the ORM.
 4. For a query run repeatedly, build the statement once with `sa.bindparam("name")` placeholders and reuse it: `execute(stmt, {"name": value})`. The compilation of a statement object is cached. A statement rebuilt with the values in it compiles on every call.
@@ -46,6 +46,11 @@ The same rows as a SQLAlchemy `Result` (`.mappings()`, `.scalars()`, `row.name`)
 stream(stmt, params=None, *, chunk_size=2000, using='default')
 ```
 A generator that fetches `chunk_size` rows at a time and yields tuples one by one. On PostgreSQL it uses a server-side cursor (the path `QuerySet.iterator()` takes). On MySQL the driver reads the whole result at `execute()`, as for `iterator()`, so there is no memory gain. On SQLite, MySQL and Oracle it is a plain cursor, as for `iterator()`. Opened inside `atomic()`, read it to the end inside the block. If you stop early, `close()` it or wrap it in `contextlib.closing()`. PostgreSQL does not take data-modifying CTEs on a server-side cursor; use `execute` for those.
+
+```
+execute_pipeline(items, *, using='default')
+```
+Runs several independent statements and returns a list with each one's `execute()` result (rows or rowcount), in input order; `[]` for no items. Each item is a statement or a `(stmt, params)` pair with `execute()`'s meaning (a list of mappings runs executemany). On PostgreSQL with psycopg 3 and libpq 14+, all statements are sent in one psycopg pipeline before any result is read: one round trip instead of one per statement (1,000 primary key lookups ran about 3x faster in the benchmark). Elsewhere they run one by one with the same results. Use it for many independent lookups or a page's independent queries; a later item cannot use an earlier result. Every item is compiled and checked (RETURNING, Python-side defaults) before any runs. Each statement shows up in `connection.queries` and `assertNumQueries`. A call that runs more than one statement runs in `atomic(savepoint=False)`, so it writes all or nothing, also outside `atomic()`. A failing item raises its own database error with a note `execute_pipeline(): item N failed` (`e.__notes__`); later items take no effect.
 
 ```
 bulk_update(table, rows, *, key=None, columns=None, batch_size=None, using='default')
