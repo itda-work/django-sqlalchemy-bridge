@@ -1,6 +1,6 @@
 [project]
 name = "django-sqlalchemy-bridge"
-version = "0.0.1"
+version = "0.1.0"
 description = "[Experimental] Use SQLAlchemy 2.x Core expressions inside Django's own connections and transactions"
 readme = "README.md"
 license = "MIT"
@@ -8,7 +8,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "itda-work" }]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 3 - Alpha",
     "Framework :: Django",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",

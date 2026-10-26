@@ -2,7 +2,7 @@
 
 > ⚠️ **실험적 프로젝트입니다 (Experimental).** API·동작·지원 범위가 예고 없이 바뀔 수 있고, 운영 환경에서 쓰는 것을 권하지 않습니다.
 >
-> **상태: 설계 단계 (0.0.x).** 이름을 확보하고 설계를 공개한 버전입니다. 저장소 `main`에 첫 API(모델 → `sa.Table`, `execute`, `stream`, `bulk_update`/`bulk_insert`, `arun`)가 들어가고 있지만 아직 릴리스되지 않았으니 의존하지 마세요.
+> **상태: 0.1 (알파).** 첫 API(모델 → `sa.Table`, `execute`, `stream`, `bulk_update`/`bulk_insert`, `arun`)를 담은 첫 릴리스입니다. 0.x 동안은 마이너 버전 사이에도 API가 바뀔 수 있으니 버전을 고정해 쓰세요.
 
 Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식(대량 DML, CTE, 윈도 함수, 복잡한 조인)을 쓰게 해 주는 라이브러리입니다.
 
@@ -18,7 +18,7 @@ Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식
 - **값 변환은 Django 필드를 따릅니다.** 쓸 때는 `get_db_prep_value`, 읽을 때는 Django ORM이 쓰는 변환기를 거칩니다. 그래서 JSON·UUID·시간대가 있는 datetime·Decimal·Enum이 ORM과 똑같이 왕복합니다. (SQLAlchemy 타입 변환을 그대로 쓰면 SQLite에서 시간이 9시간 밀리거나 Enum이 값 대신 이름으로 저장되는 문제가 있어 피합니다.)
 - **경계를 드러냅니다.** 브리지로 쓴 내용은 Django signal을 발생시키지 않습니다. API 이름과 문서에 이 점을 분명히 적습니다.
 
-## 모델에서 테이블 만들기 (개발 중, 미릴리스)
+## 모델에서 테이블 만들기
 
 ```python
 import sqlalchemy as sa
@@ -65,7 +65,7 @@ assert_table_matches(Order, check_db=True)
 - `ManyToManyField`와 역관계는 컬럼이 아니므로 건너뜁니다(중간 테이블 모델은 따로 `table_for` 할 수 있습니다). 다중 테이블 상속의 자식 테이블에는 자기 컬럼과 `<부모>_ptr_id`만 들어갑니다. 복합 PK(`CompositePrimaryKey`)를 반영합니다.
 - 위 표에 없는 필드가 DB 컬럼을 가지면(예: PostgreSQL `ArrayField`, 직접 만든 필드) 조용히 넘기지 않고 `UnsupportedFieldError`를 냅니다.
 
-## 실행하기 (개발 중, 미릴리스)
+## 실행하기
 
 ```python
 import sqlalchemy as sa
@@ -169,7 +169,7 @@ ids = bulk_insert(orders, rows, returning=["id"])
 
 Django의 async ORM(`aget()` 등)은 내부적으로 쿼리마다 `sync_to_async`로 스레드에 넘기는 구조이고, Django 문서도 "async 모드에서는 아직 트랜잭션이 동작하지 않는다"고 적고 있습니다. 브리지는 작업 단위 전체를 스레드에 **한 번** 넘기는 `arun` 하나만 제공합니다. 얻는 것은 스레드 위임 횟수가 줄고 async 코드에서도 트랜잭션을 쓸 수 있는 것이지, 진짜 비동기 I/O는 아닙니다.
 
-### `arun` (개발 중, 미릴리스)
+### `arun`
 
 ```python
 import sqlalchemy as sa
@@ -442,7 +442,7 @@ uv run python -m bench.readme --write                  # 시나리오·DB 마다
 - **SQLite 에서 Django 트랜잭션이 필요 없을 때.** SQLite 에서는 SQLAlchemy 를 단독으로(별도 엔진) 쓰는 편이 대량 INSERT·읽기에서 브리지보다 빠릅니다(시나리오 2·3). 브리지는 값을 Django 필드 변환기로 바꾸는 비용을 내는 대신 ORM 과 같은 값·같은 트랜잭션을 줍니다.
 - **SQLite executemany 형태의 `execute(stmt, [params…])`.** 행마다 SQLAlchemy 로 파라미터를 만들기 때문에 `bulk_update()`·`bulk_insert()`보다 느립니다. 대량 쓰기는 `bulk_*`를 쓰세요(시나리오 1·2).
 
-## 첫 지원 대상 (계획)
+## 지원 대상
 
 SQLite, PostgreSQL(psycopg 3) · Django 5.2 이상 · SQLAlchemy 2.0 이상 2.2 미만 · Python 3.12 이상
 

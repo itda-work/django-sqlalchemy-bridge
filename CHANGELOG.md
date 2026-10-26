@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-26
+
 ### Added
 
 - `table_for(model)`: Django 모델에서 `sa.Table` 생성(공용 `metadata`, 모델별 캐시, `Column.info["django_field"]`). 지원하지 않는 컬럼 필드는 `UnsupportedFieldError`. `forget_table(model)` 로 캐시에서 제거.
@@ -22,15 +24,14 @@ All notable changes to this project are documented here. The format follows [Kee
 - `RETURNING` 이 있는 SQLAlchemy DML(`execute`·`execute_result`·`stream`)과 `bulk_insert(returning=...)` 는 연결의 `can_return_columns_from_insert` 가 거짓이면(SQLite 3.35 미만) 실행 전에 `NotSupportedError`. `text()` 는 검사하지 않는다 (#12).
 - `JSONField` 컬럼 타입이 `postgresql.JSONB().with_variant(sa.JSON(), "sqlite")` 로 바뀜. PostgreSQL 에서 `contains`·`contained_by`·`has_key`·`has_all`·`has_any`·`astext` 가 열리고 결과가 ORM 조회와 같다. `contains`·`contained_by` 의 우변은 `JSONField.get_db_prep_value()` 로 jsonb 바인딩. 전에는 `contains()` 가 `LIKE` 로 컴파일됐다. `compare_table` 은 `sa.JSON()` 컬럼을 타입 차이로 보고 (#12).
 - README 에 "제약" 절: SQLAlchemy Python 측 `default`/`onupdate` 미적용(#19 에서 실행 전 거부로 바뀜), `standard_conforming_strings=off` 미지원, `bulk_insert` RETURNING 순서(키를 함께 RETURNING), `text()` 의 RETURNING 미검사 (#12).
+- `table_for()` 컬럼 타입이 generic SQLAlchemy 타입을 감싼 `FieldType`(Django 필드를 들고 있는 `TypeDecorator`)으로 바뀜. `compare_table()` 은 감싼 타입끼리 비교한다.
+- README 비동기 절: v0.1 은 `arun(fn)` 하나만 제공하고, SQLAlchemy 비동기 엔진·psycopg 비동기 직접 연결은 채택하지 않는다고 정정. `async with atomic()` 을 넣지 않는 이유를 재현 결과(같은 연결의 savepoint 중첩으로 정상 쪽이 예외 없이 롤백)에 맞게 구체화하고, Channels 에서 DB 작업이 스레드 하나로 줄 서는 점을 적음.
 
 ### Fixed
 
 - 컬럼을 한 번 읽은(실행 포함) `insert(t)`/`update(t)`/`delete(t)` 에서 `.returning()` 을 파생한 문장이 RETURNING 없는 문장으로 취급되던 문제. `execute` 는 RETURNING 하한 검사를 건너뛰고 Django 변환 없이 원시 값(SQLite datetime 문자열·UUID hex, PostgreSQL jsonb 문자열)을 돌려줬고, `execute_result`·`stream` 은 "returns no rows" `ValueError` 였다. SQLAlchemy 가 DML 의 `exported_columns` 를 등록 없이 메모이즈해 파생 문장에 복사하기 때문이며(2.0·2.1 공통, 컴파일 결과의 `effective_returning` 도 같은 값), 이제 RETURNING 컬럼은 컴파일러가 렌더하는 컬럼에서 얻는다. INSERT 는 항상 `inline()` 으로 컴파일한다(명시적 RETURNING 이 있으면 결과가 같다) (#21).
 - 직접 만든 `sa.Table` 의 SQLAlchemy Python 측 `Column(default=...)`/`Column(onupdate=...)`(값·callable) 컬럼을 비워 둔 INSERT·UPDATE 는 실행 전에 `ValueError`. 전에는 그 컬럼에 `NULL` 이 바인딩되어 nullable 컬럼에 조용히 `NULL` 이 저장되고 `onupdate` 컬럼은 UPDATE 마다 `NULL` 로 덮였다. 컴파일 결과의 공개 속성 `insert_prefetch`/`update_prefetch` 로 판정하며, 값을 직접 준 컬럼·SQL 식 default·`server_default`·Django `db_default` 는 영향 없음. README "제약" 절 갱신 (#19).
 - JSON 키·인덱스·경로(`meta["k"]`, `meta[0]`, `meta[("a", "b")]`)를 dialect 표기로 바인딩. 전에는 SQLite 에서 `bad JSON path`, PostgreSQL 경로(`#>`)에서 오류였다 (#12).
-
-- `table_for()` 컬럼 타입이 generic SQLAlchemy 타입을 감싼 `FieldType`(Django 필드를 들고 있는 `TypeDecorator`)으로 바뀜. `compare_table()` 은 감싼 타입끼리 비교한다.
-- README 비동기 절: v0.1 은 `arun(fn)` 하나만 제공하고, SQLAlchemy 비동기 엔진·psycopg 비동기 직접 연결은 채택하지 않는다고 정정. `async with atomic()` 을 넣지 않는 이유를 재현 결과(같은 연결의 savepoint 중첩으로 정상 쪽이 예외 없이 롤백)에 맞게 구체화하고, Channels 에서 DB 작업이 스레드 하나로 줄 서는 점을 적음.
 
 ## [0.0.1] - 2026-10-25
 
