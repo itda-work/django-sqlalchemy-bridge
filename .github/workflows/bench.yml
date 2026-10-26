@@ -50,13 +50,13 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
       - run: uv sync --locked --group bench
       - run: uv run --no-sync python -c "import django, sqlalchemy; print('django', django.__version__, 'sqlalchemy', sqlalchemy.__version__)"
-      # The README shows every PostgreSQL scenario and SQLite's update, insert, read, lookup and batch.
+      # The README shows every PostgreSQL scenario and SQLite's update, insert, read, lookup, batch and compare.
       - name: bench (PostgreSQL)
         if: inputs.db != 'sqlite'
         run: uv run --no-sync python -m bench ${SCENARIOS} --db postgres --out results $QUICK
       - name: bench (SQLite)
         if: inputs.db != 'postgres' && !cancelled()
-        run: uv run --no-sync python -m bench ${SCENARIOS:-update insert read lookup batch} --db sqlite --out results $QUICK
+        run: uv run --no-sync python -m bench ${SCENARIOS:-update insert read lookup batch compare} --db sqlite --out results $QUICK
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
