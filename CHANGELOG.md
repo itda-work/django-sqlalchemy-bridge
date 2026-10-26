@@ -26,6 +26,10 @@ All notable changes to this project are documented here. The format follows [Kee
 - README "왜 만드나"를 "왜 쓰나"로 다시 씀: 목적은 표현력이고 성능은 대량 쓰기에서만 따라온다는 것, 언제 ORM 을 쓰는지, 예제 3개(재귀 CTE, 업서트 RETURNING, `UPDATE … FROM`). 예제 코드는 테스트 코드에서 `python -m tests.readme_examples --write` 로 옮기고 어긋나면 테스트가 실패한다. "AI 코딩 에이전트에게" 절에 `AGENTS.md`/`CLAUDE.md` 에 붙일 스니펫 (#30).
 - `INSERT … SELECT` 의 SELECT 목록 값에는 대상 컬럼 타입을 직접 줘야 한다는 안내를 README "실행하기"·`llms.txt` 규칙 6에 근거(SQLAlchemy 가 `from_select()` 컬럼 이름을 공개 API 로 내주지 않아 브리지가 메우지 않음)와 타입이 없을 때의 증상(UUID·dict 는 드라이버 에러, SQLite aware datetime 은 오프셋 문자열로 저장)과 함께 적음. 타입을 준 `sa.literal()`·`sa.bindparam()` 이 ORM 과 같은 값을 저장하는지 테스트로 고정 (#34).
 
+### Fixed
+
+- 컬럼과 비교하는 값은 ORM 조회 `filter(field=v)` 의 경로(`get_prep_value()` 뒤 `get_db_prep_value(prepared=True)`, FK 는 대상 필드)로, INSERT `VALUES`·UPDATE `SET`·`bulk_*` 로 쓰는 값은 ORM 저장의 `get_db_prep_save()` 로 변환한다. 전에는 둘 다 `get_db_prep_value(prepared=False)` 라 Django 5.2 + MySQL 에서 `authors.c.id == 0` 이 `ValueError: The database backend does not accept 0 as a value for AutoField.` 였고(ORM `filter(id=0)` 은 실행), Django 6.1 에서는 반대로 `AutoField` 에 0 을 쓰는 INSERT 가 ORM 과 달리 검사 없이 나갔다. 비교 연산자의 직접 피연산자(`IN` 목록·`BETWEEN` 경계·튜플 항목 포함)가 조회 값이고, 컴파일러의 `visit_binary` 에서 가려 컴파일 캐시 항목에 bind 이름으로 둔다. `bulk_update` 의 `key` 값도 조회 값. 테스트가 Specimen 의 모든 필드에서 `==`·`<`·`IN` 파라미터를 ORM `filter()` 와 대조한다(SQLite·PostgreSQL·MySQL·Oracle) (#47).
+
 ## [0.1.0] - 2026-10-26
 
 ### Added

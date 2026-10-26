@@ -10,9 +10,10 @@ rows into that many a statement (or an ``executemany()`` call); a call that runs
 more than one statement does so in ``atomic(savepoint=False)``, as Django's
 ``bulk_create`` does, so a failure writes none of its rows.
 
-Values convert as everywhere in the bridge: each value goes through its column's
-``field.get_db_prep_value()`` (``None`` stays SQL ``NULL``) and ``RETURNING``
-columns through the ORM's converters. The SQL is assembled here rather than by
+Values convert as everywhere in the bridge: each value written goes through its
+column's ``field.get_db_prep_save()``, each key :func:`bulk_update` matches rows
+by as an ORM lookup's value (``None`` stays SQL ``NULL`` either way), and
+``RETURNING`` columns through the ORM's converters. The SQL is assembled here rather than by
 SQLAlchemy, with identifiers quoted by ``connection.ops.quote_name()``, and the
 parameters are built a column at a time, not a row at a time.
 
@@ -32,7 +33,7 @@ import sqlalchemy as sa
 from django.db import DEFAULT_DB_ALIAS, NotSupportedError, connections, models, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
 
-from django_sqlalchemy_bridge.execution import _field_converters, check_returning, dialect_for, from_db
+from django_sqlalchemy_bridge.execution import _field_converters, check_returning, dialect_for, from_db, lookup_value
 from django_sqlalchemy_bridge.tables import FieldType, table_for
 
 __all__ = ["bulk_insert", "bulk_update"]
@@ -93,7 +94,7 @@ def bulk_update(
 
     connection = connections[using]
     dialect_for(connection)  # refuses an unsupported backend
-    key_values = [_db_values(column, rows, connection) for column in keys]
+    key_values = [_db_values(column, rows, connection, lookup=True) for column in keys]
     _check_unique(list(zip(*key_values)), keys)
     set_values = [_db_values(column, rows, connection) for column in sets]
 
@@ -284,11 +285,15 @@ def _may_leave_out(column: sa.Column) -> bool:
     return (column.primary_key and column.autoincrement is True) or field.has_db_default()
 
 
-def _db_values(column: sa.Column, rows: list[Row], connection: BaseDatabaseWrapper) -> list[Any]:
-    """One column's values for every row, converted as ``field.get_db_prep_value()`` writes them."""
-    prep = column.type.field.get_db_prep_value
+def _db_values(
+    column: sa.Column, rows: list[Row], connection: BaseDatabaseWrapper, *, lookup: bool = False
+) -> list[Any]:
+    """One column's values for every row, converted as the ORM writes them (or, ``lookup``, compares them)."""
+    field = column.type.field
     name = column.key
-    return [None if (value := row[name]) is None else prep(value, connection, prepared=False) for row in rows]
+    if lookup:
+        return [None if (value := row[name]) is None else lookup_value(field, value, connection) for row in rows]
+    return [None if (value := row[name]) is None else field.get_db_prep_save(value, connection) for row in rows]
 
 
 def _check_unique(keys: list[tuple[Any, ...]], columns: list[sa.Column]) -> None:
