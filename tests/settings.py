@@ -15,3 +15,10 @@ INSTALLED_APPS = [
 ]
 
 DATABASES = {"default": dbenv.database(), "other": dbenv.other_database()}
+
+# The DRF recipes (tests/test_recipes_drf.py) run without django.contrib.auth: no authentication, no user object.
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    "DEFAULT_PERMISSION_CLASSES": [],
+    "UNAUTHENTICATED_USER": None,
+}

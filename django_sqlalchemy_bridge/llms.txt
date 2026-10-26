@@ -187,4 +187,5 @@ execute(sa.insert(daily_stock).from_select(["product_id", "day", "quantity", "co
 
 - [README](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/README.md) (Korean): design principles, value conversion, limits, benchmarks
 - [Example tests](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/tests/test_examples.py): runnable originals of the examples above
+- [DRF and class-based views](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/docs/drf.md) (Korean): recipes for ViewSet, pagination, writes and TemplateView, and what does not work (ModelViewSet, ModelSerializer, filter backends)
 - [CHANGELOG](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/CHANGELOG.md)
