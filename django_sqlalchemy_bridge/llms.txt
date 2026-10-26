@@ -1,86 +1,86 @@
 # django-sqlalchemy-bridge
 
-> Django 가 연 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 식을 컴파일해 Django 커서로 실행하는 라이브러리. 0.x 알파라 API 가 바뀔 수 있다. 이 파일은 AI 코딩 에이전트가 이 라이브러리로 코드를 쓸 때 읽는 요약이다. 학습 데이터에 없을 가능성이 크니 기억 대신 이 파일을 따른다.
+> Compiles SQLAlchemy 2.x Core expressions and runs them on Django's own cursor, inside the connection and transaction Django opened. 0.x alpha: the API may change. This file is the summary for AI coding agents writing code with this library. It is probably not in your training data, so follow this file rather than memory.
 
-설치된 패키지의 이 파일: `python -c "import importlib.resources as r; print(r.files('django_sqlalchemy_bridge').joinpath('llms.txt').read_text('utf-8'))"`
+Print this file from the installed package: `python -c "import importlib.resources as r; print(r.files('django_sqlalchemy_bridge').joinpath('llms.txt').read_text('utf-8'))"`
 
-지원: SQLite, PostgreSQL(psycopg 3) · Django 5.2+ · SQLAlchemy >=2.0,<2.2 · Python 3.12+. MySQL·Oracle 은 지원하지 않는다(실행 시 `NotImplementedError`).
+Supported: SQLite, PostgreSQL (psycopg 3) · Django 5.2+ · SQLAlchemy >=2.0,<2.2 · Python 3.12+. MySQL and Oracle are not supported (`NotImplementedError` when run).
 
-## 언제 쓰고 언제 안 쓰나
+## When to use it, and when not
 
-- 쓴다: ORM 으로 쓰기 어려운 SQL. 재귀 CTE, 여러 CTE, 윈도 함수, `INSERT … ON CONFLICT … RETURNING`, `UPDATE … FROM`, `INSERT … SELECT`, PostgreSQL `LATERAL`·`DISTINCT ON`·데이터를 바꾸는 CTE, 대량 UPDATE·INSERT(`bulk_update`·`bulk_insert`). raw SQL 문자열 대신 쓴다.
-- 안 쓴다: ORM 으로 자연스럽게 써지는 쿼리, 한 행 CRUD, signal·`save()`·필드 `default`·`auto_now`·검증이 필요한 쓰기. 이때는 Django ORM 을 쓴다.
-- 목적은 표현력이다. 성능 이득은 대량 쓰기(`bulk_*`)에서만 기대한다.
+- Use it for SQL the ORM writes badly: recursive CTEs, several CTEs, window functions, `INSERT … ON CONFLICT … RETURNING`, `UPDATE … FROM`, `INSERT … SELECT`, PostgreSQL `LATERAL`, `DISTINCT ON` and data-modifying CTEs, bulk UPDATE and INSERT (`bulk_update`, `bulk_insert`). Use it instead of raw SQL strings.
+- Do not use it for queries the ORM expresses naturally, single-row CRUD, or writes that need signals, `save()`, field `default`, `auto_now` or validation. Use the Django ORM there.
+- The point is expressiveness. Expect a speed gain only for bulk writes (`bulk_*`).
 
-## 반드시 지킬 것
+## Rules
 
-1. SQLAlchemy `create_engine()`·`Engine`·`Connection`·`Session`·`AsyncEngine` 을 만들지 않는다. 문장을 만들어 `execute()`·`execute_result()`·`stream()` 에 넘긴다. 실행은 Django 커서라 `transaction.atomic()`·savepoint·`on_commit`·`assertNumQueries` 가 ORM 과 똑같이 적용된다. `atomic()` 은 Django 것을 쓴다.
-2. 테이블은 `table_for(Model)` 로 얻는다. `sa.Table(...)` 을 손으로 정의하거나 `metadata.create_all()` 하지 않는다. 스키마·마이그레이션은 Django 모델과 `makemigrations` 가 맡는다. 컬럼 이름은 DB 컬럼명이다(FK 는 `author_id`, `db_column` 이 있으면 그 이름).
-3. 브리지로 쓴 INSERT·UPDATE·DELETE 는 모델 계층을 우회한다. `save()`·`delete()` 가 불리지 않고 `pre_save`/`post_save`/`pre_delete`/`post_delete` signal 이 발생하지 않으며 Django 필드 `default`·`auto_now` 도 채워지지 않는다. 값은 모두 직접 넣는다(nullable 컬럼도 `None` 을 직접). signal 에 기대는 코드가 있으면 ORM 을 쓴다.
-4. 같은 모양의 쿼리를 반복하면 문장을 한 번 만들고 `sa.bindparam("name")` 으로 값을 비워 둔 뒤 `execute(stmt, {"name": value})` 로 재사용한다. 같은 문장 객체는 컴파일이 캐시된다. 값을 넣어 매번 새로 만든 문장은 매번 컴파일한다.
-5. async 코드에서는 `execute` 등을 직접 부르지 않는다(`SynchronousOnlyOperation`). 동기 함수 하나에 작업 단위(쿼리·`atomic()`·`on_commit`)를 담아 `await arun(fn, ...)` 로 부른다. `async with atomic()` 같은 것은 없다.
-6. 값 변환은 Django 필드를 따른다. 테이블 컬럼과 비교하거나 INSERT/UPDATE 로 넣는 값, 컬럼을 고른 결과(`sum()`·`max()`·`coalesce()` 처럼 컬럼 타입을 잇는 식 포함)는 ORM 과 같게 변환된다(aware datetime 은 UTC, Decimal, UUID, JSON, choices 는 값). 컬럼에 묶이지 않은 값(SELECT 목록의 `sa.literal(v)`·`sa.bindparam("v")`, 산술식, `count()`, `sa.text()`)은 변환 없이 드라이버로 간다. `INSERT … SELECT` 의 SELECT 목록에 넣는 값은 대상 컬럼 타입을 준다: `sa.literal(value, table.c.col.type)` 또는 `sa.bindparam("v", type_=table.c.col.type)`. 안 주면 SQLite 에서 aware datetime 이 UTC 가 아니라 오프셋 문자열로 저장돼 ORM 필터가 그 행을 못 찾는다.
-7. `ON CONFLICT` 는 백엔드별 구성자를 고른다: `insert = postgresql.insert if connection.vendor == "postgresql" else sqlite.insert` (`from sqlalchemy.dialects import postgresql, sqlite`, `from django.db import connection`).
-8. 쿼리 결과는 SQLAlchemy `Row` 가 아니라 튜플 리스트다(`execute`). 이름으로 접근하려면 `execute_result(stmt).mappings()`.
+1. Do not create a SQLAlchemy `create_engine()`, `Engine`, `Connection`, `Session` or `AsyncEngine`. Build a statement and pass it to `execute()`, `execute_result()` or `stream()`. It runs on Django's cursor, so `transaction.atomic()`, savepoints, `on_commit` and `assertNumQueries` apply exactly as for the ORM. Use Django's `atomic()`.
+2. Get tables with `table_for(Model)`. Do not define `sa.Table(...)` by hand or call `metadata.create_all()`. The Django model and `makemigrations` own the schema. Column names are the database column names (`author_id` for a foreign key, the `db_column` when one is set).
+3. INSERT, UPDATE and DELETE run through the bridge bypass the model layer: `save()` and `delete()` are not called, `pre_save`/`post_save`/`pre_delete`/`post_delete` signals are not sent, and Django field `default` and `auto_now` are not filled. Give every value yourself (`None` too, for nullable columns). If code relies on signals, use the ORM.
+4. For a query run repeatedly, build the statement once with `sa.bindparam("name")` placeholders and reuse it: `execute(stmt, {"name": value})`. The compilation of a statement object is cached. A statement rebuilt with the values in it compiles on every call.
+5. In async code do not call `execute` and friends directly (`SynchronousOnlyOperation`). Put the unit of work (queries, `atomic()`, `on_commit`) in one sync function and call `await arun(fn, ...)`. There is no `async with atomic()`.
+6. Values convert the way the Django fields convert them. Values compared with or written to a table column, and selected columns (including expressions that keep the column type, such as `sum()`, `max()`, `coalesce()`), convert as in the ORM (aware datetimes in UTC, Decimal, UUID, JSON, choices by value). Values not tied to a column (`sa.literal(v)` or `sa.bindparam("v")` in a SELECT list, arithmetic, `count()`, `sa.text()`) go to the driver unconverted. In the SELECT list of an `INSERT … SELECT`, give values the target column type: `sa.literal(value, table.c.col.type)` or `sa.bindparam("v", type_=table.c.col.type)`. Without it, SQLite stores an aware datetime as an offset string instead of UTC, and ORM filters miss the row.
+7. For `ON CONFLICT`, pick the backend's construct: `insert = postgresql.insert if connection.vendor == "postgresql" else sqlite.insert` (`from sqlalchemy.dialects import postgresql, sqlite`, `from django.db import connection`).
+8. `execute` returns a list of tuples, not SQLAlchemy `Row`s. For access by name use `execute_result(stmt).mappings()`.
 
-## 공개 API
+## Public API
 
-모두 `from django_sqlalchemy_bridge import ...`. `using` 은 Django DB alias.
+All from `from django_sqlalchemy_bridge import ...`. `using` is a Django database alias.
 
 ```
 table_for(model, *, using='default') -> sa.Table
 ```
-모델의 `sa.Table`(모델마다 캐시, 공용 `metadata`). 컬럼 타입은 `FieldType`(`TypeDecorator`, `.impl` 은 generic SA 타입, `.field` 는 Django 필드). `using` 은 아직 `'default'` 만(그 밖은 `NotImplementedError`). DB 컬럼이 있는데 매핑이 없는 필드(`ArrayField` 등)는 `UnsupportedFieldError`. M2M·역관계는 건너뛴다(중간 모델은 따로 `table_for`). `metadata` 는 그 공용 `sa.MetaData`.
+The model's `sa.Table` (cached per model, in the shared `metadata`). Column types are `FieldType` (a `TypeDecorator`; `.impl` is the generic SA type, `.field` the Django field). `using` accepts only `'default'` for now (anything else raises `NotImplementedError`). A field with a database column but no mapping (`ArrayField` and the like) raises `UnsupportedFieldError`. Many-to-many and reverse relations are skipped (`table_for` the through model separately). `metadata` is that shared `sa.MetaData`.
 
 ```
 execute(stmt, params=None, *, using='default')
 ```
-행을 돌려주는 문장(SELECT, RETURNING)은 `list[tuple]`, 그 밖은 rowcount `int`. `params` 는 `bindparam` 값의 매핑이고, 값이 없는 `insert(table)` 에는 컬럼 값을 준다. 매핑의 리스트를 주면 `cursor.executemany()`(RETURNING 불가). `RETURNING` 은 SQLite 3.35+ 에서만(아니면 실행 전 `NotSupportedError`).
+A statement that returns rows (SELECT, RETURNING) gives `list[tuple]`; any other gives the rowcount `int`. `params` is a mapping of `bindparam` values; for a bare `insert(table)` it gives the column values. A list of mappings runs `cursor.executemany()` (no RETURNING). `RETURNING` needs SQLite 3.35+ (otherwise `NotSupportedError` before it runs).
 
 ```
 execute_result(stmt, params=None, *, using='default')
 ```
-같은 행을 SQLAlchemy `Result` 로(`.mappings()`, `.scalars()`, `row.name`). 행을 모두 가져온 뒤의 `Result`. 행이 없는 DML 은 `ValueError`.
+The same rows as a SQLAlchemy `Result` (`.mappings()`, `.scalars()`, `row.name`), built after all rows are fetched. DML that returns no rows raises `ValueError`.
 
 ```
 stream(stmt, params=None, *, chunk_size=2000, using='default')
 ```
-행을 `chunk_size` 개씩 가져와 튜플을 하나씩 내는 제너레이터. PostgreSQL 은 서버 측 커서(`QuerySet.iterator()` 와 같은 경로). `atomic()` 안에서 열었으면 블록 안에서 다 읽는다. 중간에 멈추면 `close()` 하거나 `contextlib.closing()` 으로 감싼다. 데이터를 바꾸는 CTE 는 PostgreSQL 이 서버 측 커서로 받지 않으니 `execute` 를 쓴다.
+A generator that fetches `chunk_size` rows at a time and yields tuples one by one. On PostgreSQL it uses a server-side cursor (the path `QuerySet.iterator()` takes). Opened inside `atomic()`, read it to the end inside the block. If you stop early, `close()` it or wrap it in `contextlib.closing()`. PostgreSQL does not take data-modifying CTEs on a server-side cursor; use `execute` for those.
 
 ```
 bulk_update(table, rows, *, key=None, columns=None, using='default')
 bulk_insert(table, rows, *, returning=None, using='default')
 ```
-`table` 은 `table_for()` 테이블이나 모델, `rows` 는 컬럼 이름 → 값 매핑의 시퀀스. `bulk_update` 는 `key`(기본 PK, 복합은 튜플)로 행을 찾아 행마다 다른 값으로 UPDATE 하고 rowcount 를 돌려준다. `bulk_insert` 는 rowcount, `returning=["id", ...]` 이면 행 순서대로 튜플 리스트. PostgreSQL 은 `unnest()` 한 문장, SQLite 는 executemany. `bulk_insert` 는 자동 PK 와 `db_default` 컬럼 말고 모든 컬럼을 받아야 한다. 빠진 키·컬럼, 중복 키는 실행 전 `ValueError`.
+`table` is a `table_for()` table or a model; `rows` is a sequence of column name → value mappings. `bulk_update` finds rows by `key` (the primary key by default, a tuple for a composite key), updates each with its own values and returns the rowcount. `bulk_insert` returns the rowcount, or with `returning=["id", ...]` a list of tuples in row order. One `unnest()` statement on PostgreSQL, executemany on SQLite. `bulk_insert` needs every column except an automatic primary key and `db_default` columns. Missing keys or columns and duplicate keys raise `ValueError` before anything runs.
 
 ```
 arun(fn, /, *args, **kwargs)
 ```
-`await arun(fn, ...)`: 동기 `fn` 을 `sync_to_async(thread_sensitive=True)` 한 번으로 실행하고 반환값·예외를 그대로 넘긴다. 코루틴 함수는 `TypeError`. 앞뒤로 `close_old_connections()` 같은 정리를 한다.
+`await arun(fn, ...)` runs the sync `fn` in one `sync_to_async(thread_sensitive=True)` hop and passes its return value or exception through. A coroutine function raises `TypeError`. It cleans up around the call as `close_old_connections()` does.
 
 ```
 compare_table(model, table=None, *, check_db=False, using='default')
 assert_table_matches(model, table=None, *, check_db=False, using='default')
 forget_table(model)
 ```
-`compare_table` 은 테이블(기본 `table_for(model)`)과 모델(`check_db=True` 면 실제 DB 컬럼도)의 차이를 `Difference(source, kind, column, expected, actual)` 리스트로, `assert_table_matches` 는 차이가 있으면 `AssertionError`. 테스트에 넣어 둔다. `forget_table` 은 캐시와 `metadata` 에서 테이블을 지운다(테스트의 동적 모델용). `__version__` 은 설치된 버전 문자열.
+`compare_table` lists the differences between a table (by default `table_for(model)`) and the model (and, with `check_db=True`, the database columns) as `Difference(source, kind, column, expected, actual)`; `assert_table_matches` raises `AssertionError` when there are any. Put it in a test. `forget_table` removes the table from the cache and `metadata` (for dynamic models in tests). `__version__` is the installed version string.
 
-## 지원하지 않는 것·함정
+## Not supported, and pitfalls
 
-- MySQL·Oracle 등 SQLite·PostgreSQL 밖의 DB.
-- `table_for(..., using=...)` 은 `'default'` 만.
-- 손으로 만든 `sa.Table` 의 SQLAlchemy Python 측 `Column(default=...)`·`onupdate=...`(값·callable)는 채울 수 없어, 그 컬럼을 비운 INSERT·UPDATE 는 실행 전 `ValueError`. 값을 직접 주거나 `server_default`·Django `db_default` 를 쓴다. SQL 식 default(`sa.func.now()`)는 된다.
+- Databases other than SQLite and PostgreSQL, such as MySQL and Oracle.
+- `table_for(..., using=...)` other than `'default'`.
+- SQLAlchemy Python-side `Column(default=...)` and `onupdate=...` (values or callables) on a hand-made `sa.Table` cannot be applied, so an INSERT or UPDATE that leaves such a column out raises `ValueError` before it runs. Give the value, or use `server_default` or Django `db_default`. SQL expression defaults (`sa.func.now()`) work.
 - PostgreSQL `standard_conforming_strings=off`.
-- SQLite 에서 jsonb 연산자(`contains`·`has_key`)는 실행 시 오류. JSON 은 `meta["k"] == 1`, `meta[("a", "b")]`, `.as_string()` 이 두 백엔드에서 동작.
-- SQLite 는 `LATERAL`·`DISTINCT ON`·CTE 안의 DML·`(VALUES …) AS v (cols)` 를 받지 않는다. SQLite 는 `INSERT … SELECT … ON CONFLICT` 의 SELECT 가 `FROM t` 로 끝나면(WHERE·GROUP BY 없이) `ON` 을 조인 조건으로 읽어 문법 오류를 낸다. 그때는 `.where(sa.true())` 를 붙인다.
-- SQLAlchemy 2.1 은 `select().distinct(col)`(DISTINCT ON)을 폐기 예고했다. 2.1 은 `stmt.ext(postgresql.distinct_on(col))`, 2.0 은 `stmt.distinct(col)`.
-- `bulk_insert(returning=...)` 의 행 순서는 DB 가 문서로 보장하지 않는다. 순서가 중요하면 자연 키를 함께 RETURNING 해 짝짓는다.
+- On SQLite the jsonb operators (`contains`, `has_key`) fail when run. For JSON, `meta["k"] == 1`, `meta[("a", "b")]` and `.as_string()` work on both backends.
+- SQLite does not take `LATERAL`, `DISTINCT ON`, DML inside a CTE, or `(VALUES …) AS v (cols)`. In `INSERT … SELECT … ON CONFLICT`, when the SELECT ends with `FROM t` (no WHERE or GROUP BY), SQLite reads `ON` as a join condition and raises a syntax error; add `.where(sa.true())`.
+- SQLAlchemy 2.1 deprecates `select().distinct(col)` (DISTINCT ON). On 2.1 use `stmt.ext(postgresql.distinct_on(col))`, on 2.0 `stmt.distinct(col)`.
+- The databases do not document the row order of `bulk_insert(returning=...)`. If order matters, return a natural key too and pair the rows by it.
 
-## 예제
+## Examples
 
-모델: `Category(name, parent→self)`, `Product(sku unique, category, price Decimal)`, `Sale(product, sold_at, quantity, amount)`, `DailyStock(product, day, quantity, counted_at; unique(product, day))`, `PriceChange(sku unique, price)`. 공통 import: `import sqlalchemy as sa`, `from django.db import connection, transaction`, `from django_sqlalchemy_bridge import execute, table_for`.
+Models: `Category(name, parent→self)`, `Product(sku unique, category, price Decimal)`, `Sale(product, sold_at, quantity, amount)`, `DailyStock(product, day, quantity, counted_at; unique(product, day))`, `PriceChange(sku unique, price)`. Common imports: `import sqlalchemy as sa`, `from django.db import connection, transaction`, `from django_sqlalchemy_bridge import execute, table_for`.
 
-재귀 CTE (하위 트리와 깊이):
+Recursive CTE (a subtree with depth):
 
 ```python
 categories = table_for(Category)
@@ -95,7 +95,7 @@ tree = tree.union_all(
 rows = execute(sa.select(tree.c.name, tree.c.depth).order_by(tree.c.depth), {"root": root_id})
 ```
 
-여러 CTE (카테고리 평균보다 많이 판 상품):
+Several CTEs (products that sold more than their category average):
 
 ```python
 revenue = (
@@ -106,20 +106,20 @@ revenue = (
 )
 avg = sa.select(revenue.c.category_id, sa.func.avg(revenue.c.revenue).label("average")).group_by(revenue.c.category_id).cte("avg")
 stmt = (
-    sa.select(products.c.sku, revenue.c.revenue)  # revenue 는 Decimal 로 변환된다
+    sa.select(products.c.sku, revenue.c.revenue)  # revenue converts to Decimal
     .join(revenue, revenue.c.id == products.c.id)
     .join(avg, avg.c.category_id == revenue.c.category_id)
     .where(revenue.c.revenue > avg.c.average)
 )
 ```
 
-업서트 + RETURNING:
+Upsert with RETURNING:
 
 ```python
 from sqlalchemy.dialects import postgresql, sqlite
 
 insert = postgresql.insert if connection.vendor == "postgresql" else sqlite.insert
-stmt = insert(daily_stock)  # params 가 컬럼을 정한다
+stmt = insert(daily_stock)  # the params decide the columns
 stmt = stmt.on_conflict_do_update(
     index_elements=[daily_stock.c.product_id, daily_stock.c.day],
     set_={"quantity": daily_stock.c.quantity + stmt.excluded.quantity, "counted_at": stmt.excluded.counted_at},
@@ -128,7 +128,7 @@ with transaction.atomic():
     rows = execute(stmt, {"product_id": pk, "day": day, "quantity": 3, "counted_at": aware_dt})
 ```
 
-`ON CONFLICT DO NOTHING`: `insert(t).on_conflict_do_nothing(index_elements=[...]).returning(...)` 는 건너뛴 행에 `[]` 를 돌려준다.
+`ON CONFLICT DO NOTHING`: `insert(t).on_conflict_do_nothing(index_elements=[...]).returning(...)` returns `[]` for a skipped row.
 
 `UPDATE … FROM` (SQLite 3.33+):
 
@@ -141,9 +141,9 @@ stmt = (
 )
 ```
 
-집계 서브쿼리로 UPDATE: `unit = sa.select(sales.c.product_id, (sa.func.sum(sales.c.amount) / sa.func.sum(sales.c.quantity)).label("unit")).group_by(sales.c.product_id).subquery()`, `sa.update(products).where(products.c.id == unit.c.product_id).values(price=sa.cast(unit.c.unit, products.c.price.type))`.
+UPDATE from an aggregate subquery: `unit = sa.select(sales.c.product_id, (sa.func.sum(sales.c.amount) / sa.func.sum(sales.c.quantity)).label("unit")).group_by(sales.c.product_id).subquery()`, then `sa.update(products).where(products.c.id == unit.c.product_id).values(price=sa.cast(unit.c.unit, products.c.price.type))`.
 
-`INSERT … SELECT` (SELECT 목록의 값에 타입을 준다):
+`INSERT … SELECT` (give the values in the SELECT list a type):
 
 ```python
 totals = sa.select(
@@ -155,12 +155,12 @@ totals = sa.select(
 execute(sa.insert(daily_stock).from_select(["product_id", "day", "quantity", "counted_at"], totals))
 ```
 
-같은 SELECT 에 `.where(...)` 를 두고 `insert(...).from_select(...)` 에 `.on_conflict_do_update(...)` 를 이으면 집계 업서트가 된다.
+With a `.where(...)` on that SELECT and `.on_conflict_do_update(...)` chained onto `insert(...).from_select(...)`, it becomes an aggregating upsert.
 
-PostgreSQL 전용:
+PostgreSQL only:
 
 ```python
-# LATERAL: 상품마다 큰 판매 2건
+# LATERAL: the two largest sales of each product
 top = (
     sa.select(sales.c.sold_at, sales.c.amount)
     .where(sales.c.product_id == products.c.id)
@@ -170,21 +170,21 @@ top = (
 )
 stmt = sa.select(products.c.sku, top.c.sold_at, top.c.amount).select_from(products).join(top, sa.true())
 
-# DISTINCT ON: 상품마다 최근 판매 (SQLAlchemy 2.1, 2.0 은 .distinct(sales.c.product_id))
+# DISTINCT ON: the latest sale of each product (SQLAlchemy 2.1; on 2.0 .distinct(sales.c.product_id))
 stmt = (
     sa.select(sales.c.product_id, sales.c.sold_at)
     .order_by(sales.c.product_id, sales.c.sold_at.desc())
     .ext(postgresql.distinct_on(sales.c.product_id))
 )
 
-# 데이터를 바꾸는 CTE: 지운 행을 한 문장으로 옮긴다 (execute 로, stream 은 안 됨)
+# Data-modifying CTE: move deleted rows in one statement (with execute; stream cannot)
 moved = sa.delete(sales).where(sales.c.sold_at < cutoff).returning(sales.c.product_id, sales.c.sold_at, sales.c.quantity).cte("moved")
 archive = sa.select(moved.c.product_id, sa.cast(moved.c.sold_at, sa.Date), moved.c.quantity, moved.c.sold_at)
 execute(sa.insert(daily_stock).from_select(["product_id", "day", "quantity", "counted_at"], archive))
 ```
 
-## 링크
+## Links
 
-- [README](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/README.md): 설계 원칙, 값 변환, 제약, 벤치마크
-- [예제 테스트](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/tests/test_examples.py): 위 예제의 실행 가능한 원본
+- [README](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/README.md) (Korean): design principles, value conversion, limits, benchmarks
+- [Example tests](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/tests/test_examples.py): runnable originals of the examples above
 - [CHANGELOG](https://github.com/itda-work/django-sqlalchemy-bridge/blob/main/CHANGELOG.md)

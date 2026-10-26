@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - `execute`·`execute_result`·`stream` 컴파일 캐시: 같은 문장 객체를 같은 DB vendor 에서 같은 이름의 params 로 다시 실행하면 컴파일하지 않는다(키는 문장 객체·vendor·params 이름, 문장이 사라지면 항목도 사라짐). 결과 변환기·`RETURNING` 검사·파라미터 변환은 매 호출. README 에 `bindparam()` 문장 재사용 안내 (#28).
-- AI 코딩 에이전트용 안내 `django_sqlalchemy_bridge/llms.txt`(wheel 에 포함)와 같은 내용의 루트 `llms.txt`(llmstxt.org 형식): 언제 쓰고 언제 ORM 을 쓰는지, 지킬 것(`Engine`·`Session` 금지, signal·`save()` 우회, `bindparam` 재사용, `arun`, `INSERT … SELECT` 값의 타입), 공개 API 시그니처, 지원하지 않는 것, 예제. 모듈 docstring 이 이 파일과 읽는 명령을 가리킨다. 테스트가 두 파일의 일치, `__all__` 의 모든 이름과 시그니처, 빌드한 wheel 의 포함을 검사하고 `release_check.py --wheel` 을 `release.yml` 이 빌드 뒤에 돌린다 (#30).
+- AI 코딩 에이전트용 안내 `django_sqlalchemy_bridge/llms.txt`(wheel 에 포함)와 같은 내용의 루트 `llms.txt`(llmstxt.org 형식, 영어): 언제 쓰고 언제 ORM 을 쓰는지, 지킬 것(`Engine`·`Session` 금지, signal·`save()` 우회, `bindparam` 재사용, `arun`, `INSERT … SELECT` 값의 타입), 공개 API 시그니처, 지원하지 않는 것, 예제. 모듈 docstring 이 이 파일과 읽는 명령을 가리킨다. 테스트가 두 파일의 일치, `__all__` 의 모든 이름과 시그니처, 빌드한 wheel 의 포함을 검사하고 `release_check.py --wheel` 을 `release.yml` 이 빌드 뒤에 돌린다 (#30).
 - ORM 으로 쓰기 어려운 쿼리 예제 테스트(`tests/test_examples.py`, 상점 모델): 재귀 CTE, 여러 CTE, CTE 위 윈도 함수, `INSERT … ON CONFLICT DO UPDATE/DO NOTHING … RETURNING`, `INSERT … SELECT`(업서트 포함), `UPDATE … FROM`(테이블·집계 서브쿼리), PostgreSQL 전용 `LATERAL`·`DISTINCT ON`·`UPDATE … FROM (VALUES …)`·데이터를 바꾸는 CTE. 결과를 ORM·기대값과 대조하고 SQLite·PostgreSQL 에서 돈다(PostgreSQL 전용 문법만 SQLite 에서 건너뜀) (#30).
 
 ### Changed
