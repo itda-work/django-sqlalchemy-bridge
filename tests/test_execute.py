@@ -377,6 +377,29 @@ def test_bridge_read_matches_orm_read():
     assert sorted(rows, key=lambda r: str(r[0])) == sorted(orm_rows(), key=lambda r: str(r[0]))
 
 
+@pytest.mark.parametrize("form", ["literal", "bindparam"])
+def test_typed_values_in_an_insert_select_list_are_written_as_the_orm_writes_them(form):
+    # The bridge cannot tell which target column a SELECT-list value lands in (SQLAlchemy keeps the from_select()
+    # names only in a private attribute), so values there convert only when given the target column's type.
+    author = make_author()
+    via_orm = specimen_values(author=author)
+    Specimen.objects.create(**via_orm)
+    values = specimen_columns(specimen_values(author=author, uid=uuid.uuid4()))
+    names = [name for name in values if name != "writer"]
+    if form == "literal":
+        items = [sa.literal(values[name], specimens.c[name].type) for name in names]
+        params = None
+    else:
+        items = [sa.bindparam(f"v_{name}", type_=specimens.c[name].type) for name in names]
+        params = {f"v_{name}": values[name] for name in names}
+    select = sa.select(*items, authors.c.id).where(authors.c.id == author.pk)
+    assert execute(sa.insert(specimens).from_select([*names, "writer"], select), params) == 1
+
+    assert stored(values["uid"]) == stored(via_orm["uid"])
+    assert orm_row(values["uid"]) == orm_row(via_orm["uid"])
+    assert Specimen.objects.filter(happened_at=AT, amount=via_orm["amount"], level=Specimen.Level.HIGH).count() == 2
+
+
 def test_aware_datetime_is_stored_in_utc_and_read_back_aware():
     author_id = execute(sa.insert(authors).values(name="tz", joined_at=AT).returning(authors.c.id))[0][0]
     assert Author.objects.get(pk=author_id).joined_at == AT
