@@ -176,7 +176,7 @@ def test_window_over_a_cte_ranks_products_by_revenue_in_their_category(shop):
     assert execute(stmt) == [("JEANS", 1), ("SHIRT", 1), ("SOCKS", 2), ("TEA", 1)]
 
 
-@only_on("postgresql", "mysql", syntax="LATERAL")
+@only_on("postgresql", "mysql", "oracle", syntax="LATERAL")
 def test_lateral_join_takes_the_two_largest_sales_of_each_product(shop):
     top = (
         sa.select(sales.c.sold_at, sales.c.amount)

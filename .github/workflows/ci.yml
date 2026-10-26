@@ -51,6 +51,17 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      oracle:
+        image: gvenzl/oracle-free:23-slim-faststart
+        env:
+          ORACLE_PASSWORD: dsb
+        ports:
+          - 1521:1521
+        options: >-
+          --health-cmd healthcheck.sh
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
     env:
       REQUIRE_PG: "1"
       DSB_PG_HOST: localhost
@@ -64,6 +75,12 @@ jobs:
       DSB_MYSQL_USER: root
       DSB_MYSQL_PASSWORD: dsb
       DSB_MYSQL_NAME: dsb
+      # Django's test runner creates its own test user, so connect as SYSTEM.
+      DSB_ORACLE_HOST: localhost
+      DSB_ORACLE_PORT: "1521"
+      DSB_ORACLE_USER: system
+      DSB_ORACLE_PASSWORD: dsb
+      DSB_ORACLE_NAME: FREEPDB1
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.0.1
@@ -88,3 +105,8 @@ jobs:
         env:
           DSB_DB: mysql
           REQUIRE_MYSQL: "1"
+      - name: pytest (Oracle)
+        run: uv run --no-sync pytest
+        env:
+          DSB_DB: oracle
+          REQUIRE_ORACLE: "1"

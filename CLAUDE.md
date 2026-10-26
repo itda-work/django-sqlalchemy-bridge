@@ -1,6 +1,6 @@
 # django-sqlalchemy-bridge AI Guide
 
-> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.1.0 (알파, 2026-10-26 릴리스)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`. v0.1 이후 후보는 #17. Unreleased: 컴파일 캐시(#28), MySQL(#37).
+> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.1.0 (알파, 2026-10-26 릴리스)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`. v0.1 이후 후보는 #17. Unreleased: 컴파일 캐시(#28), MySQL(#37), Oracle(#38).
 
 ## 정본
 
@@ -24,7 +24,7 @@
 ## 테스트·CI 실행법
 
 - 설치 `uv sync`. 린트 `uv run ruff check . && uv run ruff format --check .`.
-- SQLite: `uv run pytest`. 백엔드는 `DSB_DB=sqlite|postgres|mysql` 로 고른다(미지정이면 sqlite, `REQUIRE_PG=1` 이면 postgres, `REQUIRE_MYSQL=1` 이면 mysql).
+- SQLite: `uv run pytest`. 백엔드는 `DSB_DB=sqlite|postgres|mysql|oracle` 로 고른다(미지정이면 sqlite, `REQUIRE_PG=1` 이면 postgres, `REQUIRE_MYSQL=1` 이면 mysql, `REQUIRE_ORACLE=1` 이면 oracle).
 - PostgreSQL: 접속은 `DSB_PG_HOST/PORT/USER/PASSWORD/NAME`. `DSB_PG_HOST` 가 없으면 DB 테스트는 skip, `REQUIRE_PG=1` 이면 그 skip 이 실패다.
   ```sh
   docker run -d --name dsb-pg -e POSTGRES_USER=dsb -e POSTGRES_PASSWORD=dsb -e POSTGRES_DB=dsb -p 127.0.0.1:55432:5432 postgres:18
@@ -36,8 +36,13 @@
   uv sync --group mysql
   DSB_DB=mysql DSB_MYSQL_HOST=127.0.0.1 DSB_MYSQL_PORT=53306 DSB_MYSQL_USER=root DSB_MYSQL_PASSWORD=dsb DSB_MYSQL_NAME=dsb REQUIRE_MYSQL=1 uv run --no-sync pytest
   ```
+- Oracle 23ai Free: 접속은 `DSB_ORACLE_HOST/PORT/USER/PASSWORD/NAME`(NAME 은 서비스 이름 `FREEPDB1`, Easy Connect 로 붙는다). 없으면 skip, `REQUIRE_ORACLE=1` 이면 실패. Django 가 테스트 사용자(`test_system`)를 만들므로 `system` 으로 붙는다. 드라이버 `oracledb`(thin, 순수 파이썬)는 `dev` 그룹. 무료 19c 이미지가 없어 검증 버전은 23ai 뿐이다.
+  ```sh
+  docker run -d --name dsb-oracle -e ORACLE_PASSWORD=dsb -p 127.0.0.1:51521:1521 gvenzl/oracle-free:23-slim-faststart
+  DSB_DB=oracle DSB_ORACLE_HOST=127.0.0.1 DSB_ORACLE_PORT=51521 DSB_ORACLE_USER=system DSB_ORACLE_PASSWORD=dsb DSB_ORACLE_NAME=FREEPDB1 REQUIRE_ORACLE=1 uv run --no-sync pytest
+  ```
 - 테스트 모델을 바꾸면 `uv run django-admin makemigrations testapp --settings tests.settings --pythonpath .` (스모크 테스트가 누락을 잡는다).
-- CI(`.github/workflows/ci.yml`)는 lint + Python 3.12/3.14 × Django 5.2/6.1 × SQLAlchemy 2.0/2.1 매트릭스. 잡마다 PG 18·MySQL 8.4 서비스로 SQLite·PG·MySQL 을 각각 돈다(MariaDB 는 CI 에 없다). 매트릭스 버전은 `uv sync --locked` 뒤 `uv pip install` 로 덮어쓴다.
+- CI(`.github/workflows/ci.yml`)는 lint + Python 3.12/3.14 × Django 5.2/6.1 × SQLAlchemy 2.0/2.1 매트릭스. 잡마다 PG 18·MySQL 8.4·Oracle 23ai Free 서비스로 SQLite·PG·MySQL·Oracle 을 각각 돈다(MariaDB 는 CI 에 없다). 매트릭스 버전은 `uv sync --locked` 뒤 `uv pip install` 로 덮어쓴다.
 
 ## 작업 방식
 
@@ -59,3 +64,4 @@
 - 구현 중 발견(#21): SA DML 의 `exported_columns`·`_all_selected_columns` 는 `HasMemoized` 에 등록되지 않는 `ro_memoized_property` 라 `_generate()` 가 파생 문장에 복사한다 — 한 번 읽은(실행한) `insert(t)` 에서 `.returning()` 을 파생하면 컬럼이 비어 보인다. `compiled.effective_returning` 도 같은 메모를 읽는다. RETURNING 컬럼은 dialect 컴파일러의 `returning_clause` 가 받는 컬럼으로 얻는다(`_ReturningCompiler`). SELECT 의 `selected_columns` 는 등록된 메모라 안전.
 - 구현 중 발견(#28): `Compiled.statement` 가 컴파일한 문장을 붙잡으므로 문장을 weak key 로 하는 캐시는 생성형 복사본(`inline()`·인자 없는 `execution_options()`)을 컴파일해야 항목이 풀린다. 결과 컨버터는 `connection.ops` bound method 라(SQLite 는 `self.connection.timezone` 을 읽음) vendor·연결을 넘어 캐시하지 않는다 — 매 호출 그 연결로 찾는다.
 - 구현 중 발견(#37): Django vendor `"mysql"` 은 MySQL·MariaDB 둘 다라 dialect 키를 `mysql_is_mariadb`·`sql_mode`(`NO_BACKSLASH_ESCAPES`)로 더 가른다(안 가르면 리터럴 백슬래시가 조용히 두 개). MariaDB 는 INSERT·DELETE RETURNING 만 있고 UPDATE 는 없다(Django feature 는 insert 하나뿐이라 문장 종류로 판정). MySQL 은 JSON 과 문자열을 비교하면 문자열을 JSON 문자열로 봐 `meta["k"] == 1` 이 `{"k": "1"}` 에 맞는다 — JSON 바인드를 ORM 처럼 `JSON_EXTRACT(%s, '$')` 로 감싼다(`_MySQLJSON.bind_expression`). MySQL 은 DDL 이 즉시 커밋돼 테스트 롤백이 스키마를 되돌리지 못한다 — DDL 테스트는 `undo_ddl` 픽스처로 테이블을 다시 만든다. mysqlclient 는 untyped aware datetime 의 오프셋을 버린다.
+- 구현 중 발견(#38): Oracle 은 `RETURNING … INTO` 출력 바인드로 행을 주는데 Django 커서로는 못 받아, 실행하면 에러 없이 rowcount 가 온다 — vendor `"oracle"` 이면 `check_returning` 이 모두 거부한다(Django feature 는 참). Django `quote_name()` 은 Oracle 식별자를 대문자·30자(해시)로 바꾸고 SA Oracle 은 대소문자 섞인·긴 이름·예약어(`uid`, `level`)를 그대로 따옴표로 감싼다 — 브리지 Oracle dialect 의 `IdentifierPreparer.quote()` 가 Django 철자로 쓰고(`quoted_name(quote=True)` 도. `quoted_name.upper()` 는 자기 자신을 돌려주므로 `str()` 먼저), 결과 키는 문장 컬럼 이름으로 되돌린다(`_result_keys`, 다른 vendor 는 그대로). Oracle 은 `NCLOB` 을 `=` 로 비교 못 해(`ORA-22848`) JSON `==`/`!=` 를 컴파일러 `visit_binary` 에서 `JSON_EQUAL()` 로 쓴다(비교자는 기본 타입에서 나오므로 타입 variant 로는 안 된다). SA 2.1 Oracle 의 `as_*()` 는 `JSON_VALUE(... ERROR ON ERROR)` 라 키 없는 행에 문장이 실패해 접미사를 뗀다. SA 2.0 Oracle 에는 JSON 이 없고 `construct_expanded_state` 가 모든 bind processor 를 만들어 JSON 에서 깨진다 — `FieldType.bind_processor` 는 `None`, Oracle JSON variant 는 SA 2.1+. Django Oracle 커서는 정밀도 없는 숫자(`sum()`)를 텍스트로 `int`/`Decimal` 을 고르므로 ORM 처럼 `Expression(output_field=field).convert_value` 를 끼운다. SA 는 연결하지 않은 Oracle dialect 로 다중 행 `VALUES` 를 컴파일하지 않는다. Oracle 도 DDL 이 즉시 커밋돼 `undo_ddl` 이 다시 만들고, `CASCADE CONSTRAINTS` 가 FK 를 함께 지우므로 가리키는 테이블도 다시 만든다. 무인용 `uid` 는 Oracle 의 UID 의사 컬럼이다.

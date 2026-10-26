@@ -16,7 +16,7 @@ Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식
 
 ### 예제
 
-아래 코드는 테스트(`tests/test_examples.py`)에서 그대로 돌고, README 가 그 코드와 어긋나면 테스트가 실패합니다. 모델은 작은 상점([`tests/testapp/models.py`](tests/testapp/models.py)의 `Category`·`Product`·`Sale`·`DailyStock`·`PriceChange`)이고, 테스트 파일에는 LATERAL·DISTINCT ON·여러 CTE·윈도 함수·`INSERT … SELECT`·`ON CONFLICT DO NOTHING`·데이터를 바꾸는 CTE 예제가 더 있습니다. 모든 예제는 SQLite·PostgreSQL·MySQL 에서 돌고, 그 DB 에 없는 문법(PostgreSQL 전용 `DISTINCT ON` 등, MySQL 에 없는 `ON CONFLICT`·`RETURNING`)만 건너뜁니다. 예제 코드의 import 는 `import datetime`, `from zoneinfo import ZoneInfo`, `import sqlalchemy as sa`, `from django.db import connection, transaction`, `from sqlalchemy.dialects import mysql, postgresql, sqlite`, `from django_sqlalchemy_bridge import execute, table_for`입니다.
+아래 코드는 테스트(`tests/test_examples.py`)에서 그대로 돌고, README 가 그 코드와 어긋나면 테스트가 실패합니다. 모델은 작은 상점([`tests/testapp/models.py`](tests/testapp/models.py)의 `Category`·`Product`·`Sale`·`DailyStock`·`PriceChange`)이고, 테스트 파일에는 LATERAL·DISTINCT ON·여러 CTE·윈도 함수·`INSERT … SELECT`·`ON CONFLICT DO NOTHING`·데이터를 바꾸는 CTE 예제가 더 있습니다. 모든 예제는 SQLite·PostgreSQL·MySQL·Oracle 에서 돌고, 그 DB 에 없는 문법(PostgreSQL 전용 `DISTINCT ON` 등, MySQL·Oracle 에 없는 `ON CONFLICT`·`RETURNING`, Oracle 에 없는 `UPDATE … FROM`)만 건너뜁니다. 예제 코드의 import 는 `import datetime`, `from zoneinfo import ZoneInfo`, `import sqlalchemy as sa`, `from django.db import connection, transaction`, `from sqlalchemy.dialects import mysql, postgresql, sqlite`, `from django_sqlalchemy_bridge import execute, table_for`입니다.
 
 재귀 CTE: 카테고리 하나의 하위 트리를 깊이와 함께.
 
@@ -138,7 +138,8 @@ assert_table_matches(Order, check_db=True)
   - PostgreSQL: `format_type()`이 주는 이름으로 맞춥니다(`varchar`→`character varying`, `serial`·`int4`→`integer`, `timestamptz`→`timestamp with time zone`, `decimal`→`numeric` 등). varchar 길이와 `numeric(p,s)` 정밀도까지 비교합니다.
   - SQLite: 테이블에 선언된 타입 텍스트를 대소문자·공백만 맞춰 비교합니다. Django 가 만든 테이블은 선언 타입이 곧 `db_type()`입니다. Django 가 `DecimalField`를 정밀도 없이 `decimal`로 선언하므로 SQLite 에서는 decimal 정밀도 차이를 잡지 못하고, 손으로 만든 테이블이 다른 동의어(`INT` 등)를 썼다면 타입 차이로 보고합니다.
   - MySQL: `information_schema.columns`의 `COLUMN_TYPE`과 맞춥니다(`integer`→`int`, `bool`→`tinyint(1)`, `numeric`→`decimal`, `double precision`·`real`→`double`, `AUTO_INCREMENT`와 정수 표시 폭 `int(11)`은 뗌). varchar 길이, `decimal(p,s)` 정밀도, `datetime(6)`의 소수 자릿수, `unsigned`까지 비교합니다.
-  - 그 밖의 백엔드(MariaDB 포함: JSON 이 `longtext`, UUID 가 고유 타입)에서는 타입을 비교하지 않습니다.
+  - 그 밖의 백엔드(MariaDB: JSON 이 `longtext`, UUID 가 고유 타입. Oracle: 데이터 사전이 `db_type()`과 다르게 씀, 예를 들어 `DOUBLE PRECISION`을 `FLOAT(126)`으로)에서는 타입을 비교하지 않습니다.
+  - Oracle 에서는 컬럼 이름을 Django 가 실제로 만든 이름(대문자, 30자를 넘으면 해시로 줄임)으로 맞춰 보고, nullable 은 Django 스키마 편집기의 규칙대로 봅니다. Oracle 은 빈 문자열을 `NULL`로 저장하므로 Django 가 빈 문자열을 받는 필드(`CharField`·`TextField` 등, PK 제외)를 `null=False`여도 NULL 허용 컬럼으로 만들고, `compare_table`도 그 컬럼을 NULL 허용으로 기대합니다.
 - 다중 DB 는 아직 `default` 만 받습니다(`using` 인자 자리만 있음).
 - `forget_table(model)`은 캐시와 공용 `MetaData`에서 테이블을 지웁니다. 테스트(`isolate_apps` 등)에서 동적 모델을 정리하는 용도입니다.
 
@@ -159,12 +160,12 @@ assert_table_matches(Order, check_db=True)
 | `DateTimeField` | `DateTime(timezone=USE_TZ)` |
 | `DurationField` | `Interval` |
 | `UUIDField` | `Uuid` |
-| `JSONField` | `postgresql.JSONB` (SQLite·MySQL 에서는 `JSON` 으로 컴파일) |
+| `JSONField` | `postgresql.JSONB` (SQLite·MySQL·Oracle 에서는 `JSON` 으로 컴파일) |
 | `BinaryField` | `LargeBinary` |
 | `ForeignKey`, `OneToOneField` | 대상 컬럼의 타입 + `ForeignKey` |
 
 - `choices`가 있는 필드는 바탕 필드의 타입을 그대로 씁니다.
-- `JSONField`는 `postgresql.JSONB().with_variant(sa.JSON(), "sqlite")`에 MySQL·MariaDB 용 `JSON` 변형을 붙인 타입입니다. 연산자(`contains()`·`has_key()` 등)는 dialect 를 고르기 전, 식을 만들 때의 타입에서 나오므로 기본 타입이 `JSONB`여야 PostgreSQL 연산자가 열립니다(`sa.JSON` 기본에 PostgreSQL 변형만 붙이면 `contains()`가 조용히 `LIKE`가 됩니다). 그래서 `compare_table`은 직접 만든 테이블의 `sa.JSON()` 컬럼을 타입 차이로 보고합니다.
+- `JSONField`는 `postgresql.JSONB().with_variant(sa.JSON(), "sqlite", "oracle")`에 MySQL·MariaDB 용 `JSON` 변형을 붙인 타입입니다(SQLAlchemy 2.0 의 Oracle dialect 에는 JSON 이 없어 2.0 에서는 Oracle 변형을 붙이지 않습니다). 연산자(`contains()`·`has_key()` 등)는 dialect 를 고르기 전, 식을 만들 때의 타입에서 나오므로 기본 타입이 `JSONB`여야 PostgreSQL 연산자가 열립니다(`sa.JSON` 기본에 PostgreSQL 변형만 붙이면 `contains()`가 조용히 `LIKE`가 됩니다). 그래서 `compare_table`은 직접 만든 테이블의 `sa.JSON()` 컬럼을 타입 차이로 보고합니다.
 - `ManyToManyField`와 역관계는 컬럼이 아니므로 건너뜁니다(중간 테이블 모델은 따로 `table_for` 할 수 있습니다). 다중 테이블 상속의 자식 테이블에는 자기 컬럼과 `<부모>_ptr_id`만 들어갑니다. 복합 PK(`CompositePrimaryKey`)를 반영합니다.
 - 위 표에 없는 필드가 DB 컬럼을 가지면(예: PostgreSQL `ArrayField`, 직접 만든 필드) 조용히 넘기지 않고 `UnsupportedFieldError`를 냅니다.
 
@@ -193,11 +194,11 @@ for row in result.mappings():
     ...
 ```
 
-- `execute(stmt, params=None, *, using="default")`는 `connections[using]`의 vendor에 맞는 SQLAlchemy dialect(SQLite, PostgreSQL+psycopg, MySQL·MariaDB+mysqlclient)로 컴파일하고 **Django 커서로** 실행합니다. 그래서 `atomic()`·savepoint·`on_commit`·`execute_wrapper`·`CaptureQueriesContext`·`assertNumQueries`가 ORM 쿼리와 똑같이 적용됩니다.
+- `execute(stmt, params=None, *, using="default")`는 `connections[using]`의 vendor에 맞는 SQLAlchemy dialect(SQLite, PostgreSQL+psycopg, MySQL·MariaDB+mysqlclient, Oracle+oracledb)로 컴파일하고 **Django 커서로** 실행합니다. 그래서 `atomic()`·savepoint·`on_commit`·`execute_wrapper`·`CaptureQueriesContext`·`assertNumQueries`가 ORM 쿼리와 똑같이 적용됩니다.
 - **반환 형태**: 행을 돌려주는 문장(`SELECT`, `RETURNING`)은 튜플 리스트, 그 밖의 문장은 커서의 rowcount(정수)입니다. `params`에 매핑을 넘기면 `bindparam()` 값(그리고 `insert(table)`처럼 값이 없는 INSERT의 컬럼)을 채우고, 매핑의 시퀀스를 넘기면 `cursor.executemany()`로 실행합니다(이때 `RETURNING`은 받지 않습니다).
-- `execute_result(stmt, params=None, *, using="default")`는 같은 행을 SQLAlchemy `Result`로 줍니다(`row.name`, `row._mapping`, `.mappings()`, `.scalars()`). 행을 모두 가져와 변환한 뒤의 `Result`입니다. 외부 행으로 `Result`를 만드는 공개 API가 없어 이 부분만 `_sa_result.py` 한 곳에서 비공개 API를 씁니다.
+- `execute_result(stmt, params=None, *, using="default")`는 같은 행을 SQLAlchemy `Result`로 줍니다(`row.name`, `row._mapping`, `.mappings()`, `.scalars()`). 행을 모두 가져와 변환한 뒤의 `Result`입니다. 외부 행으로 `Result`를 만드는 공개 API가 없어 이 부분만 `_sa_result.py` 한 곳에서 비공개 API를 씁니다. 키는 DB 가 알려 주는 컬럼 이름입니다. Oracle 은 이름을 대문자(브리지가 Django 식으로 쓴 이름)로 돌려주므로, 문장의 컬럼·라벨이면 문장을 만들 때의 이름(`MixedCase`, 30자 넘는 이름, `label("Who")`)으로 되돌리고, 그 밖의 이름(`sa.text()`의 컬럼, `count_1` 같은 SQLAlchemy 익명 라벨)은 SQLAlchemy 의 Oracle dialect 처럼 전부 대문자면 소문자로, 아니면 받은 그대로 둡니다. 그래서 `text('SELECT name AS Plain, name AS "MixedCase" ...')`의 키는 `plain`·`MixedCase`입니다. 다른 DB 의 키는 바꾸지 않습니다(테스트로 확인).
 - **값 변환은 Django 필드 기준**입니다. 컬럼과 비교(`==`, `!=`, `<`, `IN`, `BETWEEN` 등)하거나 INSERT/UPDATE로 넣는 값은 `field.get_db_prep_value()`를, 컬럼을 고른 결과(라벨·`max()`처럼 컬럼 타입을 그대로 잇는 식 포함)는 ORM과 같은 변환기(`connection.ops.get_db_converters()` + 필드 변환기)를 거칩니다. JSON·UUID·시간대 있는 datetime(SQLite에서도 UTC로 저장, 9시간 밀리지 않음)·Decimal·선택지(이름이 아니라 값)가 ORM과 똑같이 왕복합니다. `None`은 ORM `save()`처럼 SQL `NULL`입니다.
-- 컬럼으로 추적되지 않는 값(`LIKE` 패턴, 산술식, `count()` 같은 식, `sa.literal()`, `sa.text()`)은 변환 없이 그대로 오갑니다. `INSERT … SELECT`의 SELECT 목록에 넣는 값도 여기에 듭니다. 브리지는 그 값이 들어갈 대상 컬럼을 알지 못하므로(SQLAlchemy 가 `from_select()`의 컬럼 이름을 공개 API 로 내주지 않음) 값마다 대상 컬럼 타입을 주세요: `sa.literal(value, daily_stock.c.counted_at.type)`, `sa.bindparam("at", type_=daily_stock.c.counted_at.type)`. 타입이 없으면 UUID(SQLite)·JSON 컬럼에 넣는 dict(PostgreSQL)는 드라이버에서 에러가 나고, 시간대 있는 datetime 은 SQLite 에서 에러 없이 UTC 가 아닌 오프셋 문자열로 저장돼 ORM 필터가 그 행을 찾지 못합니다. MySQL 에서는 mysqlclient 가 오프셋을 버리고 벽시계 시각을 저장해, Django 가 UTC 로 읽으면 다른 시각(서울 시각이면 9시간 뒤)이 됩니다. 예외는 JSON 키·경로(`meta["k"]`, `meta[0]`, `meta[("a", "b")]`)로, 값이 아니라 문법이라 dialect 표기(SQLite `'$."k"'`, PostgreSQL `'{a, b}'`)로 바꿔 넘깁니다.
+- 컬럼으로 추적되지 않는 값(`LIKE` 패턴, 산술식, `count()` 같은 식, `sa.literal()`, `sa.text()`)은 변환 없이 그대로 오갑니다. `INSERT … SELECT`의 SELECT 목록에 넣는 값도 여기에 듭니다. 브리지는 그 값이 들어갈 대상 컬럼을 알지 못하므로(SQLAlchemy 가 `from_select()`의 컬럼 이름을 공개 API 로 내주지 않음) 값마다 대상 컬럼 타입을 주세요: `sa.literal(value, daily_stock.c.counted_at.type)`, `sa.bindparam("at", type_=daily_stock.c.counted_at.type)`. 타입이 없으면 UUID(SQLite)·JSON 컬럼에 넣는 dict(PostgreSQL)는 드라이버에서 에러가 나고, 시간대 있는 datetime 은 SQLite 에서 에러 없이 UTC 가 아닌 오프셋 문자열로 저장돼 ORM 필터가 그 행을 찾지 못합니다. MySQL·Oracle 에서는 드라이버(mysqlclient·oracledb)가 오프셋을 버리고 벽시계 시각을 저장해, Django 가 UTC 로 읽으면 다른 시각(서울 시각이면 9시간 뒤)이 됩니다. 예외는 JSON 키·경로(`meta["k"]`, `meta[0]`, `meta[("a", "b")]`)로, 값이 아니라 문법이라 dialect 표기(SQLite `'$."k"'`, PostgreSQL `'{a, b}'`)로 바꿔 넘깁니다.
 - **JSON 컬럼.** `meta["k"] == 1`(ORM `meta__k=1`), `meta[("a", "b")] == 1`, `meta == {...}`, `meta["k"].in_([...])`, `meta["k"].as_string()`은 세 백엔드에서 동작하고 결과가 ORM 조회와 같습니다(SQLite 의 구조 값 비교는 아래 예외). PostgreSQL에서는 jsonb 연산자도 쓸 수 있고 결과가 ORM 조회와 같습니다(테스트로 확인).
 
   | 브리지 (PostgreSQL) | ORM |
@@ -210,6 +211,8 @@ for row in result.mappings():
   `contains`·`contained_by`의 우변은 컬럼 값과 같게 `JSONField.get_db_prep_value()`로 jsonb 바인딩합니다. SQLite에는 이 연산자들이 없습니다. `contains`·`has_key`는 실행 시 `OperationalError`, `astext`(`->>`)는 SQLite 3.38+의 `->>`로 실행되지만 텍스트가 아니라 SQL 값을 돌려줘 `{"k": 1}`이 `'1'`과 같지 않습니다. SQLite에서 `meta["k"] == [1, 2]`처럼 구조 값과 비교하면 JSON 텍스트끼리 비교라 공백이 다르면 맞지 않습니다(ORM 은 `JSON()`으로 정규화). 스칼라 비교는 ORM 과 같습니다.
 
   MySQL 은 JSON 값과 문자열을 비교하면 문자열을 JSON 문자열로 보므로(`'1'`이 `{"k": "1"}`에 맞음), 브리지는 ORM 처럼 JSON 컬럼에 묶는 값을 `JSON_EXTRACT(%s, '$')`로 감싸 JSON 문서로 읽힙니다(INSERT·UPDATE 로 넣는 값도 같은 문서로 저장됩니다). `contains`·`has_key`는 MySQL 에 없는 연산자라 실행 시 `ProgrammingError`이고, `astext`는 MySQL 의 `->>`(`JSON_UNQUOTE(JSON_EXTRACT(...))`)라 `{"k": 1}`과 `{"k": "1"}` 모두 텍스트 `'1'`입니다(ORM `KT()` 필터는 MySQL 에서 우변을 JSON 으로 감싸 텍스트와 맞지 않으니 결과를 대조하지 마세요).
+
+  Oracle 에서 Django 는 `JSONField`를 `NCLOB`(`IS JSON`)으로 저장하는데, Oracle 은 `NCLOB`을 `=`로 비교하지 못하고(`ORA-22848`) 키는 `JSON_QUERY()` 텍스트라 `[1,2]`가 Django 가 쓴 `[1, 2]`와 맞지 않습니다. 그래서 브리지는 JSON 끼리의 `==`·`!=`를 `JSON_EQUAL()`로 컴파일합니다. 문서 전체 비교(`meta == {...}`)는 ORM 과 같습니다. 키 비교는 JSON 값으로 비교해 `meta["k"] == 1`이 `{"k": "1"}`에 맞지 않습니다(PostgreSQL·MySQL 과 같음). Oracle 의 ORM 은 키를 `JSON_VALUE()` 텍스트로 비교해 `1`과 `"1"`이 서로 맞으니 결과를 대조하지 마세요. `meta["k"].in_([...])`는 JSON 텍스트 비교라 구조 값이 맞지 않습니다(SQLite 와 같음). `as_string()`·`as_integer()` 등은 SQLAlchemy 가 `JSON_VALUE(... ERROR ON ERROR)`로 컴파일해 키가 없는 행 하나에 문장 전체가 실패하므로, 브리지는 `ERROR ON ERROR`를 떼어 다른 DB 처럼 `NULL`을 받게 합니다. `contains`·`has_key`는 Oracle 에 없는 연산자입니다. SQLAlchemy 2.0 의 Oracle dialect 는 JSON 키·경로를 컴파일하지 못해 실행 전 `sqlalchemy.exc.UnsupportedCompilationError`입니다(문서 전체 비교는 됩니다). JSON 키·경로를 Oracle 에서 쓰려면 SQLAlchemy 2.1 을 쓰세요.
 - **컴파일 캐시: `bindparam()`으로 만든 문장을 재사용하면 컴파일을 건너뜁니다.** 브리지는 넘겨받은 문장 객체마다 컴파일 결과를 기억해, 같은 객체를 같은 DB 종류(vendor)에서 같은 이름의 `params`로 다시 실행하면 컴파일 없이 값 변환과 실행만 합니다(`execute`·`execute_result`·`stream` 공통). 그러니 값은 `sa.bindparam("pk")`로 비워 둔 문장을 한 번 만들어 두고(모듈 수준 등) 돌려 쓰세요. `where(orders.c.id == pk)`처럼 값을 넣어 매번 새로 만든 문장은 매번 컴파일합니다(아래 "성능과 메모리" 4번). `params` 이름이 달라지면(예: UPDATE 의 `SET` 컬럼) SQL 이 달라지므로 따로 컴파일합니다. 결과 변환기와 `RETURNING` 지원 검사는 연결(alias)마다 다를 수 있어 매 호출 그 연결로 다시 정합니다. 기억한 결과는 문장 객체가 사라지면 함께 사라지고, 여러 스레드가 같은 문장을 써도 됩니다. 끄는 스위치는 없습니다(결과가 캐시 여부와 무관하므로).
 - 리터럴 `%`는 그대로 써도 됩니다(`LIKE 'a%'`, `text("SELECT '100%'")`). 브리지가 `%s` 자리표시로 컴파일하고 `%`를 `%%`로 바꾼 뒤, 파라미터가 없어도 빈 튜플을 넘겨 백엔드가 되돌리게 합니다(MySQL 의 mysqlclient 도 같은 format paramstyle 입니다). `sa.text()`는 그 DB 의 SQL 그대로라, MySQL 기본 `sql_mode`에서는 문자열 리터럴의 백슬래시가 이스케이프입니다(`ESCAPE '\\'`로 써야 백슬래시 하나).
 - async 코드에서 직접 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. 작업 단위를 동기 함수로 묶어 `arun`으로 부르세요(아래 "비동기").
@@ -224,7 +227,7 @@ for order_id, paid_at in stream(sa.select(orders.c.id, orders.c.paid_at), chunk_
 ```
 
 - `stream(stmt, params=None, *, chunk_size=2000, using="default")`는 행을 `chunk_size`개씩 가져와 튜플로 하나씩 내주는 제너레이터입니다. 값 변환은 `execute`와 같습니다. 기본 `chunk_size`는 Django `QuerySet.iterator()`의 기본값(2000)과 같습니다.
-- 커서는 `QuerySet.iterator()`와 같은 경로로 엽니다. `connection.chunked_cursor()`(PostgreSQL에서는 서버 측 named cursor, SQLite·MySQL에서는 일반 커서)에 `fetchmany(chunk_size)`를 반복합니다. MySQL 의 일반 커서는 mysqlclient 가 `execute()` 때 결과 전체를 클라이언트로 받으므로 `QuerySet.iterator()`처럼 메모리 이득이 없습니다(`atomic()` 안팎 모두, 테스트로 확인). 변환한 튜플만 청크 단위로 만듭니다. 데이터베이스 설정에 `DISABLE_SERVER_SIDE_CURSORS: True`가 있으면 일반 커서를 씁니다. `CaptureQueriesContext`·`assertNumQueries`에는 `iterator()`처럼 1건으로 잡힙니다(`FETCH`는 잡히지 않습니다).
+- 커서는 `QuerySet.iterator()`와 같은 경로로 엽니다. `connection.chunked_cursor()`(PostgreSQL에서는 서버 측 named cursor, SQLite·MySQL·Oracle에서는 일반 커서)에 `fetchmany(chunk_size)`를 반복합니다. MySQL 의 일반 커서는 mysqlclient 가 `execute()` 때 결과 전체를 클라이언트로 받으므로 `QuerySet.iterator()`처럼 메모리 이득이 없습니다(`atomic()` 안팎 모두, 테스트로 확인). 변환한 튜플만 청크 단위로 만듭니다. 데이터베이스 설정에 `DISABLE_SERVER_SIDE_CURSORS: True`가 있으면 일반 커서를 씁니다. `CaptureQueriesContext`·`assertNumQueries`에는 `iterator()`처럼 1건으로 잡힙니다(`FETCH`는 잡히지 않습니다).
 - 첫 행을 요청할 때 실행됩니다. 행이 끝나거나, 제너레이터를 `close()`하거나(`for` 문을 `break`로 빠져나가 제너레이터가 버려질 때 포함), 예외로 끝나면 커서를 닫습니다. 제너레이터를 변수에 쥔 채 소비를 멈추면 닫히지 않으니 `close()`를 부르거나 `contextlib.closing()`으로 감싸세요.
 - 행을 돌려주지 않는 문장(`RETURNING` 없는 DML)은 실행 전에 `ValueError`, 매핑의 시퀀스(executemany 형태)는 `TypeError`입니다. 행이 없는 `text()` 문장은 첫 `next()`에서 `ValueError`입니다.
 - PostgreSQL의 서버 측 커서(`DECLARE`)는 `SELECT`·`VALUES`만 받습니다. 그래서 `RETURNING`이 있는 DML은 일반 커서로 실행하고(행은 드라이버가 한꺼번에 받으므로 메모리 이득은 없습니다), `text()` 문장도 `SELECT`·`VALUES`여야 합니다. 데이터를 바꾸는 CTE(`WITH u AS (UPDATE ... RETURNING ...) SELECT ...`)는 PostgreSQL이 `NotSupportedError`로 거부하니 `execute`를 쓰세요.
@@ -254,8 +257,9 @@ bulk_insert(orders, rows, batch_size=10_000)
 
 - `bulk_update(table, rows, *, key=None, columns=None, batch_size=None, using="default")`, `bulk_insert(table, rows, *, returning=None, batch_size=None, using="default")`. `table`은 `table_for()` 테이블이나 모델입니다. `rows`는 컬럼 이름(`db_column`, FK 는 `<이름>_id`)을 키로 한 매핑의 시퀀스입니다.
 - **PostgreSQL에서는 문장 하나입니다.** 컬럼마다 배열 파라미터 하나를 Django 컬럼 타입으로 캐스트하고(`(%s)::jsonb[]`, `(%s)::numeric[]` …) `unnest()`로 행을 만듭니다. UPDATE 는 `UPDATE t SET c = v.c FROM unnest(...) AS v(...) WHERE t.k = v.k`, INSERT 는 `INSERT INTO t (...) SELECT * FROM unnest(...)` 꼴로, Django `bulk_create`가 PostgreSQL에서 쓰는 방식과 같습니다. 캐스트에서는 길이·자릿수를 떼므로(`varchar(50)[]`가 아니라 `varchar[]`) 값이 잘리지 않고, 너무 긴 값은 ORM 쓰기처럼 컬럼에 넣을 때 오류가 납니다. `CaptureQueriesContext`에는 1건으로 잡힙니다.
-- **그 밖의 백엔드(SQLite·MySQL)에서는 같은 호출이 `cursor.executemany()`입니다(`atomic()` 안에서, 아래 "원자성").** `returning`이 있는 INSERT 는 executemany 로 행을 받을 수 없어서 다중 `VALUES` 문장을 `connection.ops.bulk_batch_size()`(SQLite 변수 한도) 단위로 나눠 실행합니다. 결과는 PostgreSQL과 같습니다.
+- **그 밖의 백엔드(SQLite·MySQL·Oracle)에서는 같은 호출이 `cursor.executemany()`입니다(`atomic()` 안에서, 아래 "원자성").** `returning`이 있는 INSERT 는 executemany 로 행을 받을 수 없어서 다중 `VALUES` 문장을 `connection.ops.bulk_batch_size()`(SQLite 변수 한도) 단위로 나눠 실행합니다. 결과는 PostgreSQL과 같습니다.
   - MySQL: mysqlclient 는 INSERT 의 executemany 를 다중 행 `INSERT … VALUES (…), (…)`로 바꿔 보내고, UPDATE 의 executemany 는 행마다 문장 하나를 보냅니다(`CaptureQueriesContext`에는 1건). rowcount 는 Django 가 켠 `CLIENT.FOUND_ROWS` 덕에 바뀐 행이 아니라 맞은 행을 셉니다. `bulk_insert(returning=...)`는 MySQL 에 `RETURNING`이 없어 실행 전 `NotSupportedError`이고, MariaDB 에서는 다중 `VALUES … RETURNING`으로 돕니다. `UPDATE … JOIN (VALUES ROW(…))`로 한 문장을 만드는 방식은 MariaDB 에 `VALUES ROW`가 없고 행 값의 타입을 정할 방법이 없어 쓰지 않았습니다. `INSERT … ON DUPLICATE KEY UPDATE`는 없는 키를 새 행으로 넣어 의미가 다릅니다.
+  - Oracle: `bulk_insert(returning=...)`는 실행 전 `NotSupportedError`입니다(아래 "제약"의 `RETURNING`). 너무 긴 값은 ORM 쓰기와 같이 `DataError`가 아니라 `DatabaseError`(`ORA-12899`)입니다.
 - 값 변환은 `execute`와 같습니다. 행 값마다 `field.get_db_prep_value()`(`None`은 SQL `NULL`), `returning` 컬럼은 ORM 변환기를 거칩니다. 파라미터는 행마다 SQLAlchemy로 만들지 않고 컬럼마다 리스트 하나로 바로 만듭니다.
 - **빠진 값은 오류입니다.** 실행 전에 `ValueError`를 냅니다.
   - `bulk_update`: 키나 설정할 컬럼이 없는 행, 키가 같은 두 행(PostgreSQL은 그중 아무 행 하나로, executemany 는 둘 다 차례로 갱신해 결과가 달라지므로 거부). `columns`를 생략하면 첫 행의 키 외 컬럼을 설정하고 모든 행이 같은 키를 가져야 합니다. `columns`를 주면 행의 다른 키는 무시합니다. 없는 키 값은 아무 행도 바꾸지 않고, rowcount 는 맞은 행만 셉니다.
@@ -277,10 +281,19 @@ bulk_insert(orders, rows, batch_size=10_000)
   - SQLite: 3.35 부터 INSERT·UPDATE·DELETE 모두 지원합니다(Django 5.2 는 3.31 부터 받음). Django feature `can_return_columns_from_insert`가 거짓이면 셋 다 거부합니다.
   - MySQL: `RETURNING`이 없어 모두 거부합니다.
   - MariaDB(Django vendor 는 `"mysql"`): `INSERT … RETURNING`·`DELETE … RETURNING`은 실행하고 `UPDATE … RETURNING`만 거부합니다.
+  - Oracle: 모두 거부합니다. Oracle 은 `RETURNING … INTO :출력변수`로 행을 출력 바인드에 넣는데 Django 커서로는 그 값을 받을 수 없습니다. 거부하지 않으면 에러 없이 행 대신 rowcount 가 돌아옵니다(2026-10-26, Oracle 23ai Free 에서 확인). Django 는 Oracle 에서 `can_return_columns_from_insert`를 참으로 알리지만 브리지는 vendor 로 거부합니다.
   - `sa.text("... RETURNING ...")`는 안을 볼 수 없어 검사하지 않고 DB 가 판단합니다.
 - **SQLAlchemy Python 측 컬럼 `default`/`onupdate`는 적용할 수 없어 실행 전에 막습니다.** 직접 만든 `sa.Table`의 `Column(default=..., onupdate=...)`에 준 Python 값·callable 은 SQLAlchemy 실행 컨텍스트(`Engine`·`Connection`)가 채우는데 브리지는 Django 커서로 실행합니다. 컴파일러는 그 컬럼을 SQL 에 넣어 두므로(`INSERT ... (name, ...) VALUES (%s, ...)`, `UPDATE ... SET name=%s, ...`) 그대로 두면 `NULL`이 바인딩되어, nullable 컬럼에는 조용히 `NULL`이 저장되고 `onupdate` 컬럼은 UPDATE 마다 기존 값이 `NULL`로 덮입니다(SQLite·PostgreSQL 에서 확인). 그래서 그런 컬럼을 비워 둔 INSERT·UPDATE 는 `execute`·`execute_result`·`stream`·executemany 모두 **실행 전에** `ValueError`(`... Python-side default or onupdate of 테이블.컬럼 cannot be applied ...`)를 냅니다. 그 컬럼 값을 `.values()`나 params 로 직접 주면 그대로 실행합니다. `default=sa.func.now()`처럼 SQL 식인 default/onupdate 는 SQL 에 들어가므로 막지 않고 DB 가 계산합니다. DB 쪽 `server_default`·Django `db_default`도 DB 가 채우므로 영향이 없습니다. `table_for()` 테이블에는 이런 default 가 없고(Django 필드 `default`·`auto_now`도 채우지 않습니다), `bulk_*`는 `table_for()` 테이블만 받습니다.
 - **PostgreSQL `standard_conforming_strings=off` 서버는 지원하지 않습니다.** 브리지는 연결하지 않고 컴파일하므로 리터럴 백슬래시를 "on"(PostgreSQL 기본값, Django 가 지원하는 모든 버전의 기본)으로 렌더합니다. "off" 서버에서는 컴파일러가 직접 쓴 리터럴(`sa.literal(..., literal_execute=True)` 등)의 백슬래시가 이스케이프로 읽혀 `'a\tb'`가 탭 문자가 됩니다(세션에서 "off"로 바꿔 PostgreSQL 18 에서 확인). 바인딩 값에는 영향이 없습니다.
 - **MySQL 의 리터럴 백슬래시는 연결의 `sql_mode`를 따릅니다.** 컴파일러가 직접 쓴 리터럴(`sa.literal(..., literal_execute=True)` 등)의 백슬래시를 기본 `sql_mode`에서는 두 번 쓰고, `NO_BACKSLASH_ESCAPES`면 한 번 씁니다. Django 가 연결마다 한 번 읽는 `connection.sql_mode`를 보므로, 연결을 연 뒤 세션에서 `SET sql_mode`로 바꾸면 따라가지 않습니다.
+- **Oracle 의 식별자는 Django 식으로 씁니다.** Django 의 Oracle `quote_name()`은 모든 이름을 대문자로 바꾸고 30자를 넘으면 해시로 줄입니다(`a_column_name_longer_than_thirty_characters` → `A_COLUMN_NAME_LONGER_THAN_9E63`). SQLAlchemy 의 Oracle dialect 는 소문자 이름을 따옴표 없이 쓰지만(Oracle 이 대문자로 읽어 같음) 대소문자가 섞인 이름(`db_column="MixedCase"`)·긴 이름·예약어(`uid`, `level`)는 그대로 따옴표로 감싸 Django 가 만든 적 없는 컬럼을 가리킵니다(`ORA-00904`). 그래서 브리지의 Oracle dialect 는 테이블·컬럼·별칭을 모두 Django 처럼 대문자로 줄여 따옴표로 씁니다. `sa.sql.quoted_name("Legacy", quote=True)`처럼 대소문자를 지키라고 한 이름도 대문자로 씁니다. Django 의 `quote_name()`이 따옴표로 감싼 이름까지 대문자로 바꾸므로 Django 가 관리하는 스키마에는 대소문자를 구분하는 이름이 없고, 브리지는 Django 와 같은 이름을 쓰는 쪽을 택했습니다. Django 밖에서 대소문자를 구분해 만든 테이블은 `sa.text()`로 쓰세요.
+- **Oracle 의 그 밖의 차이.** 브리지는 SQL 의미를 그대로 쓰므로 ORM 이 Oracle 에서 바꿔 주는 것을 바꾸지 않습니다.
+  - 빈 문자열은 `NULL`입니다. `col == ""`은 아무 행에도 맞지 않습니다(ORM 은 `filter(col="")`을 `IS NULL`로 바꿈). `col.is_(None)`을 쓰세요. 읽을 때는 ORM 과 브리지 모두 `""`를 줍니다.
+  - `TextField`는 `NCLOB`이라 `==`로 비교하면 `ORA-22848`입니다(ORM 은 `DBMS_LOB.SUBSTR()`로 감쌈).
+  - 다중 행 `VALUES`(`insert(t).values([{...}, {...}])`)는 SQLAlchemy 가 연결하지 않은 Oracle dialect 에서 컴파일하지 않아 실행 전 `CompileError`입니다. params 리스트(executemany)나 `bulk_insert`를 쓰세요.
+  - 컬럼이 없는 식이나 `sa.text()`로 고른 `NCLOB`·`BLOB` 값은 oracledb 의 LOB 객체로 옵니다(`.read()`). 컬럼을 고르면 ORM 변환기가 `str`·`bytes`로 바꿉니다.
+  - `sum()`·`avg()`처럼 정밀도가 없는 숫자를 Django 의 Oracle 커서는 텍스트에 소수점이 있는지로 `int`나 `Decimal`로 줍니다. 브리지는 ORM 처럼(`BaseExpression.convert_value`) 컬럼 필드의 타입으로 맞춥니다(`DecimalField`의 합은 `Decimal`).
+  - `SELECT` 목록의 불리언 식(`(price > 2).label("gt")`, `sa.exists()`)은 Oracle 23ai 부터 됩니다. 19c 는 확인하지 않았습니다(아래 "지원 대상").
 - **`bulk_insert(returning=...)`의 행 순서는 DB 가 문서로 보장하지 않습니다.** PostgreSQL·SQLite 모두 지금은 입력 순서로 돌려주고 Django `bulk_create`도 같은 가정에 기대지만, 순서가 중요하면 행을 식별할 키(자연 키, `uid` 등)를 함께 `RETURNING`해서 그 값으로 짝지으세요. 예: `bulk_insert(books, rows, returning=["uid", "id"])`.
 
 ## 비동기
@@ -622,7 +635,9 @@ SQLite 에서는 차이가 작습니다. 시간은 3% 안, tracemalloc 피크는
 
 ## 지원 대상
 
-SQLite, PostgreSQL(psycopg 3), MySQL 8.4 LTS(mysqlclient; Django 5.2·6.1 모두 지원하는 버전) · Django 5.2 이상 · SQLAlchemy 2.0 이상 2.2 미만 · Python 3.12 이상
+SQLite, PostgreSQL(psycopg 3), MySQL 8.4 LTS(mysqlclient; Django 5.2·6.1 모두 지원하는 버전), Oracle(oracledb thin 모드) · Django 5.2 이상 · SQLAlchemy 2.0 이상 2.2 미만(Oracle 의 JSON 키·경로는 2.1 이상) · Python 3.12 이상
+
+Oracle 은 Django 5.2·6.1 이 19c 이상을 받지만, 검증한 버전은 CI 의 Oracle 23ai Free(`gvenzl/oracle-free:23-slim-faststart`)뿐입니다. 무료 19c 이미지가 없어 19c 에서는 돌려 보지 않았고, `SELECT` 목록의 불리언 식은 19c 에 없습니다.
 
 MariaDB 는 컴파일과 `RETURNING` 판정(INSERT·DELETE 는 되고 UPDATE 는 안 됨)만 맞춰 두었고 CI 에서 돌리지 않습니다. 로컬에서 MariaDB 11.4 로 테스트를 한 번 돌렸을 때 JSON 키·문서 비교가 ORM 과 다르게 나오고(MariaDB 의 JSON 은 텍스트이고 ORM 은 양쪽에 `JSON_UNQUOTE`를 씌움) `LATERAL`이 없었습니다. JSON 컬럼을 비교하는 쿼리는 MariaDB 에서 ORM 결과와 대조해 쓰세요.
 
