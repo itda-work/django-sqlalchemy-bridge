@@ -2,8 +2,8 @@
 
     uv run --group bench python -m bench [scenario ...] [--db sqlite|postgres] [--out DIR] [--quick]
 
-Scenarios: update, insert, read, lookup, async, report, batch, pipeline, compare (all by default;
-pipeline measures PostgreSQL only).
+Scenarios: update, insert, read, lookup, async, report, batch, pipeline, compare, export (all by
+default; pipeline and export measure PostgreSQL only).
 PostgreSQL is reached through DSB_PG_HOST/PORT/USER/PASSWORD/NAME; the run
 creates and drops its own database (``dsb_bench``) there. ``--quick`` runs the
 smallest size only, once, for trying the scripts out; its files are marked so.
@@ -33,6 +33,7 @@ SCENARIOS = {
     "batch": "bench.scenarios.batch",
     "pipeline": "bench.scenarios.pipeline",
     "compare": "bench.scenarios.compare",
+    "export": "bench.scenarios.export",
 }
 
 
