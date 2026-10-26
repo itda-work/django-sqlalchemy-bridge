@@ -243,7 +243,8 @@ def test_orm_write_and_bridge_read_share_the_request_transaction(shop):
     # the savepoint atomic() opened, the ORM INSERT, the bridge SELECT, the savepoint release.
     sql = [q["sql"].upper() for q in queries]
     assert sql[0].startswith("SAVEPOINT")
-    assert sql[-1].startswith("RELEASE SAVEPOINT")
+    # Oracle has no RELEASE SAVEPOINT; Django logs it there as "-- RELEASE SAVEPOINT ... (FAKED)".
+    assert sql[-1].removeprefix("-- ").startswith("RELEASE SAVEPOINT")
     insert = next(i for i, s in enumerate(sql) if s.startswith("INSERT INTO") and "TESTAPP_SALE" in s)
     select = next(i for i, s in enumerate(sql) if s.startswith("SELECT SUM("))
     assert insert < select
