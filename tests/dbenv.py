@@ -4,6 +4,9 @@ DSB_DB=sqlite|postgres picks the backend. Left unset it is sqlite, unless
 REQUIRE_PG=1 asks for PostgreSQL. PostgreSQL is reached through
 DSB_PG_HOST/PORT/USER/PASSWORD/NAME; without DSB_PG_HOST the database tests are
 skipped, and REQUIRE_PG=1 turns that skip into a failure.
+
+A second alias, "other", is always an in-memory SQLite database with its own
+TIME_ZONE, for tests that run one statement on two connections.
 """
 
 from __future__ import annotations
@@ -31,3 +34,8 @@ def database() -> dict:
         "PASSWORD": os.environ.get("DSB_PG_PASSWORD", ""),
         "NAME": os.environ.get("DSB_PG_NAME", "postgres"),
     }
+
+
+def other_database() -> dict:
+    # Naive datetimes stored in New York time, unlike "default" (UTC on SQLite).
+    return {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:", "TIME_ZONE": "America/New_York"}

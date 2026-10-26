@@ -12,4 +12,4 @@ INSTALLED_APPS = [
     "tests.testapp",
 ]
 
-DATABASES = {"default": dbenv.database()}
+DATABASES = {"default": dbenv.database(), "other": dbenv.other_database()}

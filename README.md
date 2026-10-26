@@ -105,6 +105,7 @@ for row in result.mappings():
   | `meta["k"].astext == "1"` (`->>`) | `annotate(v=KT("meta__k")).filter(v="1")` |
 
   `contains`·`contained_by`의 우변은 컬럼 값과 같게 `JSONField.get_db_prep_value()`로 jsonb 바인딩합니다. SQLite에는 이 연산자들이 없습니다. `contains`·`has_key`는 실행 시 `OperationalError`, `astext`(`->>`)는 SQLite 3.38+의 `->>`로 실행되지만 텍스트가 아니라 SQL 값을 돌려줘 `{"k": 1}`이 `'1'`과 같지 않습니다. SQLite에서 `meta["k"] == [1, 2]`처럼 구조 값과 비교하면 JSON 텍스트끼리 비교라 공백이 다르면 맞지 않습니다(ORM 은 `JSON()`으로 정규화). 스칼라 비교는 ORM 과 같습니다.
+- **컴파일 캐시: `bindparam()`으로 만든 문장을 재사용하면 컴파일을 건너뜁니다.** 브리지는 넘겨받은 문장 객체마다 컴파일 결과를 기억해, 같은 객체를 같은 DB 종류(vendor)에서 같은 이름의 `params`로 다시 실행하면 컴파일 없이 값 변환과 실행만 합니다(`execute`·`execute_result`·`stream` 공통). 그러니 값은 `sa.bindparam("pk")`로 비워 둔 문장을 한 번 만들어 두고(모듈 수준 등) 돌려 쓰세요. `where(orders.c.id == pk)`처럼 값을 넣어 매번 새로 만든 문장은 매번 컴파일합니다(아래 "성능과 메모리" 4번). `params` 이름이 달라지면(예: UPDATE 의 `SET` 컬럼) SQL 이 달라지므로 따로 컴파일합니다. 결과 변환기와 `RETURNING` 지원 검사는 연결(alias)마다 다를 수 있어 매 호출 그 연결로 다시 정합니다. 기억한 결과는 문장 객체가 사라지면 함께 사라지고, 여러 스레드가 같은 문장을 써도 됩니다. 끄는 스위치는 없습니다(결과가 캐시 여부와 무관하므로).
 - 리터럴 `%`는 그대로 써도 됩니다(`LIKE 'a%'`, `text("SELECT '100%'")`). 브리지가 `%s` 자리표시로 컴파일하고 `%`를 `%%`로 바꾼 뒤, 파라미터가 없어도 빈 튜플을 넘겨 백엔드가 되돌리게 합니다.
 - async 코드에서 직접 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. 작업 단위를 동기 함수로 묶어 `arun`으로 부르세요(아래 "비동기").
 
