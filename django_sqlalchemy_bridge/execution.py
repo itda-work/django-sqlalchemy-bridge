@@ -7,8 +7,10 @@ savepoints, ``on_commit``) and shows up in ``execute_wrapper``,
 ``Connection`` or ``Session`` is involved.
 
 Values convert the way the Django ORM converts them, never through SQLAlchemy's
-type processing: a value bound to a column of a :func:`table_for` table goes
-through ``field.get_db_prep_value()``, and a selected column of such a table goes
+type processing: a value compared with a column of a :func:`table_for` table
+converts as the right-hand side of an ORM lookup (``filter(field=value)``), any
+other value bound to such a column as the ORM writes it
+(``field.get_db_prep_save()``), and a selected column of such a table goes
 through the same converters the ORM applies when reading it. Values with no
 column behind them (expressions, literals, ``text()``) pass through raw.
 
@@ -33,6 +35,7 @@ from sqlalchemy.engine import BindTyping, Dialect
 from sqlalchemy.engine.interfaces import Compiled
 from sqlalchemy.sql import operators
 from sqlalchemy.sql.compiler import SQLCompiler
+from sqlalchemy.sql.elements import ClauseList, ExpressionClauseList, Grouping
 
 from django_sqlalchemy_bridge import _sa_result
 from django_sqlalchemy_bridge.tables import FieldType, _generic_type, _oracle_name
@@ -61,12 +64,40 @@ class _ReturningCompiler(SQLCompiler):
         return super().returning_clause(stmt, returning_cols, populate_result_map=populate_result_map, **kw)
 
 
+class _LookupCompiler(SQLCompiler):
+    """Note the bound parameters a comparison takes as its operands: the ORM's lookup values.
+
+    The ORM prepares the value of ``filter(field=value)`` (and ``__lt``,
+    ``__in``, ...) otherwise than a value it writes, and a backend may refuse a
+    value it would only compare (Django 5.2 on MySQL refuses to write 0 to an
+    ``AutoField``). A bind is a lookup value when it is an operand of a
+    comparison, or an item of one (a ``BETWEEN`` bound, a tuple's member).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.lookup_binds: list[sa.BindParameter[Any]] = []  # the compiler compiles in __init__
+        super().__init__(*args, **kwargs)
+
+    def visit_binary(self, binary: Any, override_operator: Any = None, **kw: Any) -> str:
+        self.note_lookup_binds(binary)
+        return super().visit_binary(binary, override_operator=override_operator, **kw)
+
+    def note_lookup_binds(self, binary: Any) -> None:
+        if not operators.is_comparison(binary.operator):
+            return
+        for operand in (binary.left, binary.right):
+            while isinstance(operand, Grouping):
+                operand = operand.element
+            items = operand.clauses if isinstance(operand, (ClauseList, ExpressionClauseList)) else [operand]
+            self.lookup_binds += [item for item in items if isinstance(item, sa.BindParameter)]
+
+
 def _sqlite_dialect() -> Dialect:
     from sqlalchemy.dialects import sqlite
 
     dialect = sqlite.dialect(paramstyle="format")
 
-    class Compiler(_ReturningCompiler, dialect.statement_compiler):
+    class Compiler(_LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
         pass
 
     dialect.statement_compiler = Compiler
@@ -82,7 +113,7 @@ def _postgresql_dialect() -> Dialect:
     # jsonb, so the casts would be wrong. Compile plain placeholders, as the ORM does.
     dialect.bind_typing = BindTyping.NONE
 
-    class Compiler(_ReturningCompiler, dialect.statement_compiler):
+    class Compiler(_LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
         def render_literal_value(self, value: Any, type_: sa.types.TypeEngine) -> str:
             # The PostgreSQL compiler doubles backslashes in literals until it has
             # connected and read standard_conforming_strings (SQLAlchemy 2.0 assumes
@@ -105,7 +136,7 @@ def _mysql_dialect(*, mariadb: bool, backslash_escapes: bool) -> Dialect:
     # Every MySQL Django supports (8.0.11+) has FOR UPDATE OF and FOR SHARE.
     dialect.supports_for_update_of = dialect.use_mysql_for_share = not mariadb
 
-    class Compiler(_ReturningCompiler, dialect.statement_compiler):
+    class Compiler(_LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
         if not backslash_escapes:
 
             def render_literal_value(self, value: Any, type_: sa.types.TypeEngine) -> str:
@@ -135,7 +166,7 @@ def _oracle_dialect() -> Dialect:
     # Django's Oracle cursor takes "%s" and rewrites it to ":arg0", ":arg1", ...
     dialect = oracledb.dialect(paramstyle="format")
 
-    class Compiler(_ReturningCompiler, dialect.statement_compiler):
+    class Compiler(_LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
         def visit_binary(self, binary: Any, override_operator: Any = None, **kw: Any) -> str:
             # Django stores JSONField as text (NCLOB IS JSON), which Oracle cannot
             # compare with "=" (ORA-22848), and a key compiles to JSON_QUERY(),
@@ -146,6 +177,7 @@ def _oracle_dialect() -> Dialect:
                 and binary.operator in (operators.eq, operators.ne)
                 and (_is_json(binary.left.type) or _is_json(binary.right.type))
             ):
+                self.note_lookup_binds(binary)
                 sql = f"JSON_EQUAL({self.process(binary.left, **kw)}, {self.process(binary.right, **kw)})"
                 return sql if binary.operator is operators.eq else f"NOT {sql}"
             return super().visit_binary(binary, override_operator=override_operator, **kw)
@@ -245,7 +277,8 @@ class _Compiled:
 
     ``types`` and ``names`` are the result columns' types and names (empty when
     the statement's columns are unknown); ``defaults_error`` is why the
-    statement is refused, if it is.
+    statement is refused, if it is. ``lookups`` names the binds whose values are
+    compared with a column (see :class:`_LookupCompiler`).
     """
 
     compiled: Compiled
@@ -253,6 +286,7 @@ class _Compiled:
     types: tuple[sa.types.TypeEngine, ...]
     names: tuple[str, ...]
     defaults_error: str | None
+    lookups: frozenset[str]
 
 
 # Statement -> {(dialect key, params' names): _Compiled}. The entry goes when the
@@ -291,7 +325,11 @@ def _compile(
     columns = compiled.returned_columns if dml else getattr(target, "exported_columns", None)
     columns = list(columns or ())
     names = tuple(name for column in columns if isinstance(name := getattr(column, "name", None), str))
-    entry = _Compiled(compiled, dml, tuple(column.type for column in columns), names, _python_defaults_error(compiled))
+    compared = {id(bind) for bind in compiled.lookup_binds}
+    lookups = frozenset(name for name, bind in compiled.binds.items() if id(bind) in compared)
+    entry = _Compiled(
+        compiled, dml, tuple(column.type for column in columns), names, _python_defaults_error(compiled), lookups
+    )
     if target is not stmt:
         try:
             _cache.setdefault(stmt, {})[key] = entry
@@ -333,7 +371,7 @@ def prepare(
             sql = state.statement
         elif state.statement != sql:
             raise ValueError("every executemany row must compile to the same SQL (check expanding IN lists)")
-        param_rows.append(_positional(compiled, state, connection))
+        param_rows.append(_positional(compiled, state, entry.lookups, connection))
     converters = [_field_converters(type_, connection) for type_ in entry.types]
     return Prepared(
         sql or compiled.string,
@@ -389,20 +427,28 @@ def _python_defaults_error(compiled: Compiled) -> str | None:
     )
 
 
-def _positional(compiled: Compiled, state: Any, connection: BaseDatabaseWrapper) -> tuple[Any, ...]:
+def _positional(
+    compiled: Compiled, state: Any, lookups: frozenset[str], connection: BaseDatabaseWrapper
+) -> tuple[Any, ...]:
     # Expanded IN parameters ("ids_1", "ids_2") take the type of the one they came from ("ids").
     origin = {name: original for original, names in state.parameter_expansion.items() for name in names}
     values = []
     for name in state.positiontup or ():
-        bind = compiled.binds.get(origin.get(name, name))
-        values.append(to_db(state.parameters[name], bind.type if bind is not None else None, connection))
+        key = origin.get(name, name)
+        bind = compiled.binds.get(key)
+        type_ = bind.type if bind is not None else None
+        values.append(to_db(state.parameters[name], type_, connection, lookup=key in lookups))
     return tuple(values)
 
 
-def to_db(value: Any, type_: sa.types.TypeEngine | None, connection: BaseDatabaseWrapper) -> Any:
-    """Convert a value bound against ``type_`` the way Django writes its field.
+def to_db(
+    value: Any, type_: sa.types.TypeEngine | None, connection: BaseDatabaseWrapper, *, lookup: bool = False
+) -> Any:
+    """Convert a value bound against ``type_`` the way the ORM converts it for its field.
 
-    ``None`` stays SQL ``NULL`` (as ``Model.save()`` stores it, also for
+    A ``lookup`` value (one compared with a column) converts as the ORM's
+    ``filter(field=value)`` does, any other as the ORM writes it. ``None``
+    stays SQL ``NULL`` (as ``Model.save()`` stores it, also for
     ``JSONField``); values with no Django field behind them pass through,
     except JSON keys and paths (``column["k"]``), which the dialect spells.
     """
@@ -413,7 +459,21 @@ def to_db(value: Any, type_: sa.types.TypeEngine | None, connection: BaseDatabas
         return process(value) if process is not None else value
     if value is None or not isinstance(type_, FieldType):
         return value
-    return type_.field.get_db_prep_value(value, connection, prepared=False)
+    if lookup:
+        return lookup_value(type_.field, value, connection)
+    return type_.field.get_db_prep_save(value, connection)
+
+
+def lookup_value(field: Any, value: Any, connection: BaseDatabaseWrapper) -> Any:
+    """``value`` as an ORM lookup compares ``field`` with it.
+
+    ``Lookup.get_prep_lookup()`` runs ``get_prep_value()``, then
+    ``FieldGetDbPrepValueMixin`` runs ``get_db_prep_value(prepared=True)``, of
+    the target field for a relation. Unlike ``get_db_prep_save()`` this checks
+    nothing a backend checks only of written values.
+    """
+    target = getattr(field, "target_field", None) or field
+    return target.get_db_prep_value(field.get_prep_value(value), connection, prepared=True)
 
 
 def _field_converters(type_: sa.types.TypeEngine, connection: BaseDatabaseWrapper) -> tuple[list[Any], Any] | None:
