@@ -10,7 +10,7 @@ Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식
 
 **표현력 때문입니다.** Django ORM 으로 쓰기 어려운 SQL(재귀 CTE, 여러 CTE, `INSERT … ON CONFLICT … RETURNING`, `UPDATE … FROM`, `INSERT … SELECT`, PostgreSQL 의 `LATERAL`·`DISTINCT ON`·데이터를 바꾸는 CTE)을 raw SQL 문자열 대신 SQLAlchemy 식으로 씁니다. 그러면서도 연결·트랜잭션·값 변환은 Django 의 것을 그대로 씁니다. `atomic()` 안에서 ORM 쿼리와 섞여 돌고, 결과의 datetime·Decimal·JSON 은 ORM 이 읽은 값과 같습니다. raw SQL 과 달리 테이블·컬럼 이름이 모델에서 나오므로 오타가 실행 전에 드러나고, 백엔드마다 SQL 을 따로 쓰지 않아도 되는 경우가 많습니다.
 
-성능은 목적이 아닙니다. 대량 쓰기에서는 따라옵니다. `bulk_update`는 Django `bulk_update`보다 한 자릿수 이상, `bulk_insert`는 Django `bulk_create`보다 같거나 조금 빠릅니다. 그 밖의 쿼리는 실행 시간이 DB 에서 정해져 ORM 과 거의 같습니다(아래 "성능과 메모리").
+성능은 목적이 아닙니다. 대량 쓰기에서는 따라옵니다. `bulk_update`는 Django `bulk_update`보다 한 자릿수 이상, `bulk_insert`는 Django `bulk_create`보다 같거나 조금 빠릅니다. 같은 SQL 이면 실행 시간이 DB 에서 정해져 ORM 과 거의 같고(아래 "성능과 메모리"), ORM 으로는 쿼리를 더 보내거나 행을 파이썬으로 옮겨야 하는 요청에서 빨라집니다. 반대로 ORM 이 더 빠른 요청도 있습니다(아래 "[같은 요청, 두 구현](#같은-요청-두-구현)").
 
 **언제 ORM 을 쓰나.** ORM 으로 자연스럽게 써지는 쿼리, 한 행씩 읽고 쓰는 CRUD, signal·`save()`·필드 `default`·검증이 따라와야 하는 쓰기는 ORM 을 쓰세요. 브리지의 쓰기는 모델 계층을 거치지 않습니다(아래 "대량 쓰기"의 경고). 자세한 경우는 "[브리지가 도움이 안 되는 경우](#브리지가-도움이-안-되는-경우)"에 있습니다.
 
@@ -96,6 +96,204 @@ changed = execute(stmt)  # [("SHIRT", Decimal("27.50"))]
 <!-- /example:update-from -->
 
 **aldjemy 와의 관계.** [aldjemy](https://github.com/aldjemy/aldjemy)가 같은 문제를 먼저 풀었지만, SQLAlchemy 내부 비공개 풀 구조에 기대 Django 연결을 공유하는 탓에 SQLAlchemy 2 미만에 묶여 있고, Django 6.0부터는 모델 변환 단계에서도 깨집니다. 이 프로젝트는 SQLAlchemy 에 연결을 넘기지 않고 Django 커서로 실행합니다(아래 "설계 원칙").
+
+## 같은 요청, 두 구현
+
+실제로 나올 법한 요청 하나를 Django ORM 만으로 푼 코드와 브리지로 푼 코드를 나란히 놓고 쿼리 수와 시간을 쟀습니다. ORM 쪽은 Django 5.2·6.1 에서 되는 가장 나은 방법으로 썼습니다. 여섯 요청 가운데 넷을 싣고, 여섯 개 전부와 ORM 의 다른 구현, SQLite 수치, 메모리는 [`docs/comparisons.md`](docs/comparisons.md)에 있습니다. 코드는 [`tests/comparisons.py`](tests/comparisons.py)에서 그대로 옮겼고(두 구현의 결과·남긴 행·쿼리 수를 `tests/test_comparisons.py`가 SQLite·PostgreSQL·MySQL·Oracle 에서 확인), 표는 아래 환경의 GitHub Actions 러너에서 잰 결과 파일로 만듭니다(측정 방법은 "[성능과 메모리](#성능과-메모리)"와 같고, 쿼리 수는 SAVEPOINT 를 뺀 값). 브리지 코드의 `categories`·`products`·`sales`·`daily_stock`·`price_changes`·`archive`는 모델마다 `table_for(Model)`입니다.
+
+<!-- bench:env-postgres-compare -->
+PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQLAlchemy 2.1.6 · psycopg 3.3.6 · django-pgbulk 3.3.0 · django-cte 4.0.0 · Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (4코어, 메모리 16 GiB) · Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 · 반복 5회(+예열 1회) 중 최솟값
+<!-- /bench:env-postgres-compare -->
+
+### 카테고리 하위 트리의 매출 합계
+
+카테고리 하나 아래 모든 카테고리의 판매 합계. ORM 은 트리를 걸을 재귀 쿼리가 없어 카테고리를 한 단계씩 내려가거나(깊이만큼 쿼리), 아래처럼 카테고리 전체를 읽어 파이썬에서 걷습니다. 브리지는 재귀 CTE 쿼리 하나입니다.
+
+<!-- example:cmp-tree-orm-python -->
+```python
+def subtree_revenue_orm_python(root_id):
+    # 카테고리 전체의 (id, parent_id) 를 한 번에 읽어 파이썬에서 트리를 걷는다
+    children = defaultdict(list)
+    for category_id, parent_id in Category.objects.values_list("id", "parent_id"):
+        children[parent_id].append(category_id)
+    ids, stack = [], [root_id]
+    while stack:
+        ids.append(stack.pop())
+        stack += children[ids[-1]]
+    total = Sale.objects.filter(product__category_id__in=ids).aggregate(total=Sum("amount"))["total"]
+    return total or Decimal("0")
+```
+<!-- /example:cmp-tree-orm-python -->
+
+<!-- example:cmp-tree-bridge -->
+```python
+tree = sa.select(categories.c.id).where(categories.c.id == sa.bindparam("root")).cte("tree", recursive=True)
+tree = tree.union_all(sa.select(categories.c.id).join(tree, categories.c.parent_id == tree.c.id))
+subtree_revenue = (
+    sa.select(sa.func.coalesce(sa.func.sum(sales.c.amount), 0))
+    .join(products, products.c.id == sales.c.product_id)
+    .where(products.c.category_id.in_(sa.select(tree.c.id)))
+)
+
+
+def subtree_revenue_bridge(root_id):
+    [(total,)] = execute(subtree_revenue, {"root": root_id})
+    return total
+```
+<!-- /example:cmp-tree-bridge -->
+
+<!-- bench:pg-compare-tree -->
+| | 깊이 3 쿼리 | 깊이 3 시간 (ms) | 깊이 5 쿼리 | 깊이 5 시간 (ms) | 깊이 7 쿼리 | 깊이 7 시간 (ms) | 깊이 7 tracemalloc 피크 (MiB) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ORM: 한 단계에 쿼리 하나씩 | 4 | 3.24 | 6 | 9.56 | 8 | 90.1 | 2.3 |
+| ORM: 카테고리 전체를 읽어 파이썬에서 | 2 | 1.87 | 2 | 5.58 | 2 | 62.1 | 3.7 |
+| 브리지: 재귀 CTE | 1 | 0.98 | 1 | 2.36 | 1 | 25.6 | 0.0 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-compare.json`](bench/results/2026-10-26-postgres-compare.json)</sub>
+<!-- /bench:pg-compare-tree -->
+
+브리지가 깊이 5·7 에서 파이썬으로 걷는 ORM 보다 2.4배 빠르고(5.58→2.36 ms, 62.1→25.6 ms), 한 단계씩 내려가는 ORM 보다 3.5배 이상 빠릅니다.
+
+### 가격표로 바뀐 상품만 갱신하고 바뀐 행 반환
+
+ORM 의 `update()`는 행을 돌려주지 않아 바뀔 행을 먼저 잠가 읽고 상관 서브쿼리로 UPDATE 합니다. 브리지는 `UPDATE … FROM … RETURNING` 한 문장입니다(PostgreSQL·SQLite).
+
+<!-- example:cmp-prices-orm-subquery -->
+```python
+def apply_prices_orm_subquery():
+    # 바뀔 행을 먼저 읽고(UPDATE 는 행을 돌려주지 않는다) 상관 서브쿼리 UPDATE 한 번
+    new_price = PriceChange.objects.filter(sku=OuterRef("sku")).values("price")
+    differs = PriceChange.objects.filter(sku=OuterRef("sku")).exclude(price=OuterRef("price"))
+    with transaction.atomic():
+        targets = Product.objects.filter(Exists(differs))
+        changed = list(targets.select_for_update().annotate(new=Subquery(new_price)).values_list("sku", "new"))
+        targets.update(price=Subquery(new_price))
+    return sorted(changed)
+```
+<!-- /example:cmp-prices-orm-subquery -->
+
+<!-- example:cmp-prices-bridge -->
+```python
+apply_prices = (
+    sa.update(products)
+    .where(products.c.sku == price_changes.c.sku, products.c.price != price_changes.c.price)
+    .values(price=price_changes.c.price)
+    .returning(products.c.sku, products.c.price)
+)
+
+
+def apply_prices_bridge():  # UPDATE ... FROM ... RETURNING: PostgreSQL, SQLite
+    return sorted(execute(apply_prices))
+```
+<!-- /example:cmp-prices-bridge -->
+
+<!-- bench:pg-compare-prices -->
+| | 상품 1,000 쿼리 | 상품 1,000 시간 (ms) | 상품 10,000 쿼리 | 상품 10,000 시간 (ms) | 상품 10,000 tracemalloc 피크 (MiB) |
+|---|---:|---:|---:|---:|---:|
+| ORM: 읽기 + `Subquery` UPDATE | 2 | 10.5 | 2 | 82.5 | 1.4 |
+| ORM: 읽기 + `bulk_update(batch_size=1000)` | 2 | 66.9 | 6 | 765 | 11.0 |
+| 브리지: `UPDATE … FROM … RETURNING` | 1 | 5.82 | 1 | 54.5 | 1.1 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-compare.json`](bench/results/2026-10-26-postgres-compare.json)</sub>
+<!-- /bench:pg-compare-prices -->
+
+브리지가 서브쿼리 ORM 보다 1.5~1.8배 빠릅니다(상품 10,000개 중 5,000개 변경에서 82.5→54.5 ms). 모델로 읽어 `bulk_update()`하는 흔한 방법보다는 14배 빠릅니다(765 ms).
+
+### 오래된 판매를 보관 테이블로 옮기기
+
+ORM 에는 `INSERT … SELECT`가 없어 행을 파이썬으로 읽어 모델을 만들고 `bulk_create()`한 뒤 지웁니다. 브리지는 `INSERT … SELECT`와 `DELETE` 두 문장이라 행이 파이썬을 거치지 않습니다(PostgreSQL 에서는 데이터를 바꾸는 CTE 한 문장도 됩니다).
+
+<!-- example:cmp-archive-orm -->
+```python
+def archive_sales_orm(cutoff):
+    # 읽어서 모델로 만들고 bulk_create, 그리고 DELETE
+    with transaction.atomic():
+        old = list(Sale.objects.select_for_update().filter(sold_at__lt=cutoff))
+        SaleArchive.objects.bulk_create(
+            SaleArchive(id=s.id, product_id=s.product_id, sold_at=s.sold_at, quantity=s.quantity, amount=s.amount)
+            for s in old
+        )
+        Sale.objects.filter(sold_at__lt=cutoff).delete()
+    return len(old)
+```
+<!-- /example:cmp-archive-orm -->
+
+<!-- example:cmp-archive-bridge -->
+```python
+columns = ["id", "product_id", "sold_at", "quantity", "amount"]
+is_old = sales.c.sold_at < sa.bindparam("cutoff")
+copy_old = sa.insert(archive).from_select(columns, sa.select(*[sales.c[name] for name in columns]).where(is_old))
+delete_old = sa.delete(sales).where(is_old)
+
+
+def archive_sales_bridge(cutoff):  # INSERT ... SELECT 와 DELETE: 모든 백엔드
+    with transaction.atomic():
+        moved = execute(copy_old, {"cutoff": cutoff})
+        execute(delete_old, {"cutoff": cutoff})
+    return moved
+```
+<!-- /example:cmp-archive-bridge -->
+
+<!-- bench:pg-compare-archive -->
+| | 판매 10,000 쿼리 | 판매 10,000 시간 (ms) | 판매 100,000 쿼리 | 판매 100,000 시간 (ms) | 판매 100,000 tracemalloc 피크 (MiB) |
+|---|---:|---:|---:|---:|---:|
+| ORM: 읽기 + `bulk_create()` + `delete()` | 3 | 153 | 3 | 1,799 | 79.1 |
+| 브리지: `INSERT … SELECT` + `DELETE` | 2 | 15.7 | 2 | 157 | 0.0 |
+| 브리지: 데이터를 바꾸는 CTE | 1 | 17.1 | 1 | 173 | 0.0 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-compare.json`](bench/results/2026-10-26-postgres-compare.json)</sub>
+<!-- /bench:pg-compare-archive -->
+
+브리지가 10~11배 빠르고(판매 100,000건 중 약 절반을 옮기는 데 1,799→157 ms), 클라이언트 메모리를 거의 쓰지 않습니다(tracemalloc 피크 79.1 MiB 대 0.0 MiB).
+
+### 일별 재고 업서트 후 결과 반환: ORM 이 나은 경우
+
+(상품, 날짜)마다 센 수량을 더하고 없으면 넣은 뒤 결과 행을 돌려받습니다. ORM `bulk_create(update_conflicts=True)`는 기존 값에 더하지 못해 있는 행을 잠가 읽고 파이썬에서 더한 뒤 한 번에 씁니다. 브리지는 여러 행 `VALUES`의 `INSERT … ON CONFLICT DO UPDATE … RETURNING` 한 문장입니다.
+
+<!-- example:cmp-upsert-orm-bulk -->
+```python
+def add_stock_orm_bulk(counts):
+    # 있는 행을 잠가 읽고 파이썬에서 더한 뒤 INSERT ... ON CONFLICT DO UPDATE 한 번으로 쓴다
+    with transaction.atomic():
+        have = DailyStock.objects.select_for_update().filter(
+            product_id__in={c["product_id"] for c in counts}, day__in={c["day"] for c in counts}
+        )
+        quantity = {(s.product_id, s.day): s.quantity for s in have}
+        rows = [
+            DailyStock(**{**c, "quantity": quantity.get((c["product_id"], c["day"]), 0) + c["quantity"]})
+            for c in counts
+        ]
+        DailyStock.objects.bulk_create(
+            rows, update_conflicts=True, unique_fields=["product", "day"], update_fields=["quantity", "counted_at"]
+        )
+    return sorted((r.product_id, r.day, r.quantity, r.counted_at) for r in rows)
+```
+<!-- /example:cmp-upsert-orm-bulk -->
+
+<!-- example:cmp-upsert-bridge -->
+```python
+def add_stock_bridge(counts):  # ON CONFLICT + RETURNING: PostgreSQL, SQLite
+    insert = postgresql.insert if connection.vendor == "postgresql" else sqlite.insert
+    stmt = insert(daily_stock).values(counts)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[daily_stock.c.product_id, daily_stock.c.day],
+        set_={"quantity": daily_stock.c.quantity + stmt.excluded.quantity, "counted_at": stmt.excluded.counted_at},
+    ).returning(daily_stock.c.product_id, daily_stock.c.day, daily_stock.c.quantity, daily_stock.c.counted_at)
+    return sorted(execute(stmt))
+```
+<!-- /example:cmp-upsert-bridge -->
+
+<!-- bench:pg-compare-upsert -->
+| | 100행 쿼리 | 100행 시간 (ms) | 1,000행 쿼리 | 1,000행 시간 (ms) | 5,000행 쿼리 | 5,000행 시간 (ms) | 5,000행 tracemalloc 피크 (MiB) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ORM: 행마다 `update()`, 없으면 `create()` | 151 | 81.0 | 1,501 | 801 | 7,501 | 4,241 | 3.5 |
+| ORM: 잠가 읽기 + `bulk_create(update_conflicts=True)` | 2 | 5.87 | 2 | 38.2 | 2 | 179 | 6.9 |
+| 브리지: `ON CONFLICT DO UPDATE … RETURNING` | 1 | 8.48 | 1 | 72.9 | 1 | 407 | 16.2 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-compare.json`](bench/results/2026-10-26-postgres-compare.json)</sub>
+<!-- /bench:pg-compare-upsert -->
+
+쿼리는 브리지가 하나 적지만 ORM `bulk_create()`가 1.4~2.3배 빠릅니다(5,000행에서 179 대 407 ms). 입력마다 문장이 달라 브리지는 호출마다 행 수 × 컬럼 수만큼 bind 가 있는 `VALUES` 문장을 SQLAlchemy 로 새로 컴파일하기 때문입니다(로컬 프로파일에서 가장 큰 비용이 컴파일이었습니다). 브리지의 이점은 갱신이 한 문장이라 읽기와 쓰기 사이에 잠금이 필요 없다는 것과, 행마다 `update()`·`create()`하는 흔한 방법(5,000행에 쿼리 7,501개, 4,241 ms)보다 10배 빠르다는 데 있습니다.
 
 ## AI 코딩 에이전트에게
 
@@ -690,6 +888,7 @@ SQLite 에서는 차이가 작습니다. 시간은 3% 안, tracemalloc 피크는
 - **django-pgbulk 를 이미 쓴다면.** PK 기준 대량 UPDATE 에서 브리지가 더 빠르긴 하지만 둘 다 Django `bulk_update`보다 한 자릿수 이상 빠른 같은 부류입니다(시나리오 1). 바꿀 이유는 속도보다 SQLAlchemy 식이 필요한지에 있습니다.
 - **ORM 으로 쓸 수 있는 리포트 쿼리.** CTE·윈도 함수 쿼리는 실행 시간이 DB 에서 정해져 도구 차이가 거의 없고, 이 예처럼 Django ORM(CTE 없이 `Window`로)이나 django-cte 로 표현되면 그대로 두면 됩니다(시나리오 6). 브리지는 ORM 으로 쓰기 어려운 식(여러 CTE, `LATERAL`, 복잡한 조인)에서 의미가 있습니다.
 - **SQLite 에서 Django 트랜잭션이 필요 없을 때.** SQLite 에서는 SQLAlchemy 를 단독으로(별도 엔진) 쓰는 편이 대량 INSERT·읽기에서 브리지보다 빠릅니다(시나리오 2·3). 브리지는 값을 Django 필드 변환기로 바꾸는 비용을 내는 대신 ORM 과 같은 값·같은 트랜잭션을 줍니다.
+- **여러 행 업서트를 ORM `bulk_create(update_conflicts=True)`로 쓸 수 있을 때.** 입력마다 달라지는 여러 행 `VALUES` 문장은 호출마다 컴파일되어, 있는 행을 잠가 읽고 `bulk_create(update_conflicts=True)`하는 ORM 이 1.4~2.3배 빨랐습니다(위 "같은 요청, 두 구현"). 브리지는 기존 값에 더하는 갱신을 한 문장으로 해야 할 때의 선택지입니다.
 - **SQLite executemany 형태의 `execute(stmt, [params…])`.** 행마다 SQLAlchemy 로 파라미터를 만들기 때문에 `bulk_update()`·`bulk_insert()`보다 느립니다. 대량 쓰기는 `bulk_*`를 쓰세요(시나리오 1·2).
 
 ## 지원 대상

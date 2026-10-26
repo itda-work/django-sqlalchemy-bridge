@@ -1,5 +1,7 @@
 """README.md's example code is the tested code of tests/test_examples.py (no database)."""
 
+import pytest
+
 from tests import readme_examples
 
 README = readme_examples.README.read_text(encoding="utf-8")
@@ -60,3 +62,75 @@ def test_an_edit_on_either_side_of_the_drf_doc_is_caught():
     assert readme_examples.differences(removed, doc=readme_examples.DRF_DOC) == [
         "drf-template: no <!-- example:drf-template --> block in docs/drf.md"
     ]
+
+
+COMPARISONS_DOC = readme_examples.COMPARISONS_DOC.read_text(encoding="utf-8")
+COMPARISONS = readme_examples.COMPARISONS.read_text(encoding="utf-8")
+CMP_DIFFERS = "docs/comparisons.md differs from tests/comparisons.py (run python -m tests.readme_examples --write)"
+
+
+def test_comparisons_doc_examples_match_the_tested_code():
+    assert readme_examples.differences(COMPARISONS_DOC, doc=readme_examples.COMPARISONS_DOC) == []
+
+
+def test_every_comparison_is_shown_in_the_comparisons_doc():
+    assert set(readme_examples.snippets(tested=readme_examples.COMPARISONS)) == {
+        "cmp-tables",
+        "cmp-tree-orm-levels",
+        "cmp-tree-orm-python",
+        "cmp-tree-bridge",
+        "cmp-top2-orm-window",
+        "cmp-top2-orm-prefetch",
+        "cmp-top2-bridge",
+        "cmp-upsert-orm-loop",
+        "cmp-upsert-orm-bulk",
+        "cmp-upsert-bridge",
+        "cmp-prices-orm-subquery",
+        "cmp-prices-orm-bulk-update",
+        "cmp-prices-bridge",
+        "cmp-archive-orm",
+        "cmp-archive-bridge",
+        "cmp-archive-bridge-cte",
+        "cmp-report-orm",
+        "cmp-report-bridge",
+    }
+
+
+def test_an_edit_on_either_side_of_the_comparisons_doc_is_caught():
+    doc = readme_examples.COMPARISONS_DOC
+    edited = COMPARISONS.replace('.cte("tree", recursive=True)', '.cte("subtree", recursive=True)')
+    assert edited != COMPARISONS
+    assert readme_examples.differences(COMPARISONS_DOC, edited, doc=doc) == [f"cmp-tree-bridge: {CMP_DIFFERS}"]
+    assert readme_examples.differences(
+        COMPARISONS_DOC.replace("product.price = product.new", "product.price = product.new_price", 1), doc=doc
+    ) == [f"cmp-prices-orm-bulk-update: {CMP_DIFFERS}"]
+    removed = COMPARISONS_DOC.replace("<!-- example:cmp-report-orm -->", "", 1)
+    assert readme_examples.differences(removed, doc=doc) == [
+        "cmp-report-orm: no <!-- example:cmp-report-orm --> block in docs/comparisons.md"
+    ]
+
+
+def test_the_readme_shows_some_comparisons_as_tested():
+    shown = set(readme_examples._pattern().findall(README))
+    comparisons = set(readme_examples.snippets(tested=readme_examples.COMPARISONS))
+    assert shown & comparisons, "the README shows no comparison card"
+    assert shown & comparisons < comparisons
+    # A comparison the README shows must match tests/comparisons.py; one it leaves out is not required.
+    (name, *_) = sorted(shown & comparisons)
+    readme_side = README.replace(f"<!-- example:{name} -->\n```python\n", f"<!-- example:{name} -->\n```python\n#\n", 1)
+    assert readme_examples.differences(readme_side) == [
+        f"{name}: README.md differs from tests/comparisons.py (run python -m tests.readme_examples --write)"
+    ]
+    edited = COMPARISONS.replace("[(total,)] = execute(subtree_revenue", "[(total,)] = execute(subtree_revenue_stmt")
+    assert edited != COMPARISONS
+    assert readme_examples.differences(README, extra={readme_examples.COMPARISONS: edited}) == [
+        "cmp-tree-bridge: README.md differs from tests/comparisons.py (run python -m tests.readme_examples --write)"
+    ]
+
+
+def test_snippet_names_must_not_repeat_across_the_files_of_a_document():
+    clash = COMPARISONS.replace("# readme:cmp-tables", "# readme:upsert").replace(
+        "# /readme:cmp-tables", "# /readme:upsert"
+    )
+    with pytest.raises(ValueError, match="'upsert'"):
+        readme_examples.differences(README, extra={readme_examples.COMPARISONS: clash})

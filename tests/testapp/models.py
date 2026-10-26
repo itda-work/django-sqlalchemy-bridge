@@ -112,6 +112,16 @@ class PriceChange(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
 
 
+class SaleArchive(models.Model):
+    """Old sales moved out of Sale, keeping their ids (tests/comparisons.py)."""
+
+    id = models.BigIntegerField(primary_key=True)
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="+")
+    sold_at = models.DateTimeField()
+    quantity = models.IntegerField()
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+
 class OracleSpelledNameModelWithALongName(models.Model):
     """Names Django's Oracle backend respells: a mixed case db_column, and a table and a column past 30 characters."""
 
