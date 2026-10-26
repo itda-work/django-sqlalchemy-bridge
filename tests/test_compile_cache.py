@@ -279,7 +279,7 @@ def test_the_returning_check_is_made_per_alias(monkeypatch):
 @pytest.mark.parametrize(
     "make",
     [
-        lambda: (sa.select(authors.c.name).where(authors.c.id == sa.bindparam("pk")), {"pk": 0}),
+        lambda: (sa.select(authors.c.name).where(authors.c.id == sa.bindparam("pk")), {"pk": 1}),
         lambda: (sa.insert(authors).returning(authors.c.id), {"name": "a", "joined_at": AT}),
         lambda: (sa.update(authors).values(name="u").returning(authors.c.joined_at), None),
         lambda: (sa.delete(authors).where(authors.c.id.in_(sa.bindparam("ids", expanding=True))), {"ids": [1, 2]}),
