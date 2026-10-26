@@ -98,6 +98,14 @@ def variants(n: int, engine) -> list[Variant]:
             note="returning=['id']; SQLite: multi-row VALUES in batches of bulk_batch_size()",
         ),
         Variant(
+            "bridge_bulk_insert_copy",
+            lambda rows, _: bulk_insert(NewItem, rows, method="copy"),
+            dicts,
+            check=check,
+            vendors=("postgresql",),
+            note="method='copy': COPY FROM STDIN (text), values from get_db_prep_save()",
+        ),
+        Variant(
             "bridge_execute_executemany",
             lambda rows, _: execute(sa.insert(table), rows),
             dicts,

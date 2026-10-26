@@ -21,6 +21,8 @@ books = table_for(Book)
 specimens = table_for(Specimen)
 
 IS_PG = connection.vendor == "postgresql"
+# bulk_insert(method="copy") needs PostgreSQL with psycopg 3.
+HAS_COPY = IS_PG and hasattr(connection.Database, "Copy")
 # Oracle stores an empty string as NULL, and Django reads a NULL CharField there as "".
 NULL_TEXT = "" if connection.features.interprets_empty_strings_as_nulls else None
 
@@ -83,6 +85,14 @@ def stored(table, order_by, exclude=()):
         return [{k: v for k, v in zip(names, row) if k not in exclude} for row in rows]
 
 
+@pytest.fixture(params=["insert", "copy"])
+def method(request):
+    """Each bulk_insert() strategy; "copy" only where it runs."""
+    if request.param == "copy" and not HAS_COPY:
+        pytest.skip("method='copy' needs PostgreSQL with psycopg 3")
+    return request.param
+
+
 def specimen_fixtures(count=6):
     author = make_author()
     gadget = Gadget.objects.create(code="g1")
@@ -95,13 +105,13 @@ def specimen_fixtures(count=6):
 # --- results match the ORM ---------------------------------------------------
 
 
-def test_bulk_insert_matches_bulk_create():
+def test_bulk_insert_matches_bulk_create(method):
     rows = specimen_fixtures()
     Specimen.objects.bulk_create([Specimen(**values) for values in rows])
     via_orm = stored("dsb_specimen", "label_text", exclude=("uid",))
     Specimen.objects.all().delete()
 
-    assert bulk_insert(specimens, [columns_of(values) for values in rows]) == len(rows)
+    assert bulk_insert(specimens, [columns_of(values) for values in rows], method=method) == len(rows)
     assert stored("dsb_specimen", "label_text", exclude=("uid",)) == via_orm
     # The ORM reads the rows back as written.
     by_uid = {s.uid: s for s in Specimen.objects.all()}
@@ -112,7 +122,7 @@ def test_bulk_insert_matches_bulk_create():
         assert specimen.amount == values["amount"]
 
 
-def test_bulk_insert_books_match_bulk_create():
+def test_bulk_insert_books_match_bulk_create(method):
     author = make_author()
     statuses = [Book.Status.PUBLISHED, Book.Status.DRAFT, "published"]
     values = [
@@ -123,7 +133,7 @@ def test_bulk_insert_books_match_bulk_create():
     via_orm = stored("testapp_book", "title", exclude=("id", "uid"))
     Book.objects.all().delete()
 
-    assert bulk_insert(books, [v | {"author_id": author.pk} for v in values]) == 3
+    assert bulk_insert(books, [v | {"author_id": author.pk} for v in values], method=method) == 3
     assert stored("testapp_book", "title", exclude=("id", "uid")) == via_orm
     assert [r["status"] for r in via_orm] == ["published", "draft", "published"]
 
@@ -180,9 +190,9 @@ def test_bulk_update_text_choices_and_decimal():
     assert stored("testapp_book", "title")[0]["status"] == "published"
 
 
-def test_aware_datetimes_are_stored_in_utc():
+def test_aware_datetimes_are_stored_in_utc(method):
     rows = [{"name": "tz", "joined_at": AT}]
-    bulk_insert(authors, rows)
+    bulk_insert(authors, rows, method=method)
     author = Author.objects.get()
     assert author.joined_at == AT
     if connection.vendor in ("sqlite", "mysql"):
@@ -194,10 +204,10 @@ def test_aware_datetimes_are_stored_in_utc():
     assert author.joined_at == later
 
 
-def test_null_only_columns():
+def test_null_only_columns(method):
     author = make_author()
     rows = [columns_of(specimen_values(n, author=author, data=None, email=None, maybe=None)) for n in range(3)]
-    bulk_insert(specimens, rows)
+    bulk_insert(specimens, rows, method=method)
     assert list(Specimen.objects.values_list("data", "email", "maybe")) == [(None, NULL_TEXT, None)] * 3
     updates = [{"uid": r["uid"], "happened_at": None, "gadget_id": None} for r in rows]
     assert bulk_update(specimens, updates) == 3
@@ -207,13 +217,13 @@ def test_null_only_columns():
 # --- one statement on PostgreSQL ---------------------------------------------
 
 
-def test_bulk_insert_runs_one_query():
+def test_bulk_insert_runs_one_query(method):
     rows = [{"name": f"n{i}", "joined_at": AT} for i in range(50)]
     with CaptureQueriesContext(connection) as ctx:
-        assert bulk_insert(authors, rows) == 50
+        assert bulk_insert(authors, rows, method=method) == 50
     assert len(ctx.captured_queries) == 1
     if IS_PG:
-        assert "unnest" in ctx.captured_queries[0]["sql"].lower()
+        assert ("copy" if method == "copy" else "unnest") in ctx.captured_queries[0]["sql"].lower()
 
 
 def test_bulk_update_runs_one_query():
@@ -269,18 +279,18 @@ def test_returning_keeps_the_order_across_batches(monkeypatch):
 # --- transactions and signals ------------------------------------------------
 
 
-def test_atomic_rollback_discards_bulk_writes():
+def test_atomic_rollback_discards_bulk_writes(method):
     author = make_author("before")
     with pytest.raises(ZeroDivisionError):
         with transaction.atomic():
-            bulk_insert(authors, [{"name": "new", "joined_at": AT}])
+            bulk_insert(authors, [{"name": "new", "joined_at": AT}], method=method)
             bulk_update(authors, [{"id": author.pk, "name": "after"}])
             assert sorted(Author.objects.values_list("name", flat=True)) == ["after", "new"]
             1 / 0
     assert list(Author.objects.values_list("name", flat=True)) == ["before"]
 
 
-def test_bulk_writes_send_no_model_signals():
+def test_bulk_writes_send_no_model_signals(method):
     received = []
 
     def receiver(sender, **kwargs):
@@ -289,7 +299,7 @@ def test_bulk_writes_send_no_model_signals():
     pre_save.connect(receiver, sender=Author)
     post_save.connect(receiver, sender=Author)
     try:
-        bulk_insert(authors, [{"name": "n", "joined_at": AT}])
+        bulk_insert(authors, [{"name": "n", "joined_at": AT}], method=method)
         bulk_update(authors, [{"id": author_ids()[0], "name": "m"}])
     finally:
         pre_save.disconnect(receiver, sender=Author)
@@ -367,31 +377,33 @@ def test_update_refuses_bad_columns():
 # --- missing columns on INSERT -----------------------------------------------
 
 
-def test_insert_refuses_rows_that_disagree_on_columns():
+def test_insert_refuses_rows_that_disagree_on_columns(method):
     with pytest.raises(ValueError, match="row 1 .*'joined_at'"):
-        bulk_insert(authors, [{"name": "a", "joined_at": AT}, {"name": "b"}])
+        bulk_insert(authors, [{"name": "a", "joined_at": AT}, {"name": "b"}], method=method)
     with pytest.raises(ValueError, match="row 1 .*'id'"):
-        bulk_insert(authors, [{"name": "a", "joined_at": AT}, {"name": "b", "joined_at": AT, "id": 5}])
+        bulk_insert(authors, [{"name": "a", "joined_at": AT}, {"name": "b", "joined_at": AT, "id": 5}], method=method)
 
 
-def test_insert_refuses_to_leave_out_a_column_django_would_fill():
+def test_insert_refuses_to_leave_out_a_column_django_would_fill(method):
     # Book.status and Book.meta have Django defaults the bridge does not apply.
     author = make_author()
     row = {"uid": uuid.uuid4(), "author_id": author.pk, "title": "t", "price": 1}
     with pytest.raises(ValueError, match="'meta', 'status'"):
-        bulk_insert(books, [row])
+        bulk_insert(books, [row], method=method)
     # A nullable column must be given too (as None), so a forgotten one is not silently NULL.
     with pytest.raises(ValueError, match="'email'"):
         bulk_insert(
-            specimens, [{k: v for k, v in columns_of(specimen_values(0, author=author)).items() if k != "email"}]
+            specimens,
+            [{k: v for k, v in columns_of(specimen_values(0, author=author)).items() if k != "email"}],
+            method=method,
         )
     with pytest.raises(ValueError, match="no column 'nope'"):
-        bulk_insert(authors, [{"name": "a", "joined_at": AT, "nope": 1}])
+        bulk_insert(authors, [{"name": "a", "joined_at": AT, "nope": 1}], method=method)
     assert Book.objects.count() == 0
 
 
-def test_insert_may_give_the_auto_primary_key():
-    assert bulk_insert(authors, [{"id": 77, "name": "a", "joined_at": AT}]) == 1
+def test_insert_may_give_the_auto_primary_key(method):
+    assert bulk_insert(authors, [{"id": 77, "name": "a", "joined_at": AT}], method=method) == 1
     assert Author.objects.get().pk == 77
 
 
@@ -410,10 +422,10 @@ def test_rejects_a_table_not_built_by_table_for():
         bulk_insert(plain, [{"id": 1}])
 
 
-def test_bridge_reads_what_bulk_insert_wrote():
+def test_bridge_reads_what_bulk_insert_wrote(method):
     author = make_author()
     values = columns_of(specimen_values(1, author=author))
-    bulk_insert(specimens, [values])
+    bulk_insert(specimens, [values], method=method)
     import sqlalchemy as sa
 
     (row,) = execute(sa.select(specimens.c.data, specimens.c.amount, specimens.c.happened_at))
@@ -421,7 +433,7 @@ def test_bridge_reads_what_bulk_insert_wrote():
 
 
 @pytest.mark.skipif(connection.vendor == "sqlite", reason="SQLite does not enforce varchar lengths")
-def test_too_long_values_fail_instead_of_being_cut():
+def test_too_long_values_fail_instead_of_being_cut(method):
     # The arrays are cast to varchar[] (no length), so the column assignment checks the length,
     # as an ORM write does, instead of a varchar(100)[] cast truncating silently.
     from django.db import DatabaseError, DataError
@@ -431,7 +443,7 @@ def test_too_long_values_fail_instead_of_being_cut():
     author = make_author()
     with pytest.raises(too_long):
         with transaction.atomic():
-            bulk_insert(authors, [{"name": "x" * 101, "joined_at": AT}])
+            bulk_insert(authors, [{"name": "x" * 101, "joined_at": AT}], method=method)
     with pytest.raises(too_long):
         with transaction.atomic():
             bulk_update(authors, [{"id": author.pk, "name": "y" * 101}])
@@ -467,18 +479,18 @@ def test_batch_size_must_be_a_positive_integer(bad):
     assert ctx.captured_queries == []
 
 
-def test_bulk_insert_batch_size_splits_the_rows():
+def test_bulk_insert_batch_size_splits_the_rows(method):
     rows = [{"name": f"n{i}", "joined_at": AT} for i in range(10)]
     with CaptureQueriesContext(connection) as ctx:
-        assert bulk_insert(authors, rows, batch_size=3) == 10
+        assert bulk_insert(authors, rows, batch_size=3, method=method) == 10
     assert len(ctx.captured_queries) == 4  # 3 + 3 + 3 + 1
     assert sorted(Author.objects.values_list("name", flat=True)) == sorted(r["name"] for r in rows)
 
 
-def test_bulk_insert_batch_size_larger_than_the_rows_is_one_statement():
+def test_bulk_insert_batch_size_larger_than_the_rows_is_one_statement(method):
     rows = [{"name": f"n{i}", "joined_at": AT} for i in range(10)]
     with CaptureQueriesContext(connection) as ctx:
-        assert bulk_insert(authors, rows, batch_size=10_000) == 10
+        assert bulk_insert(authors, rows, batch_size=10_000, method=method) == 10
     assert len(ctx.captured_queries) == 1
 
 
@@ -534,8 +546,10 @@ def test_bulk_update_checks_keys_across_batches_before_running():
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("returning", [None, ["id"]])
 @pytest.mark.parametrize("batch_size", [None, 2])
-def test_bulk_insert_that_fails_in_a_later_batch_writes_nothing(batch_size, returning, monkeypatch):
+def test_bulk_insert_that_fails_in_a_later_batch_writes_nothing(batch_size, returning, method, monkeypatch):
     # Outside any atomic(): the 2nd batch (or, unbatched on SQLite, the 4th executemany row) breaks Book.uid.
+    if returning and method == "copy":
+        pytest.skip("COPY has no RETURNING")
     if returning and not connection.features.can_return_rows_from_bulk_insert:
         pytest.skip(f"{connection.display_name} cannot return rows from a multi-row INSERT")
     if returning:
@@ -544,7 +558,7 @@ def test_bulk_insert_that_fails_in_a_later_batch_writes_nothing(batch_size, retu
     taken = uuid.uuid4()
     rows = [book_row(author), book_row(author), book_row(author, taken), book_row(author, taken)]
     with pytest.raises(IntegrityError):
-        bulk_insert(books, rows, returning=returning, batch_size=batch_size)
+        bulk_insert(books, rows, returning=returning, batch_size=batch_size, method=method)
     assert Book.objects.count() == 0
 
 
@@ -563,7 +577,7 @@ def test_bulk_update_that_fails_in_a_later_batch_writes_nothing(batch_size):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_batched_failure_inside_an_outer_atomic():
+def test_batched_failure_inside_an_outer_atomic(method):
     author = make_author()
     taken = uuid.uuid4()
     rows = [book_row(author), book_row(author), book_row(author, taken), book_row(author, taken)]
@@ -572,13 +586,13 @@ def test_batched_failure_inside_an_outer_atomic():
         Book.objects.create(**{k: v for k, v in book_row(author).items() if k != "author_id"}, author=author)
         with pytest.raises(IntegrityError):
             with transaction.atomic():
-                bulk_insert(books, rows, batch_size=2)
+                bulk_insert(books, rows, batch_size=2, method=method)
         assert Book.objects.count() == 1
     assert Book.objects.count() == 1
     # Not caught inside: the outer transaction rolls back as a whole.
     with pytest.raises(IntegrityError):
         with transaction.atomic():
             make_author("gone")
-            bulk_insert(books, rows, batch_size=2)
+            bulk_insert(books, rows, batch_size=2, method=method)
     assert Book.objects.count() == 1
     assert not Author.objects.filter(name="gone").exists()

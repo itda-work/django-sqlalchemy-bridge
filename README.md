@@ -10,7 +10,7 @@ Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식
 
 **표현력 때문입니다.** Django ORM 으로 쓰기 어려운 SQL(재귀 CTE, 여러 CTE, `INSERT … ON CONFLICT … RETURNING`, `UPDATE … FROM`, `INSERT … SELECT`, PostgreSQL 의 `LATERAL`·`DISTINCT ON`·데이터를 바꾸는 CTE)을 raw SQL 문자열 대신 SQLAlchemy 식으로 씁니다. 그러면서도 연결·트랜잭션·값 변환은 Django 의 것을 그대로 씁니다. `atomic()` 안에서 ORM 쿼리와 섞여 돌고, 결과의 datetime·Decimal·JSON 은 ORM 이 읽은 값과 같습니다. raw SQL 과 달리 테이블·컬럼 이름이 모델에서 나오므로 오타가 실행 전에 드러나고, 백엔드마다 SQL 을 따로 쓰지 않아도 되는 경우가 많습니다.
 
-성능은 목적이 아닙니다. 대량 쓰기에서는 따라옵니다. `bulk_update`는 Django `bulk_update`보다 한 자릿수 이상, `bulk_insert`는 Django `bulk_create`보다 같거나 조금 빠릅니다. 같은 SQL 이면 실행 시간이 DB 에서 정해져 ORM 과 거의 같고(아래 "성능과 메모리"), ORM 으로는 쿼리를 더 보내거나 행을 파이썬으로 옮겨야 하는 요청에서 빨라집니다. 반대로 ORM 이 더 빠른 요청도 있습니다(아래 "[같은 요청, 두 구현](#같은-요청-두-구현)").
+성능은 목적이 아닙니다. 대량 쓰기에서는 따라옵니다. `bulk_update`는 Django `bulk_update`보다 한 자릿수 이상, `bulk_insert`는 Django `bulk_create`보다 빠릅니다(PostgreSQL 에서 25% 안팎, `method="copy"`면 2배 이상). 같은 SQL 이면 실행 시간이 DB 에서 정해져 ORM 과 거의 같고(아래 "성능과 메모리"), ORM 으로는 쿼리를 더 보내거나 행을 파이썬으로 옮겨야 하는 요청에서 빨라집니다. 반대로 ORM 이 더 빠른 요청도 있습니다(아래 "[같은 요청, 두 구현](#같은-요청-두-구현)").
 
 **언제 ORM 을 쓰나.** ORM 으로 자연스럽게 써지는 쿼리, 한 행씩 읽고 쓰는 CRUD, signal·`save()`·필드 `default`·검증이 따라와야 하는 쓰기는 ORM 을 쓰세요. 브리지의 쓰기는 모델 계층을 거치지 않습니다(아래 "대량 쓰기"의 경고). 자세한 경우는 "[브리지가 도움이 안 되는 경우](#브리지가-도움이-안-되는-경우)"에 있습니다.
 
@@ -480,9 +480,12 @@ ids = bulk_insert(orders, rows, returning=["id"])
 
 # 수십만 행 이상: batch_size 행씩 문장을 나눠 메모리를 줄인다(전부 쓰이거나 하나도 안 쓰임)
 bulk_insert(orders, rows, batch_size=10_000)
+
+# PostgreSQL 에서 RETURNING 이 필요 없는 수십만 행: COPY FROM STDIN
+bulk_insert(orders, rows, method="copy")
 ```
 
-- `bulk_update(table, rows, *, key=None, columns=None, batch_size=None, using="default")`, `bulk_insert(table, rows, *, returning=None, batch_size=None, using="default")`. `table`은 `table_for()` 테이블이나 모델입니다. `rows`는 컬럼 이름(`db_column`, FK 는 `<이름>_id`)을 키로 한 매핑의 시퀀스입니다.
+- `bulk_update(table, rows, *, key=None, columns=None, batch_size=None, using="default")`, `bulk_insert(table, rows, *, returning=None, batch_size=None, using="default", method="insert")`. `table`은 `table_for()` 테이블이나 모델입니다. `rows`는 컬럼 이름(`db_column`, FK 는 `<이름>_id`)을 키로 한 매핑의 시퀀스입니다.
 - **PostgreSQL에서는 문장 하나입니다.** 컬럼마다 배열 파라미터 하나를 Django 컬럼 타입으로 캐스트하고(`(%s)::jsonb[]`, `(%s)::numeric[]` …) `unnest()`로 행을 만듭니다. UPDATE 는 `UPDATE t SET c = v.c FROM unnest(...) AS v(...) WHERE t.k = v.k`, INSERT 는 `INSERT INTO t (...) SELECT * FROM unnest(...)` 꼴로, Django `bulk_create`가 PostgreSQL에서 쓰는 방식과 같습니다. 캐스트에서는 길이·자릿수를 떼므로(`varchar(50)[]`가 아니라 `varchar[]`) 값이 잘리지 않고, 너무 긴 값은 ORM 쓰기처럼 컬럼에 넣을 때 오류가 납니다. `CaptureQueriesContext`에는 1건으로 잡힙니다.
 - **그 밖의 백엔드(SQLite·MySQL·Oracle)에서는 같은 호출이 `cursor.executemany()`입니다(`atomic()` 안에서, 아래 "원자성").** `returning`이 있는 INSERT 는 executemany 로 행을 받을 수 없어서 다중 `VALUES` 문장을 `connection.ops.bulk_batch_size()`(SQLite 변수 한도) 단위로 나눠 실행합니다. 결과는 PostgreSQL과 같습니다.
   - MySQL: mysqlclient 는 INSERT 의 executemany 를 다중 행 `INSERT … VALUES (…), (…)`로 바꿔 보내고, UPDATE 의 executemany 는 행마다 문장 하나를 보냅니다(`CaptureQueriesContext`에는 1건). rowcount 는 Django 가 켠 `CLIENT.FOUND_ROWS` 덕에 바뀐 행이 아니라 맞은 행을 셉니다. `bulk_insert(returning=...)`는 MySQL 에 `RETURNING`이 없어 실행 전 `NotSupportedError`이고, MariaDB 에서는 다중 `VALUES … RETURNING`으로 돕니다. `UPDATE … JOIN (VALUES ROW(…))`로 한 문장을 만드는 방식은 MariaDB 에 `VALUES ROW`가 없고 행 값의 타입을 정할 방법이 없어 쓰지 않았습니다. `INSERT … ON DUPLICATE KEY UPDATE`는 없는 키를 새 행으로 넣어 의미가 다릅니다.
@@ -493,7 +496,10 @@ bulk_insert(orders, rows, batch_size=10_000)
   - `bulk_insert`: 행끼리 키가 다르거나, 테이블 컬럼을 빠뜨린 경우. 자동 증가 PK 와 `db_default`가 있는 컬럼만 빠뜨릴 수 있습니다. Django 필드 `default`·`auto_now`를 채우지 않으므로 nullable 컬럼도 `None`을 직접 넣어야 합니다(잊은 컬럼이 조용히 `NULL`이 되지 않게).
 - **`batch_size`**: 양의 정수면 그 행 수마다 문장 하나(SQLite 는 `executemany()` 호출 하나)로 나눕니다. `None`(기본값)이면 위와 같습니다. 0 이하나 정수가 아니면 실행 전에 `ValueError`입니다. SQLite 의 `returning` 배치는 `bulk_batch_size()`를 넘지 않습니다. 키 중복·누락 검사는 나누기 전에 전체 행으로 하고, rowcount 는 배치의 합, `returning` 결과는 배치와 상관없이 `rows` 순서입니다.
 - **원자성**: 문장을 둘 이상 실행하는 호출(배치가 여럿이거나 SQLite `executemany()`)은 Django `bulk_create`·`bulk_update`처럼 `transaction.atomic(using=..., savepoint=False)` 안에서 돕니다. 한 배치가 실패하면 그 호출이 쓴 행은 모두 롤백됩니다. 바깥 `atomic()` 안에서는 savepoint 를 만들지 않으므로, 실패를 잡아 트랜잭션을 이어가려면 호출을 `atomic()`으로 한 번 더 감싸세요(ORM 쓰기와 같습니다).
-- **언제 `batch_size`를 주나.** PostgreSQL 의 한 문장은 행 수에 비례해 클라이언트(파라미터 배열)와 서버 백엔드(배열과 `unnest` 결과) 메모리를 씁니다. 1,000,000행(컬럼 6개)에서 `bulk_insert`는 클라이언트 tracemalloc 피크 849 MiB, 서버 백엔드 233 MiB 였고, `batch_size=10_000`이면 226 MiB·6 MiB 로 줄면서 시간은 4% 빨랐습니다. `bulk_update`는 나누면 느려집니다(1,000,000행에서 `10_000`은 22% 느림, `200_000`은 3% 느림). 한 문장은 대상 테이블과 해시 조인 한 번으로, 작은 배치는 행마다 PK 인덱스 조회로 갱신하기 때문입니다(로컬 PostgreSQL 18 의 `EXPLAIN ANALYZE`로 확인). 그래서 기본값은 `None`이고, 수십만 행 이상에서 메모리가 문제일 때 `bulk_insert`는 `10_000`~`50_000`, `bulk_update`는 `200_000` 안팎을 권합니다. SQLite 는 차이가 작습니다(아래 "성능과 메모리" 7).
+- **언제 `batch_size`를 주나.** PostgreSQL 의 한 문장은 행 수에 비례해 클라이언트(파라미터 배열)와 서버 백엔드(배열과 `unnest` 결과) 메모리를 씁니다. 1,000,000행(컬럼 6개)에서 `bulk_insert`는 클라이언트 tracemalloc 피크 849 MiB, 서버 백엔드 233 MiB 였고, `batch_size=10_000`이면 226 MiB·6 MiB 로 줄면서 시간은 3.5% 빨랐습니다. `bulk_update`는 나누면 느려집니다(1,000,000행에서 `10_000`은 21% 느림, `200_000`은 3% 느림). 한 문장은 대상 테이블과 해시 조인 한 번으로, 작은 배치는 행마다 PK 인덱스 조회로 갱신하기 때문입니다(로컬 PostgreSQL 18 의 `EXPLAIN ANALYZE`로 확인). 그래서 기본값은 `None`이고, 수십만 행 이상에서 메모리가 문제일 때 `bulk_insert`는 `10_000`~`50_000`, `bulk_update`는 `200_000` 안팎을 권합니다. SQLite 는 차이가 작습니다(아래 "성능과 메모리" 7).
+- **`method="copy"`(PostgreSQL + psycopg 3)**: `INSERT` 대신 `COPY t (컬럼…) FROM STDIN`(text 포맷)으로 넣습니다. Django 커서 아래의 psycopg 커서(`cursor.cursor.copy()`)로 실행하므로 Django 연결·트랜잭션 안에서 돕니다. 행 검사와 값 변환(`get_db_prep_save()`)은 `"insert"`와 같고, 탭·개행·백슬래시·`\N` 문자열의 이스케이프는 psycopg 가 맡습니다(테스트로 고정). `batch_size`를 주면 배치마다 `COPY` 하나, 둘 이상이면 같은 `atomic(savepoint=False)`입니다. 트리거·제약·FK 검사는 INSERT 와 같고, 제약 위반은 Django 예외(`IntegrityError`·`DataError`)로 올라옵니다. 반환값은 psycopg 가 COPY 뒤 `cursor.rowcount`로 주는 행 수입니다. **언제 쓰나**: `RETURNING`이 필요 없는 수십만 행 이상의 INSERT. 200,000행(컬럼 6개)에서 `"insert"`(unnest) 3,571 ms 대 1,925 ms 였고, 1,000,000행에서는 시간이 47% 줄고 클라이언트 tracemalloc 피크가 849 MiB → 193 MiB, 서버 백엔드 메모리 증가가 233 MiB → 0.5 MiB 였습니다(아래 "성능과 메모리" 2·7). COPY 는 행을 흘려보내므로 서버 메모리가 행 수를 따라 늘지 않습니다. `batch_size`는 클라이언트 메모리만 조금 줄입니다(1,000,000행에서 `10_000`이면 148 MiB, 시간은 4% 늘어남).
+  - `returning`과 함께 쓰면 실행 전 `ValueError`입니다(COPY 에는 `RETURNING`·`ON CONFLICT`가 없음). PostgreSQL 이 아닌 연결이나 psycopg2 에서는 실행 전 `NotSupportedError`입니다. 조용히 `"insert"`로 바꾸지 않습니다. binary 포맷은 쓰지 않습니다(psycopg 의 binary COPY 는 컬럼마다 `set_types()`로 서버 타입을 정해야 하고, text 포맷은 서버가 INSERT 파라미터처럼 텍스트로 받아 컬럼 타입으로 읽습니다).
+  - 쿼리 기록: `COPY`는 Django `CursorWrapper.execute()`를 지나지 않습니다. 브리지가 디버그 기록이 켜져 있을 때(`connection.queries_logged`) `COPY … FROM STDIN` 문장을 배치마다 `connection.queries`에 한 건씩 남기므로 `CaptureQueriesContext`·`assertNumQueries`에 잡히지만, **`connection.execute_wrapper()`에는 보이지 않습니다.**
 - 빈 `rows`는 쿼리를 실행하지 않고 `0`(또는 `returning`이면 `[]`)을 돌려줍니다.
 - **`RETURNING` 순서**: 결과는 `rows` 순서입니다(테스트로 고정). 다만 PostgreSQL·SQLite 모두 `RETURNING` 순서를 문서로 보장하지는 않으며, Django `bulk_create`가 PK 를 객체에 채울 때도 같은 동작에 기댑니다. 아래 "제약"을 보세요.
 - signal·`save()`를 거치지 않는 것은 다른 브리지 쓰기와 같습니다(아래).
@@ -521,6 +527,7 @@ bulk_insert(orders, rows, batch_size=10_000)
   - 컬럼이 없는 식이나 `sa.text()`로 고른 `NCLOB`·`BLOB` 값은 oracledb 의 LOB 객체로 옵니다(`.read()`). 컬럼을 고르면 ORM 변환기가 `str`·`bytes`로 바꿉니다.
   - `sum()`·`avg()`처럼 정밀도가 없는 숫자를 Django 의 Oracle 커서는 텍스트에 소수점이 있는지로 `int`나 `Decimal`로 줍니다. 브리지는 ORM 처럼(`BaseExpression.convert_value`) 컬럼 필드의 타입으로 맞춥니다(`DecimalField`의 합은 `Decimal`).
   - `SELECT` 목록의 불리언 식(`(price > 2).label("gt")`, `sa.exists()`)은 Oracle 23ai 부터 됩니다. 19c 는 확인하지 않았습니다(아래 "지원 대상").
+- **`bulk_insert(method="copy")`는 `execute_wrapper()`에 보이지 않습니다.** psycopg 의 `Cursor.copy()`는 Django 커서의 `execute()`를 거치지 않기 때문입니다. `connection.queries`에는 배치마다 한 건씩 남깁니다(위 "대량 쓰기"). PostgreSQL + psycopg 3 전용이고, 다른 연결에서는 실행 전 `NotSupportedError`입니다.
 - **`bulk_insert(returning=...)`의 행 순서는 DB 가 문서로 보장하지 않습니다.** PostgreSQL·SQLite 모두 지금은 입력 순서로 돌려주고 Django `bulk_create`도 같은 가정에 기대지만, 순서가 중요하면 행을 식별할 키(자연 키, `uid` 등)를 함께 `RETURNING`해서 그 값으로 짝지으세요. 예: `bulk_insert(books, rows, returning=["uid", "id"])`.
 
 ## 비동기
@@ -631,20 +638,27 @@ uv run python -m bench.readme --write                  # 시나리오·DB 마다
 
 ### 2. 대량 INSERT
 
+PostgreSQL 표는 위 환경과 다른 실행(다른 러너 CPU)에서 쟀습니다.
+
+<!-- bench:env-postgres-insert -->
+PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQLAlchemy 2.1.6 · psycopg 3.3.6 · django-pgbulk 3.3.0 · django-cte 4.0.0 · AMD EPYC 7763 64-Core Processor (4코어, 메모리 16 GiB) · Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 · 반복 5회(+예열 1회) 중 최솟값
+<!-- /bench:env-postgres-insert -->
+
 <!-- bench:pg-insert -->
 | | 20,000행 시간 (ms) | 200,000행 시간 (ms) |
 |---|---:|---:|
-| Django `bulk_create()` (batch_size 기본값) | 237 | 2,798 |
-| Django `bulk_create(batch_size=1000)` | 225 | 2,269 |
-| django-pgbulk `copy()` | 113 | 1,138 |
-| django-pgbulk `copy(binary=True)` | 103 | 1,038 |
-| SQLAlchemy Core `insert()` (별도 엔진) | 229 | 2,497 |
-| SQLAlchemy Core `insert().returning(id)` (별도 엔진) | 440 | 5,021 |
-| 브리지 `execute(insert(t), [rows...])` (executemany) | 453 | 5,110 |
-| 브리지 `bulk_insert()` | 166 | 2,215 |
-| 브리지 `bulk_insert(returning=['id'])` | 176 | 2,237 |
+| Django `bulk_create()` (batch_size 기본값) | 440 | 4,813 |
+| Django `bulk_create(batch_size=1000)` | 460 | 4,829 |
+| django-pgbulk `copy()` | 231 | 2,297 |
+| django-pgbulk `copy(binary=True)` | 210 | 2,069 |
+| SQLAlchemy Core `insert()` (별도 엔진) | 449 | 5,045 |
+| SQLAlchemy Core `insert().returning(id)` (별도 엔진) | 702 | 7,627 |
+| 브리지 `execute(insert(t), [rows...])` (executemany) | 1,367 | 12,171 |
+| 브리지 `bulk_insert()` | 327 | 3,571 |
+| 브리지 `bulk_insert(returning=['id'])` | 342 | 3,732 |
+| 브리지 `bulk_insert(method="copy")` | 174 | 1,925 |
 
-<sub>결과 파일: [`bench/results/2026-10-25-postgres-insert.json`](bench/results/2026-10-25-postgres-insert.json)</sub>
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-insert.json`](bench/results/2026-10-26-postgres-insert.json)</sub>
 <!-- /bench:pg-insert -->
 
 <!-- bench:sqlite-insert -->
@@ -795,7 +809,7 @@ uv run python -m bench.readme --write                  # 시나리오·DB 마다
 
 ### 7. 대량 쓰기의 `batch_size` (1,000,000행)
 
-`batch_size`에 따른 시간, 클라이언트 tracemalloc 피크, (PostgreSQL) 서버 백엔드 메모리입니다. PostgreSQL 에서 `batch_size=None`은 한 문장입니다. 서버 백엔드 메모리는 따로 한 번 더, 새 연결에서 그 연결의 PostgreSQL 백엔드 프로세스 `/proc/<pid>/status`를 2 ms 마다 읽어 호출 중 `RssAnon`(공유 버퍼를 뺀 개인 메모리) 최댓값에서 호출 전 값을 뺀 것입니다. 200,000행 결과와 `VmHWM`은 결과 파일에 있습니다. 이 절의 표는 위 표들과 다른 실행(다른 러너 CPU)에서 쟀습니다.
+`batch_size`에 따른 시간, 클라이언트 tracemalloc 피크, (PostgreSQL) 서버 백엔드 메모리입니다. PostgreSQL 에서 `batch_size=None`은 한 문장이고, `method="copy"`는 배치마다 `COPY` 하나입니다. 서버 백엔드 메모리는 따로 한 번 더, 새 연결에서 그 연결의 PostgreSQL 백엔드 프로세스 `/proc/<pid>/status`를 2 ms 마다 읽어 호출 중 `RssAnon`(공유 버퍼를 뺀 개인 메모리) 최댓값에서 호출 전 값을 뺀 것입니다. 200,000행 결과와 `VmHWM`은 결과 파일에 있습니다. 이 절의 표는 위 표들과 다른 실행(다른 러너 CPU)에서 쟀습니다.
 
 <!-- bench:env-postgres-batch -->
 PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQLAlchemy 2.1.6 · psycopg 3.3.6 · django-pgbulk 3.3.0 · django-cte 4.0.0 · AMD EPYC 7763 64-Core Processor (4코어, 메모리 16 GiB) · Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 · 반복 5회(+예열 1회) 중 최솟값
@@ -804,12 +818,14 @@ PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQL
 <!-- bench:pg-batch-insert -->
 | | 시간 (ms) | tracemalloc 피크 (MiB) | 서버 백엔드 메모리 증가 (MiB) |
 |---|---:|---:|---:|
-| `bulk_insert()` (batch_size=None) | 17,395 | 848.9 | 233.0 |
-| `bulk_insert(batch_size=10_000)` | 16,642 | 226.0 | 6.1 |
-| `bulk_insert(batch_size=50_000)` | 16,644 | 388.9 | 26.9 |
-| `bulk_insert(batch_size=200_000)` | 16,998 | 643.5 | 68.2 |
-| `bulk_insert(returning=['id'])` (batch_size=None) | 18,035 | 848.9 | 235.5 |
-| `bulk_insert(returning=['id'], batch_size=50_000)` | 17,053 | 259.4 | 28.9 |
+| `bulk_insert()` (batch_size=None) | 17,958 | 848.9 | 233.3 |
+| `bulk_insert(batch_size=10_000)` | 17,333 | 226.0 | 6.1 |
+| `bulk_insert(batch_size=50_000)` | 17,368 | 388.9 | 26.9 |
+| `bulk_insert(batch_size=200_000)` | 17,582 | 643.5 | 68.2 |
+| `bulk_insert(returning=['id'])` (batch_size=None) | 18,551 | 848.9 | 235.8 |
+| `bulk_insert(returning=['id'], batch_size=50_000)` | 17,417 | 259.4 | 28.9 |
+| `bulk_insert(method="copy")` (batch_size=None) | 9,549 | 193.3 | 0.5 |
+| `bulk_insert(method="copy", batch_size=10_000)` | 9,929 | 148.0 | 0.5 |
 
 <sub>결과 파일: [`bench/results/2026-10-26-postgres-batch.json`](bench/results/2026-10-26-postgres-batch.json)</sub>
 <!-- /bench:pg-batch-insert -->
@@ -817,10 +833,10 @@ PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQL
 <!-- bench:pg-batch-update -->
 | | 시간 (ms) | tracemalloc 피크 (MiB) | 서버 백엔드 메모리 증가 (MiB) |
 |---|---:|---:|---:|
-| `bulk_update()` (batch_size=None) | 15,843 | 609.6 | 195.4 |
-| `bulk_update(batch_size=10_000)` | 19,342 | 163.1 | 12.8 |
-| `bulk_update(batch_size=50_000)` | 20,003 | 299.0 | 26.5 |
-| `bulk_update(batch_size=200_000)` | 16,257 | 435.9 | 55.6 |
+| `bulk_update()` (batch_size=None) | 16,173 | 609.6 | 196.5 |
+| `bulk_update(batch_size=10_000)` | 19,544 | 163.1 | 12.8 |
+| `bulk_update(batch_size=50_000)` | 20,546 | 299.0 | 26.8 |
+| `bulk_update(batch_size=200_000)` | 16,713 | 435.9 | 51.5 |
 
 <sub>결과 파일: [`bench/results/2026-10-26-postgres-batch.json`](bench/results/2026-10-26-postgres-batch.json)</sub>
 <!-- /bench:pg-batch-update -->
@@ -884,7 +900,7 @@ SQLite 에서는 차이가 작습니다. 시간은 3% 안, tracemalloc 피크는
 ### 브리지가 도움이 안 되는 경우
 
 - **일반 CRUD.** 한 행을 읽고 쓰는 일은 `bindparam` 문장을 재사용하면 Django ORM 보다 빠르지만 매번 문장을 만들면 조금 느립니다(시나리오 4). 속도 차이 말고는 얻는 것이 없으니 signal·`save()`·검증이 따라오는 ORM 을 쓰세요.
-- **대량 INSERT 만 필요하고 생성된 id 가 필요 없을 때.** PostgreSQL 에서는 django-pgbulk `copy()`(COPY)가 브리지 `bulk_insert()`보다 빠르고 메모리도 거의 쓰지 않습니다(시나리오 2). 브리지 `bulk_insert()`는 Django `bulk_create()`보다 20,000행에서 25~30% 빠르지만 200,000행에서는 `batch_size=1000`과 거의 같습니다. 브리지는 `RETURNING`이나 SQLAlchemy 식이 필요할 때의 선택지입니다.
+- **대량 INSERT 만 필요하고 생성된 id 가 필요 없을 때, django-pgbulk 를 이미 쓴다면.** PostgreSQL 에서는 COPY 가 가장 빠르고, 브리지 `bulk_insert(method="copy")`와 django-pgbulk `copy()`는 같은 부류입니다(200,000행에서 1,925 ms 대 2,297 ms, binary 2,069 ms, 시나리오 2. 입력 만들기는 빼고 잼). 브리지 `bulk_insert()`(unnest)는 그 두 배 가까이 걸리고 Django `bulk_create()`보다는 25% 안팎 빠릅니다. 바꿀 이유는 속도보다 SQLAlchemy 식이 필요한지에 있습니다.
 - **django-pgbulk 를 이미 쓴다면.** PK 기준 대량 UPDATE 에서 브리지가 더 빠르긴 하지만 둘 다 Django `bulk_update`보다 한 자릿수 이상 빠른 같은 부류입니다(시나리오 1). 바꿀 이유는 속도보다 SQLAlchemy 식이 필요한지에 있습니다.
 - **ORM 으로 쓸 수 있는 리포트 쿼리.** CTE·윈도 함수 쿼리는 실행 시간이 DB 에서 정해져 도구 차이가 거의 없고, 이 예처럼 Django ORM(CTE 없이 `Window`로)이나 django-cte 로 표현되면 그대로 두면 됩니다(시나리오 6). 브리지는 ORM 으로 쓰기 어려운 식(여러 CTE, `LATERAL`, 복잡한 조인)에서 의미가 있습니다.
 - **SQLite 에서 Django 트랜잭션이 필요 없을 때.** SQLite 에서는 SQLAlchemy 를 단독으로(별도 엔진) 쓰는 편이 대량 INSERT·읽기에서 브리지보다 빠릅니다(시나리오 2·3). 브리지는 값을 Django 필드 변환기로 바꾸는 비용을 내는 대신 ORM 과 같은 값·같은 트랜잭션을 줍니다.

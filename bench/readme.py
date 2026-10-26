@@ -51,6 +51,7 @@ INSERT_ROWS = [
     ("bridge_execute_executemany", "브리지 `execute(insert(t), [rows...])` (executemany)"),
     ("bridge_bulk_insert", "브리지 `bulk_insert()`"),
     ("bridge_bulk_insert_returning", "브리지 `bulk_insert(returning=['id'])`"),
+    ("bridge_bulk_insert_copy", '브리지 `bulk_insert(method="copy")`'),
 ]
 READ_ROWS = [
     ("django_models", "Django 모델 객체 `list(qs)`"),
@@ -103,6 +104,8 @@ BATCH_INSERT_ROWS = [
     ("insert_batch200000", "`bulk_insert(batch_size=200_000)`"),
     ("insert_returning_none", "`bulk_insert(returning=['id'])` (batch_size=None)"),
     ("insert_returning_batch50000", "`bulk_insert(returning=['id'], batch_size=50_000)`"),
+    ("copy_none", '`bulk_insert(method="copy")` (batch_size=None)'),
+    ("copy_batch10000", '`bulk_insert(method="copy", batch_size=10_000)`'),
 ]
 BATCH_UPDATE_ROWS = [
     ("update_none", "`bulk_update()` (batch_size=None)"),
@@ -415,6 +418,7 @@ def blocks(doc: Path = README) -> dict[str, str]:
         for db in ("postgres", "sqlite"):
             out[f"env-{db}"] = environment(db)
         out["env-postgres-batch"] = environment("postgres", "batch")
+        out["env-postgres-insert"] = environment("postgres", "insert")
     out["env-postgres-compare"] = environment("postgres", "compare")
     if doc == COMPARISONS:
         out["env-sqlite-compare"] = environment("sqlite", "compare")
