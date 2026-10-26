@@ -36,6 +36,7 @@ bench = [
     "psutil>=7.2.2",
 ]
 dev = [
+    "djangorestframework>=3.18.3",
     "oracledb>=2.3",
     "psycopg[binary]>=3.2",
     "pytest>=8",
