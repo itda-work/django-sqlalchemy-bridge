@@ -34,6 +34,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- SQLite 에서 `DecimalField` 컬럼 타입의 집계·식(`sum()`·`max()`·`min()`·`coalesce()`·산술·`case()`·윈도·`FILTER`)을 값과 비교하면 에러 없이 0행이던 것을 고쳤다. Django 가 `DecimalField` 값을 텍스트로 묶는데 `SUM()` 같은 식의 결과는 SQLite 친화성이 없어 숫자가 늘 텍스트보다 작았다(`HAVING sum(price) >= '51'`). 브리지 SQLite dialect 가 ORM 의 `SQLiteNumericMixin` 처럼 그런 식을 `(CAST(... AS NUMERIC))` 으로 감싼다(SELECT 목록·HAVING·WHERE 등 모든 자리, 윈도·`FILTER` 는 그 바깥, 컬럼 자체는 감싸지 않음). 테스트가 `sum`·`avg(type_=...)`·`max`·`coalesce(sum(...), 0)` 를 bindparam·리터럴(Decimal·int)과 HAVING·상관 서브쿼리·파생 테이블에서 비교해 ORM `annotate().filter()` 와 같은 행을, 읽은 값이 ORM 과 같은 `Decimal` 인지를 SQLite·PostgreSQL·MySQL·Oracle 에서 확인한다. 다른 DB 의 SQL 은 바뀌지 않는다. SQLAlchemy `func.avg()` 는 타입이 없어 `type_=` 를 줘야 한다는 안내를 README·`llms.txt` 에 (#59).
 - 컬럼과 비교하는 값은 ORM 조회 `filter(field=v)` 의 경로(`get_prep_value()` 뒤 `get_db_prep_value(prepared=True)`, FK 는 대상 필드)로, INSERT `VALUES`·UPDATE `SET`·`bulk_*` 로 쓰는 값은 ORM 저장의 `get_db_prep_save()` 로 변환한다. 전에는 둘 다 `get_db_prep_value(prepared=False)` 라 Django 5.2 + MySQL 에서 `authors.c.id == 0` 이 `ValueError: The database backend does not accept 0 as a value for AutoField.` 였고(ORM `filter(id=0)` 은 실행), Django 6.1 에서는 반대로 `AutoField` 에 0 을 쓰는 INSERT 가 ORM 과 달리 검사 없이 나갔다. 비교 연산자의 직접 피연산자(`IN` 목록·`BETWEEN` 경계·튜플 항목 포함)가 조회 값이고, 컴파일러의 `visit_binary` 에서 가려 컴파일 캐시 항목에 bind 이름으로 둔다. `bulk_update` 의 `key` 값도 조회 값. 테스트가 Specimen 의 모든 필드에서 `==`·`<`·`IN` 파라미터를 ORM `filter()` 와 대조한다(SQLite·PostgreSQL·MySQL·Oracle) (#47).
 
 ## [0.1.0] - 2026-10-26

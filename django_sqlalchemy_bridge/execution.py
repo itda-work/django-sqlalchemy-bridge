@@ -94,12 +94,66 @@ class _LookupCompiler(SQLCompiler):
             self.lookup_binds += [item for item in items if isinstance(item, sa.BindParameter)]
 
 
+def _is_decimal(type_: sa.types.TypeEngine) -> bool:
+    return isinstance(type_, FieldType) and type_.field.get_internal_type() == "DecimalField"
+
+
+class _SQLiteNumericCompiler(SQLCompiler):
+    """Cast an expression of a ``DecimalField``'s type to ``NUMERIC``, as the ORM does on SQLite.
+
+    Django binds a ``DecimalField`` value as text on SQLite. A column has NUMERIC
+    affinity and compares with text as a number, but the result of ``SUM()``,
+    ``a + b`` or ``CASE`` has none, and there a number is less than any text:
+    ``SUM(price) >= '51'`` is false on every row. The ORM wraps every function,
+    arithmetic, ``CASE`` and window whose output field is a ``DecimalField`` in
+    ``(CAST(... AS NUMERIC))`` (``SQLiteNumericMixin``), which has the affinity;
+    so does this, by the expression's type. A function under a window or
+    ``FILTER`` is cast outside them, where the ORM casts it.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.cast_outside: set[int] = set()  # the compiler compiles in __init__
+        super().__init__(*args, **kwargs)
+
+    def cast_numeric(self, element: Any, sql: str) -> str:
+        if _is_decimal(element.type) and id(element) not in self.cast_outside:
+            return f"(CAST({sql} AS NUMERIC))"
+        return sql
+
+    def visit_function(self, func: Any, **kw: Any) -> str:
+        return self.cast_numeric(func, super().visit_function(func, **kw))
+
+    def visit_funcfilter(self, funcfilter: Any, **kw: Any) -> str:
+        self.cast_outside.add(id(funcfilter.func))
+        return self.cast_numeric(funcfilter, super().visit_funcfilter(funcfilter, **kw))
+
+    def visit_over(self, over: Any, **kw: Any) -> str:
+        self.cast_outside.add(id(over.element))
+        return self.cast_numeric(over, super().visit_over(over, **kw))
+
+    def visit_withingroup(self, withingroup: Any, **kw: Any) -> str:
+        self.cast_outside.add(id(withingroup.element))
+        return self.cast_numeric(withingroup, super().visit_withingroup(withingroup, **kw))
+
+    def visit_case(self, clause: Any, **kw: Any) -> str:
+        return self.cast_numeric(clause, super().visit_case(clause, **kw))
+
+    def visit_binary(self, binary: Any, override_operator: Any = None, **kw: Any) -> str:
+        # A comparison is a boolean; this is arithmetic.
+        return self.cast_numeric(binary, super().visit_binary(binary, override_operator=override_operator, **kw))
+
+    def visit_unary(self, unary: Any, **kw: Any) -> str:
+        sql = super().visit_unary(unary, **kw)
+        # Not a modifier (DESC, NULLS FIRST) nor DISTINCT, which keep their operand's type.
+        return self.cast_numeric(unary, sql) if unary.operator is operators.neg else sql
+
+
 def _sqlite_dialect() -> Dialect:
     from sqlalchemy.dialects import sqlite
 
     dialect = sqlite.dialect(paramstyle="format")
 
-    class Compiler(_LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
+    class Compiler(_SQLiteNumericCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
         pass
 
     dialect.statement_compiler = Compiler
