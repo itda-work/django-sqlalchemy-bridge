@@ -10,8 +10,12 @@ All notable changes to this project are documented here. The format follows [Kee
 - AI 코딩 에이전트용 안내 `django_sqlalchemy_bridge/llms.txt`(wheel 에 포함)와 같은 내용의 루트 `llms.txt`(llmstxt.org 형식, 영어): 언제 쓰고 언제 ORM 을 쓰는지, 지킬 것(`Engine`·`Session` 금지, signal·`save()` 우회, `bindparam` 재사용, `arun`, `INSERT … SELECT` 값의 타입), 공개 API 시그니처, 지원하지 않는 것, 예제. 모듈 docstring 이 이 파일과 읽는 명령을 가리킨다. 테스트가 두 파일의 일치, `__all__` 의 모든 이름과 시그니처, 빌드한 wheel 의 포함을 검사하고 `release_check.py --wheel` 을 `release.yml` 이 빌드 뒤에 돌린다 (#30).
 - ORM 으로 쓰기 어려운 쿼리 예제 테스트(`tests/test_examples.py`, 상점 모델): 재귀 CTE, 여러 CTE, CTE 위 윈도 함수, `INSERT … ON CONFLICT DO UPDATE/DO NOTHING … RETURNING`, `INSERT … SELECT`(업서트 포함), `UPDATE … FROM`(테이블·집계 서브쿼리), PostgreSQL 전용 `LATERAL`·`DISTINCT ON`·`UPDATE … FROM (VALUES …)`·데이터를 바꾸는 CTE. 결과를 ORM·기대값과 대조하고 SQLite·PostgreSQL 에서 돈다(PostgreSQL 전용 문법만 SQLite 에서 건너뜀) (#30).
 
+- `bulk_update(..., batch_size=None)`·`bulk_insert(..., batch_size=None)`: 양의 정수면 그 행 수마다 문장 하나(SQLite 는 `executemany()` 호출 하나)로 나눈다. 0 이하·정수가 아니면 실행 전 `ValueError`. 키 중복·누락 검사는 나누기 전에 전체로 하고, rowcount 는 합, `returning` 은 입력 순서. 기본값 `None`(PostgreSQL 한 문장)은 측정으로 정했다: 1,000,000행에서 `bulk_insert(batch_size=10_000)`은 클라이언트 tracemalloc 피크 849→226 MiB, 서버 백엔드 메모리 233→6 MiB 에 시간 4% 단축이지만 `bulk_update`는 배치하면 3~26% 느려진다(한 문장은 해시 조인 한 번, 작은 배치는 PK 인덱스 조회). README 에 언제 `batch_size`를 줄지 안내 (#35).
+- 벤치 시나리오 `batch`: 200,000·1,000,000행 `bulk_insert`/`bulk_update` 를 `batch_size` 별로 재고, PostgreSQL 에서는 백엔드 프로세스의 `/proc/<pid>/status`(`RssAnon`·`VmHWM`)를 샘플링해 서버 메모리를 잰다. README "성능과 메모리" 7 (#35).
+
 ### Changed
 
+- 문장을 둘 이상 실행하는 `bulk_update`·`bulk_insert`(배치가 여럿이거나 SQLite `executemany()`)는 Django `bulk_create`처럼 `transaction.atomic(using, savepoint=False)` 안에서 돈다. 전에는 autocommit 의 SQLite 에서 중간 행이 제약을 어기면 앞 행이 남았다(4행 INSERT 의 4번째 행이 3번째와 unique 키가 겹치면 앞 3행이 남음). 그래서 바깥 `atomic()` 안에서 이 에러를 잡고 계속하려면 호출을 `atomic()`(savepoint)으로 감싸야 한다. 감싸지 않고 잡으면 바깥 트랜잭션이 롤백으로 표시된다(Django `bulk_create`와 같음) (#35).
 - README "왜 만드나"를 "왜 쓰나"로 다시 씀: 목적은 표현력이고 성능은 대량 쓰기에서만 따라온다는 것, 언제 ORM 을 쓰는지, 예제 3개(재귀 CTE, 업서트 RETURNING, `UPDATE … FROM`). 예제 코드는 테스트 코드에서 `python -m tests.readme_examples --write` 로 옮기고 어긋나면 테스트가 실패한다. "AI 코딩 에이전트에게" 절에 `AGENTS.md`/`CLAUDE.md` 에 붙일 스니펫 (#30).
 - `INSERT … SELECT` 의 SELECT 목록 값에는 대상 컬럼 타입을 직접 줘야 한다는 안내를 README "실행하기"·`llms.txt` 규칙 6에 근거(SQLAlchemy 가 `from_select()` 컬럼 이름을 공개 API 로 내주지 않아 브리지가 메우지 않음)와 타입이 없을 때의 증상(UUID·dict 는 드라이버 에러, SQLite aware datetime 은 오프셋 문자열로 저장)과 함께 적음. 타입을 준 `sa.literal()`·`sa.bindparam()` 이 ORM 과 같은 값을 저장하는지 테스트로 고정 (#34).
 

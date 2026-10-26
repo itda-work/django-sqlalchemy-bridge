@@ -1,0 +1,704 @@
+{
+ "scenario": "batch",
+ "db": "postgres",
+ "date": "2026-10-26",
+ "quick": false,
+ "command": "python -m bench batch --db postgres",
+ "method": {
+  "repeat": 5,
+  "warmup": 1,
+  "time": "perf_counter around the measured call; best_s = min(times_s)",
+  "memory": "tracemalloc peak of one extra run, minus what was traced at its start"
+ },
+ "environment": {
+  "revision": "4c3dc84",
+  "python": "3.12.3",
+  "packages": {
+   "django-sqlalchemy-bridge": "0.1.0",
+   "django": "6.1.2",
+   "sqlalchemy": "2.1.6",
+   "psycopg": "3.3.6",
+   "psycopg-binary": "3.3.6",
+   "django-pgbulk": "3.3.0",
+   "django-cte": "4.0.0",
+   "asgiref": "3.13.0"
+  },
+  "python_sqlite3": "3.45.1",
+  "database": {
+   "vendor": "postgresql",
+   "server": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2)"
+  },
+  "ci_run": "https://github.com/itda-work/django-sqlalchemy-bridge/actions/runs/40263477440",
+  "machine": {
+   "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+   "cpu": "AMD EPYC 7763 64-Core Processor",
+   "cpu_count": 4,
+   "memory_bytes": 16766414848
+  }
+ },
+ "elapsed_s": 2071.2,
+ "load_average": {
+  "before": [
+   0.45703125,
+   0.146484375,
+   0.04833984375
+  ],
+  "after": [
+   1.0,
+   1.0,
+   0.95458984375
+  ]
+ },
+ "scope": "Timed: the bridge call alone. Untimed: building the input dicts and the transaction, rolled back after each run. 'server' is one more run on a fresh connection, sampling the PostgreSQL backend process's /proc status every 2 ms: rss_anon_peak_delta_bytes is the peak of its private memory over the call minus before it, vm_hwm_bytes its peak resident set (shared buffers included) since the connection opened.",
+ "columns_set": [
+  "label",
+  "amount",
+  "price"
+ ],
+ "cases": [
+  {
+   "op": "insert",
+   "n": 200000,
+   "variants": {
+    "insert_none": {
+     "note": "batch_size=None: PostgreSQL one statement, SQLite executemany (RETURNING: bulk_batch_size() batches)",
+     "warmup_s": [
+      3.572914623999992
+     ],
+     "times_s": [
+      3.5156273789999943,
+      3.4984146650000127,
+      3.492113580999984,
+      3.510990644000003,
+      3.4646323160000065
+     ],
+     "best_s": 3.4646323160000065,
+     "median_s": 3.4984146650000127,
+     "prepare_s": [
+      0.3578535800000111,
+      0.34053568099997733,
+      0.3400204940000151,
+      0.33926594199999727,
+      0.33666873300001043
+     ],
+     "tracemalloc_peak_bytes": 176693207,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 65597440,
+      "rss_anon_peak_delta_bytes": 62033920,
+      "vm_hwm_bytes": 114376704,
+      "samples": 532,
+      "temp_bytes": 19084495
+     }
+    },
+    "insert_batch10000": {
+     "note": "batch_size=10000",
+     "warmup_s": [
+      3.3358558279999784
+     ],
+     "times_s": [
+      3.3196862000000067,
+      3.304524612000023,
+      3.3450918499999887,
+      3.335177140000013,
+      3.3334383259999925
+     ],
+     "best_s": 3.304524612000023,
+     "median_s": 3.3334383259999925,
+     "prepare_s": [
+      0.28993670200000565,
+      0.2886500830000216,
+      0.2844033599999989,
+      0.285833518000004,
+      0.2867109400000061
+     ],
+     "tracemalloc_peak_bytes": 102452525,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 9691136,
+      "rss_anon_peak_delta_bytes": 6127616,
+      "vm_hwm_bytes": 59629568,
+      "samples": 506,
+      "temp_bytes": 0
+     }
+    },
+    "insert_batch50000": {
+     "note": "batch_size=50000",
+     "warmup_s": [
+      3.3431279229999973
+     ],
+     "times_s": [
+      3.350407074000003,
+      3.344887813000014,
+      3.3359793559999957,
+      3.341486511999989,
+      3.346831771999973
+     ],
+     "best_s": 3.3359793559999957,
+     "median_s": 3.344887813000014,
+     "prepare_s": [
+      0.295390531999999,
+      0.2928280860000143,
+      0.29256754200000046,
+      0.2925490190000062,
+      0.29214166099998806
+     ],
+     "tracemalloc_peak_bytes": 96122042,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 31756288,
+      "rss_anon_peak_delta_bytes": 28192768,
+      "vm_hwm_bytes": 80969728,
+      "samples": 513,
+      "temp_bytes": 0
+     }
+    },
+    "insert_batch200000": {
+     "note": "batch_size=200000",
+     "warmup_s": [
+      3.485445913999996
+     ],
+     "times_s": [
+      3.460355125999996,
+      3.434048157999996,
+      3.435113128000012,
+      3.4299854799999707,
+      3.435092501999975
+     ],
+     "best_s": 3.4299854799999707,
+     "median_s": 3.435092501999975,
+     "prepare_s": [
+      0.3186798680000038,
+      0.3228349729999991,
+      0.32162661400002435,
+      0.32420965699998305,
+      0.31994492299998
+     ],
+     "tracemalloc_peak_bytes": 176693151,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 65597440,
+      "rss_anon_peak_delta_bytes": 62033920,
+      "vm_hwm_bytes": 115240960,
+      "samples": 543,
+      "temp_bytes": 19084495
+     }
+    },
+    "insert_returning_none": {
+     "note": "returning=['id'], batch_size=None: PostgreSQL one statement, SQLite executemany (RETURNING: bulk_batch_size() batches)",
+     "warmup_s": [
+      3.5650977630000398
+     ],
+     "times_s": [
+      3.570955571000013,
+      3.5477729369999906,
+      3.563300464000008,
+      3.5832692010000073,
+      3.580620126000042
+     ],
+     "best_s": 3.5477729369999906,
+     "median_s": 3.570955571000013,
+     "prepare_s": [
+      0.285639070000002,
+      0.2848054989999582,
+      0.2839351129999841,
+      0.2842287490000217,
+      0.28949893700001894
+     ],
+     "tracemalloc_peak_bytes": 176693325,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 68767744,
+      "rss_anon_peak_delta_bytes": 65204224,
+      "vm_hwm_bytes": 117821440,
+      "samples": 576,
+      "temp_bytes": 22684495
+     }
+    },
+    "insert_returning_batch50000": {
+     "note": "returning=['id'], batch_size=50000",
+     "warmup_s": [
+      3.414257400999986
+     ],
+     "times_s": [
+      3.4101766269999985,
+      3.4068846669999857,
+      3.3981713329999934,
+      3.3994565659999694,
+      3.3631777609999745
+     ],
+     "best_s": 3.3631777609999745,
+     "median_s": 3.3994565659999694,
+     "prepare_s": [
+      0.2747980710000206,
+      0.28662136899998814,
+      0.2735099570000443,
+      0.2743933990000187,
+      0.2732724429999962
+     ],
+     "tracemalloc_peak_bytes": 79645283,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 33820672,
+      "rss_anon_peak_delta_bytes": 30257152,
+      "vm_hwm_bytes": 83296256,
+      "samples": 538,
+      "temp_bytes": 0
+     }
+    }
+   }
+  },
+  {
+   "op": "insert",
+   "n": 1000000,
+   "variants": {
+    "insert_none": {
+     "note": "batch_size=None: PostgreSQL one statement, SQLite executemany (RETURNING: bulk_batch_size() batches)",
+     "warmup_s": [
+      17.527029087000017
+     ],
+     "times_s": [
+      17.461234492000017,
+      17.39494472499996,
+      17.477965203999986,
+      17.414920438999957,
+      17.503804522999985
+     ],
+     "best_s": 17.39494472499996,
+     "median_s": 17.461234492000017,
+     "prepare_s": [
+      1.6804970609999828,
+      1.6831636229999845,
+      1.6746838130000015,
+      1.6954781730000263,
+      1.686813256999983
+     ],
+     "tracemalloc_peak_bytes": 890165161,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 247844864,
+      "rss_anon_peak_delta_bytes": 244281344,
+      "vm_hwm_bytes": 388255744,
+      "samples": 2675,
+      "temp_bytes": 95866896
+     }
+    },
+    "insert_batch10000": {
+     "note": "batch_size=10000",
+     "warmup_s": [
+      16.811722450999923
+     ],
+     "times_s": [
+      16.83900355000003,
+      16.792528835999974,
+      16.757823486999996,
+      16.695403852000027,
+      16.64242780999996
+     ],
+     "best_s": 16.64242780999996,
+     "median_s": 16.757823486999996,
+     "prepare_s": [
+      1.5285081839999748,
+      1.5298535880000372,
+      1.5380264059999718,
+      1.5363438990000304,
+      1.5228609419999657
+     ],
+     "tracemalloc_peak_bytes": 236926592,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 9916416,
+      "rss_anon_peak_delta_bytes": 6352896,
+      "vm_hwm_bytes": 151224320,
+      "samples": 2562,
+      "temp_bytes": 0
+     }
+    },
+    "insert_batch50000": {
+     "note": "batch_size=50000",
+     "warmup_s": [
+      16.647368024000002
+     ],
+     "times_s": [
+      16.643566941000017,
+      16.699254139999994,
+      16.72760576099995,
+      16.710781229999952,
+      16.81283107699994
+     ],
+     "best_s": 16.643566941000017,
+     "median_s": 16.710781229999952,
+     "prepare_s": [
+      1.5644722310000816,
+      1.5654230599999437,
+      1.5615721550000217,
+      1.5589046450000978,
+      1.5687226640000063
+     ],
+     "tracemalloc_peak_bytes": 407763677,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 31756288,
+      "rss_anon_peak_delta_bytes": 28192768,
+      "vm_hwm_bytes": 174247936,
+      "samples": 2530,
+      "temp_bytes": 0
+     }
+    },
+    "insert_batch200000": {
+     "note": "batch_size=200000",
+     "warmup_s": [
+      17.100197958999956
+     ],
+     "times_s": [
+      17.153418603999967,
+      16.99787015100003,
+      17.026487443000065,
+      17.04873972400003,
+      17.098112984000068
+     ],
+     "best_s": 16.99787015100003,
+     "median_s": 17.04873972400003,
+     "prepare_s": [
+      1.6335116100000278,
+      1.6494691039999907,
+      1.656422892999899,
+      1.659104898999999,
+      1.6501463409999815
+     ],
+     "tracemalloc_peak_bytes": 674743786,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 75051008,
+      "rss_anon_peak_delta_bytes": 71487488,
+      "vm_hwm_bytes": 215543808,
+      "samples": 2661,
+      "temp_bytes": 95866896
+     }
+    },
+    "insert_returning_none": {
+     "note": "returning=['id'], batch_size=None: PostgreSQL one statement, SQLite executemany (RETURNING: bulk_batch_size() batches)",
+     "warmup_s": [
+      18.136620218000076
+     ],
+     "times_s": [
+      18.11298064899995,
+      18.063300417999926,
+      18.03496658300014,
+      18.084725784000057,
+      18.12307751100002
+     ],
+     "best_s": 18.03496658300014,
+     "median_s": 18.084725784000057,
+     "prepare_s": [
+      1.50045500300007,
+      1.5089137229999778,
+      1.506373258000167,
+      1.5152987730000405,
+      1.5245542229999955
+     ],
+     "tracemalloc_peak_bytes": 890165399,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 250478592,
+      "rss_anon_peak_delta_bytes": 246915072,
+      "vm_hwm_bytes": 394801152,
+      "samples": 2896,
+      "temp_bytes": 113866896
+     }
+    },
+    "insert_returning_batch50000": {
+     "note": "returning=['id'], batch_size=50000",
+     "warmup_s": [
+      17.042060788999834
+     ],
+     "times_s": [
+      17.083965941000088,
+      17.05558532300006,
+      17.088411263999888,
+      17.0525498720001,
+      17.098495490999994
+     ],
+     "best_s": 17.0525498720001,
+     "median_s": 17.083965941000088,
+     "prepare_s": [
+      1.5027285950000078,
+      1.5098799929999132,
+      1.4975938370000677,
+      1.4910896960000173,
+      1.5046836349999921
+     ],
+     "tracemalloc_peak_bytes": 271949653,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 33820672,
+      "rss_anon_peak_delta_bytes": 30257152,
+      "vm_hwm_bytes": 173408256,
+      "samples": 2717,
+      "temp_bytes": 0
+     }
+    }
+   }
+  },
+  {
+   "op": "update",
+   "n": 200000,
+   "variants": {
+    "update_none": {
+     "note": "batch_size=None: PostgreSQL one statement, SQLite executemany (RETURNING: bulk_batch_size() batches)",
+     "warmup_s": [
+      3.0880898299999444
+     ],
+     "times_s": [
+      2.651530323000088,
+      2.6729038270000274,
+      2.6483728919999976,
+      2.685890888000131,
+      2.6411864100000457
+     ],
+     "best_s": 2.6411864100000457,
+     "median_s": 2.651530323000088,
+     "prepare_s": [
+      0.1644476870001199,
+      0.16122807400006423,
+      0.16340006700011145,
+      0.16328511300002901,
+      0.16222477299993443
+     ],
+     "tracemalloc_peak_bytes": 126699010,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 55554048,
+      "rss_anon_peak_delta_bytes": 51990528,
+      "vm_hwm_bytes": 143810560,
+      "samples": 669,
+      "temp_bytes": 29829159
+     }
+    },
+    "update_batch10000": {
+     "note": "batch_size=10000",
+     "warmup_s": [
+      3.4672208419999606
+     ],
+     "times_s": [
+      3.5090559729999313,
+      3.4994271240000216,
+      3.519421887000135,
+      3.443836293000004,
+      3.503346061000002
+     ],
+     "best_s": 3.443836293000004,
+     "median_s": 3.503346061000002,
+     "prepare_s": [
+      0.1530528430000686,
+      0.1534014000001207,
+      0.15360575799991238,
+      0.1527614489998541,
+      0.15280853899980684
+     ],
+     "tracemalloc_peak_bytes": 58851661,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 14807040,
+      "rss_anon_peak_delta_bytes": 11243520,
+      "vm_hwm_bytes": 97873920,
+      "samples": 1094,
+      "temp_bytes": 50054788
+     }
+    },
+    "update_batch50000": {
+     "note": "batch_size=50000",
+     "warmup_s": [
+      2.7117787960000896
+     ],
+     "times_s": [
+      2.684093642999869,
+      2.6786978760001148,
+      2.699659161999989,
+      2.6923793480000313,
+      2.6613527680001425
+     ],
+     "best_s": 2.6613527680001425,
+     "median_s": 2.684093642999869,
+     "prepare_s": [
+      0.16144980400008535,
+      0.16433525700017526,
+      0.16468294399987826,
+      0.16472855999995772,
+      0.1629397260001042
+     ],
+     "tracemalloc_peak_bytes": 92878010,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 29532160,
+      "rss_anon_peak_delta_bytes": 25968640,
+      "vm_hwm_bytes": 116158464,
+      "samples": 691,
+      "temp_bytes": 32439556
+     }
+    },
+    "update_batch200000": {
+     "note": "batch_size=200000",
+     "warmup_s": [
+      2.655899598999895
+     ],
+     "times_s": [
+      2.6505190370000946,
+      2.665211971999952,
+      2.6621719690001555,
+      2.6601172859998314,
+      2.6593478319998667
+     ],
+     "best_s": 2.6505190370000946,
+     "median_s": 2.6601172859998314,
+     "prepare_s": [
+      0.16147218499986593,
+      0.16275503799988655,
+      0.1620950310000353,
+      0.16210630399996262,
+      0.16137711800001853
+     ],
+     "tracemalloc_peak_bytes": 126699010,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 55554048,
+      "rss_anon_peak_delta_bytes": 51990528,
+      "vm_hwm_bytes": 143785984,
+      "samples": 654,
+      "temp_bytes": 29829159
+     }
+    }
+   }
+  },
+  {
+   "op": "update",
+   "n": 1000000,
+   "variants": {
+    "update_none": {
+     "note": "batch_size=None: PostgreSQL one statement, SQLite executemany (RETURNING: bulk_batch_size() batches)",
+     "warmup_s": [
+      16.54905318899978
+     ],
+     "times_s": [
+      16.721498499000063,
+      15.84322175200009,
+      15.895316645000094,
+      16.035190390000025,
+      15.95759420000013
+     ],
+     "best_s": 15.84322175200009,
+     "median_s": 15.95759420000013,
+     "prepare_s": [
+      0.8665516169999137,
+      0.8723458229999324,
+      0.8777842849999615,
+      0.8930863959999442,
+      0.8772112670001206
+     ],
+     "tracemalloc_peak_bytes": 639205766,
+     "server": {
+      "rss_anon_before_bytes": 3555328,
+      "rss_anon_peak_bytes": 208478208,
+      "rss_anon_peak_delta_bytes": 204922880,
+      "vm_hwm_bytes": 417943552,
+      "samples": 4207,
+      "temp_bytes": 206779520
+     }
+    },
+    "update_batch10000": {
+     "note": "batch_size=10000",
+     "warmup_s": [
+      19.57036044000006
+     ],
+     "times_s": [
+      19.706415832999937,
+      19.721450628999946,
+      19.47530643600021,
+      19.341641464000077,
+      19.51002644099981
+     ],
+     "best_s": 19.341641464000077,
+     "median_s": 19.51002644099981,
+     "prepare_s": [
+      0.7375928900000872,
+      0.7445160930001293,
+      0.7435645719999684,
+      0.7455232849999902,
+      0.7349354920002042
+     ],
+     "tracemalloc_peak_bytes": 171035343,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 16961536,
+      "rss_anon_peak_delta_bytes": 13398016,
+      "vm_hwm_bytes": 170356736,
+      "samples": 6051,
+      "temp_bytes": 824373632
+     }
+    },
+    "update_batch50000": {
+     "note": "batch_size=50000",
+     "warmup_s": [
+      20.065923580000117
+     ],
+     "times_s": [
+      20.23098681500005,
+      20.27481912799999,
+      20.00298448500007,
+      20.144497068999954,
+      20.116000916999838
+     ],
+     "best_s": 20.00298448500007,
+     "median_s": 20.144497068999954,
+     "prepare_s": [
+      0.7855499989998407,
+      0.785010887999988,
+      0.7835846929999661,
+      0.7897783119999531,
+      0.7846377449998272
+     ],
+     "tracemalloc_peak_bytes": 313494726,
+     "server": {
+      "rss_anon_before_bytes": 3563520,
+      "rss_anon_peak_bytes": 31346688,
+      "rss_anon_peak_delta_bytes": 27783168,
+      "vm_hwm_bytes": 184922112,
+      "samples": 6470,
+      "temp_bytes": 645488172
+     }
+    },
+    "update_batch200000": {
+     "note": "batch_size=200000",
+     "warmup_s": [
+      16.334116404000042
+     ],
+     "times_s": [
+      16.271045075999837,
+      16.25679688800028,
+      16.314879707999808,
+      16.361236025999915,
+      16.385881599000186
+     ],
+     "best_s": 16.25679688800028,
+     "median_s": 16.314879707999808,
+     "prepare_s": [
+      0.8439980309999555,
+      0.8405236130001867,
+      0.8441058809999049,
+      0.828330595999887,
+      0.8522795409999162
+     ],
+     "tracemalloc_peak_bytes": 457043530,
+     "server": {
+      "rss_anon_before_bytes": 3555328,
+      "rss_anon_peak_bytes": 61857792,
+      "rss_anon_peak_delta_bytes": 58302464,
+      "vm_hwm_bytes": 214880256,
+      "samples": 4663,
+      "temp_bytes": 347552260
+     }
+    }
+   }
+  }
+ ]
+}

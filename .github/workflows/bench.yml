@@ -1,6 +1,6 @@
 name: Bench
 
-# Manual only: a full run takes about half an hour of runner time and its
+# Manual only: a full run takes about an hour and a half of runner time and its
 # numbers go into the README by hand (python -m bench.readme --write).
 on:
   workflow_dispatch:
@@ -50,13 +50,13 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
       - run: uv sync --locked --group bench
       - run: uv run --no-sync python -c "import django, sqlalchemy; print('django', django.__version__, 'sqlalchemy', sqlalchemy.__version__)"
-      # The README shows every PostgreSQL scenario and SQLite's update, insert, read and lookup.
+      # The README shows every PostgreSQL scenario and SQLite's update, insert, read, lookup and batch.
       - name: bench (PostgreSQL)
         if: inputs.db != 'sqlite'
         run: uv run --no-sync python -m bench ${SCENARIOS} --db postgres --out results $QUICK
       - name: bench (SQLite)
         if: inputs.db != 'postgres' && !cancelled()
-        run: uv run --no-sync python -m bench ${SCENARIOS:-update insert read lookup} --db sqlite --out results $QUICK
+        run: uv run --no-sync python -m bench ${SCENARIOS:-update insert read lookup batch} --db sqlite --out results $QUICK
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:

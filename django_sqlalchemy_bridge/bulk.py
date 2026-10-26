@@ -5,7 +5,10 @@ parameter, cast to the column's Django database type, and ``unnest()`` turns
 the arrays back into rows (the strategy Django's own ``bulk_create`` takes on
 PostgreSQL). Elsewhere the same call runs ``cursor.executemany()``, or, for an
 INSERT with ``RETURNING``, multi-row ``VALUES`` statements in batches the
-backend accepts. The results are the same either way.
+backend accepts. The results are the same either way. ``batch_size`` splits the
+rows into that many a statement (or an ``executemany()`` call); a call that runs
+more than one statement does so in ``atomic(savepoint=False)``, as Django's
+``bulk_create`` does, so a failure writes none of its rows.
 
 Values convert as everywhere in the bridge: each value goes through its column's
 ``field.get_db_prep_value()`` (``None`` stays SQL ``NULL``) and ``RETURNING``
@@ -20,12 +23,13 @@ So every column must be given (see :func:`bulk_insert`).
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Mapping, Sequence
 from itertools import chain
 from typing import Any
 
 import sqlalchemy as sa
-from django.db import DEFAULT_DB_ALIAS, NotSupportedError, connections, models
+from django.db import DEFAULT_DB_ALIAS, NotSupportedError, connections, models, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
 
 from django_sqlalchemy_bridge.execution import _field_converters, check_returning, dialect_for, from_db
@@ -46,6 +50,7 @@ def bulk_update(
     *,
     key: str | Sequence[str] | None = None,
     columns: Sequence[ColumnRef] | None = None,
+    batch_size: int | None = None,
     using: str = DEFAULT_DB_ALIAS,
 ) -> int:
     """Update many rows of ``table``, each matched by its ``key`` columns, and return the rowcount.
@@ -61,9 +66,13 @@ def bulk_update(
     matches no row updates nothing; the rowcount counts the rows matched.
 
     PostgreSQL runs one ``UPDATE ... FROM unnest(...)`` statement; other
-    backends ``cursor.executemany()``. No model signals are sent and
+    backends ``cursor.executemany()``. A positive ``batch_size`` runs one such
+    statement (or call) per that many rows instead; the rows are checked as a
+    whole first and the rowcount is the sum. More than one statement runs in
+    ``atomic(using, savepoint=False)``. No model signals are sent and
     ``auto_now`` is not applied.
     """
+    _check_batch_size(batch_size)
     table = _table(table)
     rows = list(rows)
     keys = [_column(table, name) for name in _names(key)] if key is not None else list(table.primary_key.columns)
@@ -90,6 +99,8 @@ def bulk_update(
 
     qn = connection.ops.quote_name
     target = qn(table.name)
+    batches = _batches(len(rows), batch_size)
+    count = 0
     if connection.vendor == "postgresql":
         alias = qn(_ROWS_ALIAS)
         everything = keys + sets
@@ -98,17 +109,22 @@ def bulk_update(
             f" FROM {_unnest(everything, connection)} AS {alias} ({', '.join(qn(c.name) for c in everything)})"
             f" WHERE {' AND '.join(f'{target}.{qn(c.name)} = {alias}.{qn(c.name)}' for c in keys)}"
         )
-        with connection.cursor() as cursor:
-            cursor.execute(sql, key_values + set_values)
-            return cursor.rowcount
+        with _atomic(using, len(batches) > 1), connection.cursor() as cursor:
+            for batch in batches:
+                cursor.execute(sql, [values[batch] for values in key_values + set_values])
+                count += cursor.rowcount
+        return count
 
     sql = (
         f"UPDATE {target} SET {', '.join(f'{qn(c.name)} = %s' for c in sets)}"
         f" WHERE {' AND '.join(f'{qn(c.name)} = %s' for c in keys)}"
     )
-    with connection.cursor() as cursor:
-        cursor.executemany(sql, list(zip(*set_values, *key_values)))
-        return cursor.rowcount
+    params = list(zip(*set_values, *key_values))
+    with _atomic(using, len(params) > 1), connection.cursor() as cursor:
+        for batch in batches:
+            cursor.executemany(sql, params[batch])
+            count += cursor.rowcount
+    return count
 
 
 def bulk_insert(
@@ -116,6 +132,7 @@ def bulk_insert(
     rows: Sequence[Row],
     *,
     returning: Sequence[ColumnRef] | None = None,
+    batch_size: int | None = None,
     using: str = DEFAULT_DB_ALIAS,
 ) -> int | list[tuple[Any, ...]]:
     """Insert ``rows`` into ``table`` and return the rowcount, or the ``returning`` columns of each row.
@@ -136,8 +153,13 @@ def bulk_insert(
     PostgreSQL runs one ``INSERT ... SELECT * FROM unnest(...)`` statement.
     Other backends run ``cursor.executemany()``, or with ``returning`` multi-row
     ``VALUES`` statements of at most ``connection.ops.bulk_batch_size()`` rows.
-    No model signals are sent.
+    A positive ``batch_size`` runs one statement (or ``executemany()`` call) per
+    that many rows instead, never more than ``bulk_batch_size()`` with
+    ``returning``; the rowcount is the sum and the returned rows stay in the
+    order of ``rows``. More than one statement runs in
+    ``atomic(using, savepoint=False)``. No model signals are sent.
     """
+    _check_batch_size(batch_size)
     table = _table(table)
     rows = list(rows)
     returned = [_column(table, name) for name in returning] if returning is not None else None
@@ -160,32 +182,58 @@ def bulk_insert(
     qn = connection.ops.quote_name
     head = f"INSERT INTO {qn(table.name)} ({', '.join(qn(c.name) for c in given)})"
     tail = f" RETURNING {', '.join(qn(c.name) for c in returned)}" if returned is not None else ""
+    count = 0
+    out: list[tuple[Any, ...]] = []
     if connection.vendor == "postgresql":
         sql = f"{head} SELECT * FROM {_unnest(given, connection)}{tail}"
-        with connection.cursor() as cursor:
-            cursor.execute(sql, values)
-            if returned is None:
-                return cursor.rowcount
-            return _convert(cursor.fetchall(), returned, connection)
+        batches = _batches(len(rows), batch_size)
+        with _atomic(using, len(batches) > 1), connection.cursor() as cursor:
+            for batch in batches:
+                cursor.execute(sql, [column[batch] for column in values])
+                if returned is None:
+                    count += cursor.rowcount
+                else:
+                    out.extend(_convert(cursor.fetchall(), returned, connection))
+        return count if returned is None else out
 
     params = list(zip(*values))
     if returned is None:
-        with connection.cursor() as cursor:
-            cursor.executemany(f"{head} VALUES ({', '.join(['%s'] * len(given))})", params)
-            return cursor.rowcount
+        with _atomic(using, len(params) > 1), connection.cursor() as cursor:
+            for batch in _batches(len(params), batch_size):
+                cursor.executemany(f"{head} VALUES ({', '.join(['%s'] * len(given))})", params[batch])
+                count += cursor.rowcount
+        return count
     if not connection.features.can_return_rows_from_bulk_insert:
         raise NotSupportedError(f"{connection.vendor} cannot return rows from a multi-row INSERT")
     size = max(connection.ops.bulk_batch_size([c.type.field for c in given], params), 1)
+    batches = _batches(len(params), min(size, batch_size or size))
     placeholder = f"({', '.join(['%s'] * len(given))})"
-    out: list[tuple[Any, ...]] = []
-    with connection.cursor() as cursor:
-        for start in range(0, len(params), size):
-            batch = params[start : start + size]
+    with _atomic(using, len(batches) > 1), connection.cursor() as cursor:
+        for batch in batches:
+            rows_of_batch = params[batch]
             cursor.execute(
-                f"{head} VALUES {', '.join([placeholder] * len(batch))}{tail}", list(chain.from_iterable(batch))
+                f"{head} VALUES {', '.join([placeholder] * len(rows_of_batch))}{tail}",
+                list(chain.from_iterable(rows_of_batch)),
             )
             out.extend(_convert(cursor.fetchall(), returned, connection))
     return out
+
+
+def _check_batch_size(batch_size: int | None) -> None:
+    if batch_size is not None and (isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0):
+        raise ValueError(f"batch_size must be a positive integer or None, got {batch_size!r}")
+
+
+def _batches(count: int, batch_size: int | None) -> list[slice]:
+    """Slices of ``count`` rows, ``batch_size`` at a time (all at once for ``None``)."""
+    size = batch_size or count
+    return [slice(start, start + size) for start in range(0, count, size)]
+
+
+def _atomic(using: str, needed: bool) -> contextlib.AbstractContextManager:
+    # As Django's bulk_create and bulk_update do: a call that runs several
+    # statements (executemany runs one per row) writes all of its rows or none.
+    return transaction.atomic(using=using, savepoint=False) if needed else contextlib.nullcontext()
 
 
 def _table(table: sa.Table | type[models.Model]) -> sa.Table:
