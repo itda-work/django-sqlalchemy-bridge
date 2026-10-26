@@ -4,7 +4,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
-from django.db import connection, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models.signals import post_save, pre_save
 from django.test.utils import CaptureQueriesContext
 
@@ -422,3 +422,143 @@ def test_too_long_values_fail_instead_of_being_cut():
         with transaction.atomic():
             bulk_update(authors, [{"id": author.pk, "name": "y" * 101}])
     assert list(Author.objects.values_list("name", flat=True)) == ["a"]
+
+
+# --- batch_size --------------------------------------------------------------
+
+
+def book_row(author, uid=None, title="t"):
+    return {
+        "uid": uid or uuid.uuid4(),
+        "author_id": author.pk,
+        "title": title,
+        "price": Decimal("1"),
+        "status": "draft",
+        "meta": {},
+    }
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, "10", True, False])
+def test_batch_size_must_be_a_positive_integer(bad):
+    rows = [{"name": "a", "joined_at": AT}]
+    with CaptureQueriesContext(connection) as ctx:
+        with pytest.raises(ValueError, match="batch_size"):
+            bulk_insert(authors, rows, batch_size=bad)
+        with pytest.raises(ValueError, match="batch_size"):
+            bulk_insert(authors, [], batch_size=bad)
+        with pytest.raises(ValueError, match="batch_size"):
+            bulk_update(authors, [{"id": 1, "name": "x"}], batch_size=bad)
+        with pytest.raises(ValueError, match="batch_size"):
+            bulk_update(authors, [], batch_size=bad)
+    assert ctx.captured_queries == []
+
+
+def test_bulk_insert_batch_size_splits_the_rows():
+    rows = [{"name": f"n{i}", "joined_at": AT} for i in range(10)]
+    with CaptureQueriesContext(connection) as ctx:
+        assert bulk_insert(authors, rows, batch_size=3) == 10
+    assert len(ctx.captured_queries) == 4  # 3 + 3 + 3 + 1
+    assert sorted(Author.objects.values_list("name", flat=True)) == sorted(r["name"] for r in rows)
+
+
+def test_bulk_insert_batch_size_larger_than_the_rows_is_one_statement():
+    rows = [{"name": f"n{i}", "joined_at": AT} for i in range(10)]
+    with CaptureQueriesContext(connection) as ctx:
+        assert bulk_insert(authors, rows, batch_size=10_000) == 10
+    assert len(ctx.captured_queries) == 1
+
+
+def test_bulk_insert_returning_with_batch_size_keeps_the_input_order():
+    rows = [{"name": f"n{i:02d}", "joined_at": AT} for i in range(10)][::-1]
+    with CaptureQueriesContext(connection) as ctx:
+        out = bulk_insert(authors, rows, returning=["name", "id", "joined_at"], batch_size=3)
+    assert len(ctx.captured_queries) == 4
+    assert [r[0] for r in out] == [r["name"] for r in rows]
+    assert [r[2] for r in out] == [AT] * 10
+    ids = [r[1] for r in out]
+    assert ids == sorted(ids)
+    assert dict(Author.objects.values_list("id", "name")) == {r[1]: r[0] for r in out}
+
+
+def test_bulk_insert_returning_batch_size_is_capped_by_the_backend_limit(monkeypatch):
+    # SQLite: a batch_size above bulk_batch_size() still splits at the backend's limit.
+    monkeypatch.setattr(type(connection.features), "max_query_params", 7, raising=False)
+    rows = [{"name": f"n{i}", "joined_at": AT} for i in range(10)]
+    with CaptureQueriesContext(connection) as ctx:
+        out = bulk_insert(authors, rows, returning=["name"], batch_size=5)
+    assert [r[0] for r in out] == [r["name"] for r in rows]
+    assert len(ctx.captured_queries) == (2 if IS_PG else 4)  # SQLite: 7 params // 2 columns = 3 rows a batch
+
+
+def test_bulk_update_batch_size_splits_the_rows_and_sums_the_rowcount():
+    ids = [r[0] for r in bulk_insert(authors, [{"name": "old", "joined_at": AT}] * 9, returning=["id"])]
+    rows = [{"id": pk, "name": f"new{pk}"} for pk in ids] + [{"id": max(ids) + 1000, "name": "ghost"}]
+    with CaptureQueriesContext(connection) as ctx:
+        assert bulk_update(authors, rows, batch_size=4) == 9  # misses count nothing
+    assert len(ctx.captured_queries) == 3  # 4 + 4 + 2
+    assert dict(Author.objects.values_list("id", "name")) == {pk: f"new{pk}" for pk in ids}
+
+
+def test_bulk_update_checks_keys_across_batches_before_running():
+    author = make_author()
+    rows = [{"id": author.pk, "name": "x"}] + [{"id": author.pk + i, "name": "y"} for i in range(1, 5)]
+    rows.append({"id": author.pk, "name": "z"})
+    with CaptureQueriesContext(connection) as ctx:
+        with pytest.raises(ValueError, match="duplicate key .* rows 0 and 5"):
+            bulk_update(authors, rows, batch_size=2)
+        with pytest.raises(ValueError, match="row 5 .*'id'"):
+            bulk_update(authors, rows[:5] + [{"name": "w"}], batch_size=2)
+    assert ctx.captured_queries == []
+
+
+# --- atomicity: a failing call writes nothing --------------------------------
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("returning", [None, ["id"]])
+@pytest.mark.parametrize("batch_size", [None, 2])
+def test_bulk_insert_that_fails_in_a_later_batch_writes_nothing(batch_size, returning, monkeypatch):
+    # Outside any atomic(): the 2nd batch (or, unbatched on SQLite, the 4th executemany row) breaks Book.uid.
+    if returning:
+        monkeypatch.setattr(type(connection.features), "max_query_params", 12, raising=False)  # SQLite: 2 rows a batch
+    author = make_author()
+    taken = uuid.uuid4()
+    rows = [book_row(author), book_row(author), book_row(author, taken), book_row(author, taken)]
+    with pytest.raises(IntegrityError):
+        bulk_insert(books, rows, returning=returning, batch_size=batch_size)
+    assert Book.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("batch_size", [None, 2])
+def test_bulk_update_that_fails_in_a_later_batch_writes_nothing(batch_size):
+    author = make_author()
+    uids = [uuid.uuid4() for _ in range(4)]
+    pks = [r[0] for r in bulk_insert(books, [book_row(author, u) for u in uids], returning=["id"])]
+    # Row 3 takes row 0's old uid; row 0 is not updated, so the 2nd batch breaks Book.uid.
+    rows = [{"id": pks[1], "uid": uuid.uuid4()}, {"id": pks[2], "uid": uuid.uuid4()}, {"id": pks[3], "uid": uids[0]}]
+    with pytest.raises(IntegrityError):
+        bulk_update(books, rows, batch_size=batch_size)
+    assert list(Book.objects.order_by("id").values_list("uid", flat=True)) == uids
+
+
+@pytest.mark.django_db(transaction=True)
+def test_batched_failure_inside_an_outer_atomic():
+    author = make_author()
+    taken = uuid.uuid4()
+    rows = [book_row(author), book_row(author), book_row(author, taken), book_row(author, taken)]
+    # Caught at a savepoint: the outer transaction goes on without any of the call's rows.
+    with transaction.atomic():
+        Book.objects.create(**{k: v for k, v in book_row(author).items() if k != "author_id"}, author=author)
+        with pytest.raises(IntegrityError):
+            with transaction.atomic():
+                bulk_insert(books, rows, batch_size=2)
+        assert Book.objects.count() == 1
+    assert Book.objects.count() == 1
+    # Not caught inside: the outer transaction rolls back as a whole.
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            make_author("gone")
+            bulk_insert(books, rows, batch_size=2)
+    assert Book.objects.count() == 1
+    assert not Author.objects.filter(name="gone").exists()
