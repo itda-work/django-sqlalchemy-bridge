@@ -1,0 +1,258 @@
+{
+ "scenario": "lookup",
+ "db": "postgres",
+ "date": "2026-10-26",
+ "quick": false,
+ "command": "python -m bench lookup --db postgres",
+ "method": {
+  "repeat": 5,
+  "warmup": 1,
+  "time": "perf_counter around the measured call; best_s = min(times_s)",
+  "memory": "tracemalloc peak of one extra run, minus what was traced at its start"
+ },
+ "environment": {
+  "revision": "622a960",
+  "python": "3.12.3",
+  "packages": {
+   "django-sqlalchemy-bridge": "0.1.0",
+   "django": "6.1.2",
+   "sqlalchemy": "2.1.6",
+   "psycopg": "3.3.6",
+   "psycopg-binary": "3.3.6",
+   "django-pgbulk": "3.3.0",
+   "django-cte": "4.0.0",
+   "asgiref": "3.13.0"
+  },
+  "python_sqlite3": "3.45.1",
+  "database": {
+   "vendor": "postgresql",
+   "server": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2)"
+  },
+  "ci_run": "https://github.com/itda-work/django-sqlalchemy-bridge/actions/runs/40254260248",
+  "machine": {
+   "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+   "cpu": "AMD EPYC 9V45 96-Core Processor",
+   "cpu_count": 4,
+   "memory_bytes": 16766414848
+  }
+ },
+ "elapsed_s": 48.4,
+ "load_average": {
+  "before": [
+   0.87548828125,
+   0.25244140625,
+   0.0849609375
+  ],
+  "after": [
+   1.27685546875,
+   0.46337890625,
+   0.16748046875
+  ]
+ },
+ "scope": "Timed: 5000 lookups of one row (7 columns) by primary key, each returning the row, inside one transaction (Django atomic(), or the SQLAlchemy connection's own). Untimed: the transaction itself.",
+ "cases": [
+  {
+   "n": 5000,
+   "variants": {
+    "django_get": {
+     "note": "Item.objects.get(pk=pk)",
+     "warmup_s": [
+      1.3224779699999942
+     ],
+     "times_s": [
+      1.4156729709999922,
+      1.3239048149999917,
+      1.3156930599999868,
+      1.4825740929999967,
+      1.3371991100000002
+     ],
+     "best_s": 1.3156930599999868,
+     "median_s": 1.3371991100000002,
+     "prepare_s": [
+      7.610000096747171e-07,
+      7.710000033966935e-07,
+      7.809999971186699e-07,
+      8.110000067063083e-07,
+      6.309999918130416e-07
+     ]
+    },
+    "django_values_list_get": {
+     "note": "Item.objects.values_list(*columns).get(pk=pk)",
+     "warmup_s": [
+      1.5275086550000054
+     ],
+     "times_s": [
+      1.5183731999999992,
+      1.4174488879999956,
+      1.5042393389999944,
+      1.4146617810000066,
+      1.493968725000002
+     ],
+     "best_s": 1.4146617810000066,
+     "median_s": 1.493968725000002,
+     "prepare_s": [
+      7.909999908406462e-07,
+      7.809999971186699e-07,
+      7.410000080199097e-07,
+      8.009999987734773e-07,
+      8.720000010953299e-07
+     ]
+    },
+    "django_raw_cursor": {
+     "note": "cursor.execute(sql, (pk,)); fetchone()",
+     "warmup_s": [
+      0.4732652049999899
+     ],
+     "times_s": [
+      0.48764257999999927,
+      0.4890181740000088,
+      0.5055165180000074,
+      0.48978784500000927,
+      0.5241133340000061
+     ],
+     "best_s": 0.48764257999999927,
+     "median_s": 0.48978784500000927,
+     "prepare_s": [
+      7.210000063651023e-07,
+      1.0320000001229346e-06,
+      7.210000063651023e-07,
+      9.719999951585123e-07,
+      1.0320000001229346e-06
+     ]
+    },
+    "bridge_execute_build_each": {
+     "note": "execute(select(...).where(id == pk)): statement built and compiled per call",
+     "warmup_s": [
+      1.6034264959999973
+     ],
+     "times_s": [
+      1.572524446000017,
+      1.6512326490000078,
+      1.587540854999986,
+      1.623753966999999,
+      1.6781069090000074
+     ],
+     "best_s": 1.572524446000017,
+     "median_s": 1.623753966999999,
+     "prepare_s": [
+      1.0910000014519028e-06,
+      7.609999954638624e-07,
+      8.419999915076914e-07,
+      1.251999975693252e-06,
+      1.3819999935549276e-06
+     ]
+    },
+    "bridge_execute_bindparam": {
+     "note": "execute(stmt, {'pk': pk}) with stmt built once: compiled on the first call, then cached",
+     "warmup_s": [
+      0.8123833930000046
+     ],
+     "times_s": [
+      0.8263836389999994,
+      0.7491899339999861,
+      0.7559595100000251,
+      0.790649682999998,
+      0.8013512770000091
+     ],
+     "best_s": 0.7491899339999861,
+     "median_s": 0.790649682999998,
+     "prepare_s": [
+      6.009999822254031e-07,
+      1.1810000160039635e-06,
+      1.1710000080711325e-06,
+      1.1820000054285629e-06,
+      8.809999769709975e-07
+     ]
+    },
+    "bridge_prepare_only": {
+     "note": "internal prepare() alone on stmt built once (cache hit + convert params), no database",
+     "warmup_s": [
+      0.05241700799999194
+     ],
+     "times_s": [
+      0.050998690000000124,
+      0.05074523799999042,
+      0.05078827299999489,
+      0.05091661700001282,
+      0.05324601799998163
+     ],
+     "best_s": 0.05074523799999042,
+     "median_s": 0.05091661700001282,
+     "prepare_s": [
+      7.010000047102949e-07,
+      9.710000199447677e-07,
+      9.710000199447677e-07,
+      9.209999802806124e-07,
+      8.509999815942138e-07
+     ]
+    },
+    "bridge_prepared_once": {
+     "note": "NOT bridge API: internal prepare() once, then Django cursor + converters only",
+     "warmup_s": [
+      0.4836671389999765
+     ],
+     "times_s": [
+      0.49707393199997796,
+      0.5490042570000071,
+      0.4713420269999915,
+      0.4909043099999906,
+      0.49342232999998714
+     ],
+     "best_s": 0.4713420269999915,
+     "median_s": 0.49342232999998714,
+     "prepare_s": [
+      8.510000100159232e-07,
+      9.710000199447677e-07,
+      1.3120000232902385e-06,
+      9.62000001436536e-07,
+      8.509999815942138e-07
+     ]
+    },
+    "sqlalchemy_core_build_each": {
+     "note": "Connection.execute(select(...).where(id == pk)).one() (SQLAlchemy's compiled cache); own engine",
+     "warmup_s": [
+      0.9130048869999996
+     ],
+     "times_s": [
+      0.8405423940000105,
+      0.8491798249999931,
+      0.8548790479999866,
+      0.917231820000012,
+      0.8333092999999963
+     ],
+     "best_s": 0.8333092999999963,
+     "median_s": 0.8491798249999931,
+     "prepare_s": [
+      9.510000040791056e-07,
+      7.809999829078151e-07,
+      9.510000040791056e-07,
+      4.999999987376214e-07,
+      5.110000245167612e-07
+     ]
+    },
+    "sqlalchemy_core_bindparam": {
+     "note": "Connection.execute(stmt, {'pk': pk}).one(), stmt built once; own engine",
+     "warmup_s": [
+      0.6394175659999917
+     ],
+     "times_s": [
+      0.5499903170000096,
+      0.5670571969999969,
+      0.5785849019999887,
+      0.6035574759999918,
+      0.567915284999998
+     ],
+     "best_s": 0.5499903170000096,
+     "median_s": 0.567915284999998,
+     "prepare_s": [
+      9.009999928366597e-07,
+      1.3320000107341912e-06,
+      1.0519999875668873e-06,
+      1.1509999922054703e-06,
+      9.519999935037049e-07
+     ]
+    }
+   }
+  }
+ ]
+}
