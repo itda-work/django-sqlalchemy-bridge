@@ -31,7 +31,8 @@ from typing import Any
 import sqlalchemy as sa
 from django.db import DEFAULT_DB_ALIAS, DatabaseError, NotSupportedError, connections, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
-from django.db.models import Expression
+from django.db.models import Expression, Model
+from django.db.models.query import RawQuerySet
 from sqlalchemy.engine import BindTyping, Dialect
 from sqlalchemy.engine.interfaces import Compiled
 from sqlalchemy.sql import operators
@@ -39,9 +40,9 @@ from sqlalchemy.sql.compiler import SQLCompiler
 from sqlalchemy.sql.elements import ClauseList, ExpressionClauseList, Grouping
 
 from django_sqlalchemy_bridge import _sa_result
-from django_sqlalchemy_bridge.tables import FieldType, _generic_type, _oracle_name
+from django_sqlalchemy_bridge.tables import FieldType, _db_name, _generic_type, _oracle_name
 
-__all__ = ["execute", "execute_pipeline", "execute_result", "stream"]
+__all__ = ["execute", "execute_pipeline", "execute_result", "raw", "stream"]
 
 Params = Mapping[str, Any]
 
@@ -712,6 +713,49 @@ def execute_result(
     if keys is None:
         raise ValueError("statement returned no rows; use execute() for its rowcount")
     return _sa_result.result_from_rows(keys, rows)
+
+
+def raw(
+    model: type[Model],
+    stmt: sa.sql.ClauseElement,
+    params: Params | None = None,
+    *,
+    using: str = DEFAULT_DB_ALIAS,
+) -> RawQuerySet:
+    """Return ``model``'s instances for the rows of ``stmt``, as ``Model.objects.raw()`` gives them.
+
+    ``stmt`` is compiled for database ``using`` and ``params`` converted as in
+    :func:`execute` (a value compared with a column as the ORM's lookup does)
+    now, so a mistake shows before anything runs. The SQL runs on Django's
+    cursor when the returned ``RawQuerySet`` is iterated, and Django builds the
+    instances: a result column named as a field's column fills that field,
+    converted as the ORM reads it; a field left out is deferred; any other
+    column (a label) becomes an attribute holding the value as the database
+    driver returned it.
+
+    Only statements that return rows are accepted: DML (``RETURNING`` or not)
+    and a sequence of params raise ``ValueError``, and so does a statement
+    whose columns are known (a ``select()``) but lack the primary key. A
+    ``text()`` statement is left to Django, which raises ``FieldDoesNotExist``
+    when it runs without the primary key.
+    """
+    if params is not None and not isinstance(params, Mapping):
+        raise ValueError("raw() runs one statement; pass a single mapping of params")
+    if isinstance(stmt, sa.sql.dml.UpdateBase):
+        raise ValueError("raw() takes a statement that selects rows (SELECT); use execute() for DML")
+    connection = connections[using]
+    prepared = prepare(stmt, params, connection)
+    if prepared.names:
+        # The names Django will read from the cursor (on Oracle, respelled as Django spells them).
+        reported = {_db_name(connection, name) for name in prepared.names}
+        converter = connection.introspection.identifier_converter
+        missing = [f.column for f in model._meta.pk_fields if converter(f.column) not in reported]
+        if missing:
+            raise ValueError(
+                f"raw() needs the primary key of {model.__name__}: the statement does not select "
+                f"{', '.join(map(repr, missing))}"
+            )
+    return model._default_manager.db_manager(using).raw(prepared.sql, prepared.param_rows[0])
 
 
 # QuerySet.iterator()'s default chunk size.

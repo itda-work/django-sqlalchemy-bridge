@@ -415,7 +415,8 @@ for row in result.mappings():
 - **컴파일 캐시: `bindparam()`으로 만든 문장을 재사용하면 컴파일을 건너뜁니다.** 브리지는 넘겨받은 문장 객체마다 컴파일 결과를 기억해, 같은 객체를 같은 DB 종류(vendor)에서 같은 이름의 `params`로 다시 실행하면 컴파일 없이 값 변환과 실행만 합니다(`execute`·`execute_result`·`stream` 공통). 그러니 값은 `sa.bindparam("pk")`로 비워 둔 문장을 한 번 만들어 두고(모듈 수준 등) 돌려 쓰세요. `where(orders.c.id == pk)`처럼 값을 넣어 매번 새로 만든 문장은 매번 컴파일합니다(아래 "성능과 메모리" 4번). `params` 이름이 달라지면(예: UPDATE 의 `SET` 컬럼) SQL 이 달라지므로 따로 컴파일합니다. 결과 변환기와 `RETURNING` 지원 검사는 연결(alias)마다 다를 수 있어 매 호출 그 연결로 다시 정합니다. 기억한 결과는 문장 객체가 사라지면 함께 사라지고, 여러 스레드가 같은 문장을 써도 됩니다. 끄는 스위치는 없습니다(결과가 캐시 여부와 무관하므로).
 - 리터럴 `%`는 그대로 써도 됩니다(`LIKE 'a%'`, `text("SELECT '100%'")`). 브리지가 `%s` 자리표시로 컴파일하고 `%`를 `%%`로 바꾼 뒤, 파라미터가 없어도 빈 튜플을 넘겨 백엔드가 되돌리게 합니다(MySQL 의 mysqlclient 도 같은 format paramstyle 입니다). `sa.text()`는 그 DB 의 SQL 그대로라, MySQL 기본 `sql_mode`에서는 문자열 리터럴의 백슬래시가 이스케이프입니다(`ESCAPE '\\'`로 써야 백슬래시 하나).
 - async 코드에서 직접 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. 작업 단위를 동기 함수로 묶어 `arun`으로 부르세요(아래 "비동기").
-- DRF·클래스 기반 뷰(`ViewSet`·`APIView`·페이지네이션·`TemplateView`)에서 쓰는 레시피와 되지 않는 것(`ModelViewSet`·`ModelSerializer`·필터 백엔드·`CursorPagination` 등)은 [docs/drf.md](docs/drf.md)에 있습니다.
+- 모델 인스턴스가 필요하면 `raw(Model, stmt)`가 Django `RawQuerySet`을 줍니다(아래 "모델 인스턴스로 읽기").
+- DRF·클래스 기반 뷰(`ViewSet`·`APIView`·페이지네이션·`ModelSerializer`·`TemplateView`)에서 쓰는 레시피와 되지 않는 것(`ModelViewSet`·`DetailView`·필터 백엔드·`CursorPagination` 등)은 [docs/drf.md](docs/drf.md)에 있습니다.
 
 ### 쪼개 읽기: `stream`
 
@@ -438,6 +439,25 @@ for order_id, paid_at in stream(sa.select(orders.c.id, orders.c.paid_at), chunk_
 - 커서는 그 뒤 다른 트랜잭션이 커밋돼도 살아 있고, 만들 때의 결과를 그대로 줍니다. 닫지 않으면 연결이 닫힐 때까지 서버에 남습니다.
 - 반대로 `atomic()` 안에서 연 스트림은 그 트랜잭션이 끝나면 서버 커서가 사라집니다. 블록을 나온 뒤 계속 소비하면 `ProgrammingError: cursor ... does not exist`가 납니다. 블록 안에서 다 읽으세요.
 - PgBouncer를 transaction pooling 모드로 쓰면 트랜잭션이 끝난 뒤의 `FETCH`가 커서를 연 것과 다른 서버 연결로 갈 수 있으니, Django 문서대로 `DISABLE_SERVER_SIDE_CURSORS: True`를 설정해야 합니다. 그러면 `stream`도 일반 커서를 씁니다(드라이버가 결과를 한꺼번에 받습니다).
+
+### 모델 인스턴스로 읽기: `raw`
+
+```python
+from django_sqlalchemy_bridge import raw
+
+paid = sa.select(orders).where(orders.c.status == sa.bindparam("status"))
+for order in raw(Order, paid, {"status": "paid"}):  # Order 인스턴스. 쿼리는 여기서 나간다
+    order.customer  # 평소의 모델 인스턴스: 관계·메서드·ModelSerializer 가 그대로
+```
+
+- `raw(model, stmt, params=None, *, using="default")`는 Django `RawQuerySet`을 돌려줍니다. 브리지는 문장을 `using` 연결의 dialect 로 컴파일하고 `params`를 `execute`와 같이 Django 필드 기준으로 변환(컬럼과 비교하는 값은 ORM 조회처럼)한 뒤 `model._default_manager.db_manager(using).raw(sql, params)`를 부릅니다. 컴파일 캐시도 `execute`와 같이 탑니다.
+- **게으릅니다.** 컴파일·변환·검사는 `raw()`를 부를 때 하지만 SQL 은 `RawQuerySet`을 반복할 때 Django 커서로 나갑니다(`connection.queries`·`execute_wrapper`·`assertNumQueries`에 1건). 한 번 반복한 `RawQuerySet`은 결과를 기억하고, `prefetch_related()`·`using()`·`async for`도 Django 의 것 그대로입니다.
+- **결과 변환은 Django 가 합니다.** Django `raw()`의 계약 그대로, 결과 컬럼 이름이 필드의 컬럼 이름(`db_column`)과 같으면 그 필드에 ORM 이 읽을 때의 변환기를 거쳐 들어갑니다(Decimal·UUID·JSON·시간대 있는 datetime·choices 가 `Model.objects.get()`과 같은 값). 문장에서 뺀 필드는 deferred 로, 처음 읽을 때 쿼리가 한 번 더 나갑니다. 필드가 아닌 컬럼(`label("n_sales")`)은 인스턴스 속성이 되며 **변환하지 않은 드라이버 값**입니다. 예를 들어 `sa.func.max(sales.c.sold_at).label("last_sold")`는 SQLite 에서 저장된 텍스트(`str`), 다른 DB 에서 `datetime`입니다(`execute`는 이런 라벨도 컬럼 타입으로 변환하지만 `raw()`는 Django 에 맡깁니다). 그런 값이 필요하면 `execute_result`로 읽으세요.
+- **PK 가 있어야 합니다.** `select()`처럼 컬럼 이름을 컴파일 때 아는 문장은 모델 PK 의 컬럼이 없으면 실행 전에 `ValueError`입니다. `sa.text()`는 이름을 알 수 없어 Django 에 맡기고, Django 가 반복할 때 `FieldDoesNotExist`를 냅니다.
+- 행을 고르는 문장(`select()`·`union_all()` 같은 복합 SELECT·`sa.text()`)만 받습니다. `insert`·`update`·`delete`는 `RETURNING`이 있어도 `ValueError`, `params`에 매핑의 시퀀스를 넘기면 `ValueError`입니다(executemany 는 뜻이 없음). 파라미터가 없어도 빈 튜플을 넘기므로 리터럴 `%`는 `execute`처럼 그대로 씁니다.
+- Oracle 에서 Django `raw()`는 커서가 알려 주는 컬럼 이름을 소문자로 바꿔 필드 컬럼과 맞춥니다. 브리지는 Django 식 철자(대문자)로 쓰므로 `db_column="MixedCase"`는 맞지만, 30자를 넘는 컬럼은 Oracle 에서 해시로 줄인 이름이라 어느 필드와도 맞지 않아 deferred 가 되고 줄인 이름의 속성이 붙습니다(Django `Model.objects.raw()`도 같음, 테스트로 확인).
+- **비동기.** `async for obj in qs`는 Django `RawQuerySet`의 비동기 반복 그대로입니다. 다만 `raw()`는 부를 때 컴파일하는데, MySQL 은 dialect 를 고르려고 연결의 첫 호출에서 서버 정보(MariaDB 여부, `sql_mode`)를 읽으므로 async 코드에서 바로 부르면 `SynchronousOnlyOperation`입니다. `qs = await sync_to_async(raw)(Model, stmt)`로 만드세요(다른 DB 는 바로 불러도 됩니다).
+- 복합 PK(Django 5.2 `CompositePrimaryKey`)는 검사가 모든 PK 컬럼을 보지만 테스트하지 않았습니다.
 
 ### 여러 문장 한 번에: `execute_pipeline`
 

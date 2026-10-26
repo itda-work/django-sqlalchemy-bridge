@@ -1,6 +1,6 @@
 # DRF·클래스 기반 뷰에서 쓰기
 
-브리지는 튜플과 SQLAlchemy `Row`를 돌려주고 QuerySet·모델 인스턴스를 만들지 않습니다. Django 제네릭 CBV 와 DRF 의 확장 지점(`get_queryset`·`get_object`·`ModelSerializer`·`filter_backends`·페이지네이션)은 QuerySet 계약 위에 있어 그대로는 못 씁니다. 이 문서는 어디까지 되고 어디서 끊기는지를 돌아가는 코드로 보여 줍니다.
+브리지는 튜플과 SQLAlchemy `Row`를 돌려주고, 모델 인스턴스는 `raw(Model, stmt)`가 돌려주는 Django `RawQuerySet`으로 받습니다. QuerySet 은 만들지 않습니다. Django 제네릭 CBV 와 DRF 의 확장 지점(`get_queryset`·`get_object`·`filter_backends`·페이지네이션)은 QuerySet 계약 위에 있어 그대로는 못 씁니다. 이 문서는 어디까지 되고 어디서 끊기는지를 돌아가는 코드로 보여 줍니다.
 
 아래 코드는 [`tests/test_recipes_drf.py`](../tests/test_recipes_drf.py)에 그대로 있고 SQLite·PostgreSQL·MySQL·Oracle 에서 돕니다(레시피 3 은 MySQL·Oracle 제외, 문서와 어긋나면 `tests/test_readme_examples.py`가 실패합니다). 모델은 테스트의 상점 모델 `Category(name, parent)`·`Product(sku, category, price)`·`Sale(product, sold_at, quantity, amount)`입니다. 공통 import:
 
@@ -14,7 +14,7 @@ from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from django_sqlalchemy_bridge import execute, execute_result, table_for
+from django_sqlalchemy_bridge import execute, execute_result, raw, table_for
 ```
 
 ## 1. 목록: `ViewSet.list()`와 일반 `Serializer`
@@ -182,19 +182,59 @@ class CategoryReportView(TemplateView):
 ```
 <!-- /example:drf-template -->
 
+## 6. 모델 인스턴스: `ModelSerializer(many=True)`와 템플릿 반복
+
+`ModelSerializer`의 관계 필드나 인스턴스 메서드를 부르는 템플릿처럼 모델 인스턴스가 필요하면 `raw(Model, stmt, params)`를 씁니다. Django `RawQuerySet`이라 결과 컬럼 이름이 필드 컬럼과 같으면 필드가 ORM 이 읽는 대로 채워지고(Decimal·UUID·JSON·aware datetime), 필드가 아닌 라벨(`revenue`)은 인스턴스 속성이 됩니다. 라벨 값은 Django 가 변환하지 않은 드라이버 값입니다(여기서 SQLite 는 `int`나 `float`, PostgreSQL 은 `Decimal`이고 `DecimalField` 직렬화기가 같은 문자열로 만듭니다). 파라미터는 `execute`처럼 Django 필드 기준으로 변환하므로 쿼리 문자열의 `"10"`이 `price__gte="10"`처럼 비교됩니다.
+
+<!-- example:drf-raw -->
+```python
+top_products = (
+    sa.select(products, sa.func.sum(sales.c.amount).label("revenue"))
+    .join(sales, sales.c.product_id == products.c.id)
+    .where(products.c.price >= sa.bindparam("min_price"))  # "10" converts as the ORM's price__gte="10"
+    .group_by(*products.c)
+    .order_by(sa.func.sum(sales.c.amount).desc(), products.c.sku)
+)
+
+
+class ProductModelSerializer(serializers.ModelSerializer):
+    revenue = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)  # the label, an attribute
+
+    class Meta:
+        model = Product
+        fields = ["id", "sku", "category", "price", "revenue"]
+
+
+class TopProductsView(APIView):
+    def get(self, request):
+        instances = raw(Product, top_products, {"min_price": request.query_params.get("min_price", "0")})
+        return Response(ProductModelSerializer(instances, many=True).data)
+
+
+class TopProductsReportView(TemplateView):
+    template_name = "shop/top_products.html"  # {% for p in products %}{{ p.sku }} {{ p.category.name }}{% endfor %}
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        # A RawQuerySet: the query runs when the template iterates it, the categories in one more
+        context["products"] = raw(Product, top_products, {"min_price": 0}).prefetch_related("category")
+        return context
+```
+<!-- /example:drf-raw -->
+
+- `raw()`는 컴파일·파라미터 변환·검사(PK 컬럼이 있는지, DML 이 아닌지)를 부를 때 하고, 쿼리는 `RawQuerySet`을 반복할 때 나갑니다. 템플릿에 넘기면 템플릿이 반복할 때 실행됩니다.
+- FK 필드(`category`)는 `PrimaryKeyRelatedField`가 `category_id` 값을 읽어 행마다 쿼리가 늘지 않습니다. 템플릿에서 관련 객체를 읽으면 `prefetch_related()`로 한 번에 가져오세요. `select_related()`는 `RawQuerySet`에 없습니다.
+- `ModelSerializer`로 **읽기만** 합니다. `serializer.save()`는 ORM 으로 씁니다.
+
 ## 되지 않는 것
 
-QuerySet 이나 모델 인스턴스를 받는 확장 지점은 브리지 결과를 넣을 수 없습니다. 브리지는 QuerySet 을 흉내 내는 어댑터를 두지 않습니다(README "설계 원칙").
+QuerySet 을 받는 확장 지점은 브리지 결과를 넣을 수 없습니다. `raw()`의 `RawQuerySet`은 `filter()`·`order_by()`·`count()`·슬라이싱 쿼리가 없는 반복 전용입니다. 브리지는 QuerySet 을 흉내 내는 어댑터를 두지 않습니다(README "설계 원칙").
 
 | 확장 지점 | 왜 안 되나 | 대안 |
 |---|---|---|
 | `ListView`·`DetailView`·`UpdateView` | `get_queryset()`이 QuerySet 을, `get_object()`가 `queryset.get()`을 쓰고, `UpdateView`는 `ModelForm`이 인스턴스를 저장한다 | ORM 으로 돌아가거나, `TemplateView`·`View`에서 직접 조회(5) |
 | `ModelViewSet` 기본 동작 | list·retrieve·update·destroy 가 `get_queryset()`·`get_object()`를, create·update 가 `serializer.save()`(ORM)를 거친다 | `ViewSet`에 필요한 메서드만 직접 쓰기(1·3), 또는 ORM |
-| `ModelSerializer` 자동 필드 | 필드는 모델에서 만들지만 `save()`가 ORM 으로 쓰고, FK 필드(`PrimaryKeyRelatedField`)는 관련 객체를 기대해 매핑 행에서 `'int' object has no attribute 'pk'`가 난다 | 일반 `Serializer`에 필드를 적기(1·3) |
+| 매핑 행에 `ModelSerializer` | FK 필드(`PrimaryKeyRelatedField`)는 관련 객체를 기대해 매핑 행에서 `'int' object has no attribute 'pk'`가 나고, `save()`는 ORM 으로 쓴다 | 읽기는 `raw()`의 인스턴스로(6), 쓰기는 일반 `Serializer`에 필드를 적기(3) 또는 ORM |
 | django-filter·`OrderingFilter`·`SearchFilter` | `filter_queryset()`이 `queryset.filter()`·`order_by()`를 부른다 | 쿼리 파라미터를 읽어 문장에 `.where()`·`.order_by()`를 직접 붙이기(정렬 컬럼은 허용 목록으로) |
 | `get_object()`를 거치는 객체 권한 | `get_object()`가 `check_object_permissions(request, obj)`를 부르고 권한 클래스는 모델 인스턴스를 받는다고 가정한다 | 행을 읽은 뒤 `self.check_object_permissions(request, row)`를 직접 부르고 권한 클래스가 매핑을 받게 쓰기, 또는 ORM |
 | `CursorPagination` | 커서 조건을 QuerySet 의 `order_by()`·`filter()`로 만든다 | 키셋 페이지네이션을 직접: `.where(t.c.sku > last).order_by(t.c.sku).limit(n)` |
-
-## 모델 인스턴스가 꼭 필요할 때
-
-`ModelSerializer`의 관계 필드나 인스턴스 메서드를 부르는 템플릿처럼 모델 인스턴스가 꼭 필요하면, 지금 공개 API 로는 브리지 결과에서 인스턴스를 만드는 방법이 없습니다. ORM 으로 읽으세요. 브리지 쿼리로 PK 만 골라 `Product.objects.filter(pk__in=ids)`로 다시 읽는 방법은 쿼리가 하나 늘고 순서를 따로 맞춰야 하지만 지금 쓸 수 있습니다. 브리지 결과를 모델 인스턴스로 받는 기능은 v0.1 이후 후보([#17](https://github.com/itda-work/django-sqlalchemy-bridge/issues/17))에 있습니다.
