@@ -105,6 +105,7 @@ for row in result.mappings():
   | `meta["k"].astext == "1"` (`->>`) | `annotate(v=KT("meta__k")).filter(v="1")` |
 
   `contains`·`contained_by`의 우변은 컬럼 값과 같게 `JSONField.get_db_prep_value()`로 jsonb 바인딩합니다. SQLite에는 이 연산자들이 없습니다. `contains`·`has_key`는 실행 시 `OperationalError`, `astext`(`->>`)는 SQLite 3.38+의 `->>`로 실행되지만 텍스트가 아니라 SQL 값을 돌려줘 `{"k": 1}`이 `'1'`과 같지 않습니다. SQLite에서 `meta["k"] == [1, 2]`처럼 구조 값과 비교하면 JSON 텍스트끼리 비교라 공백이 다르면 맞지 않습니다(ORM 은 `JSON()`으로 정규화). 스칼라 비교는 ORM 과 같습니다.
+- **컴파일 캐시: `bindparam()`으로 만든 문장을 재사용하면 컴파일을 건너뜁니다.** 브리지는 넘겨받은 문장 객체마다 컴파일 결과를 기억해, 같은 객체를 같은 DB 종류(vendor)에서 같은 이름의 `params`로 다시 실행하면 컴파일 없이 값 변환과 실행만 합니다(`execute`·`execute_result`·`stream` 공통). 그러니 값은 `sa.bindparam("pk")`로 비워 둔 문장을 한 번 만들어 두고(모듈 수준 등) 돌려 쓰세요. `where(orders.c.id == pk)`처럼 값을 넣어 매번 새로 만든 문장은 매번 컴파일합니다(아래 "성능과 메모리" 4번). `params` 이름이 달라지면(예: UPDATE 의 `SET` 컬럼) SQL 이 달라지므로 따로 컴파일합니다. 결과 변환기와 `RETURNING` 지원 검사는 연결(alias)마다 다를 수 있어 매 호출 그 연결로 다시 정합니다. 기억한 결과는 문장 객체가 사라지면 함께 사라지고, 여러 스레드가 같은 문장을 써도 됩니다. 끄는 스위치는 없습니다(결과가 캐시 여부와 무관하므로).
 - 리터럴 `%`는 그대로 써도 됩니다(`LIKE 'a%'`, `text("SELECT '100%'")`). 브리지가 `%s` 자리표시로 컴파일하고 `%`를 `%%`로 바꾼 뒤, 파라미터가 없어도 빈 튜플을 넘겨 백엔드가 되돌리게 합니다.
 - async 코드에서 직접 부르면 ORM처럼 `SynchronousOnlyOperation`이 납니다. 작업 단위를 동기 함수로 묶어 `arun`으로 부르세요(아래 "비동기").
 
@@ -351,37 +352,39 @@ uv run python -m bench.readme --write                  # 시나리오·DB 마다
 <!-- bench:pg-lookup -->
 | | 시간 (ms) | 호출당 (µs) |
 |---|---:|---:|
-| Django 커서에 SQL 직접 | 452 | 90.5 |
-| Django `objects.get(pk=...)` | 1,221 | 244 |
-| Django `values_list(...).get(pk=...)` | 1,393 | 279 |
-| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 536 | 107 |
-| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 823 | 165 |
-| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 1,149 | 230 |
-| 브리지 `execute()`, 매번 문장 생성 | 1,430 | 286 |
-| (참고) 브리지 컴파일·파라미터 변환만, DB 없음 | 325 | 65.0 |
-| (가상) 컴파일 1회 후 커서·변환기만 — 캐시의 상한 | 463 | 92.5 |
+| Django 커서에 SQL 직접 | 488 | 97.5 |
+| Django `objects.get(pk=...)` | 1,316 | 263 |
+| Django `values_list(...).get(pk=...)` | 1,415 | 283 |
+| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 550 | 110 |
+| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 833 | 167 |
+| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 749 | 150 |
+| 브리지 `execute()`, 매번 문장 생성 | 1,573 | 315 |
+| (참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음 | 50.7 | 10.1 |
+| (참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만 | 471 | 94.3 |
 
-<sub>결과 파일: [`bench/results/2026-10-25-postgres-lookup.json`](bench/results/2026-10-25-postgres-lookup.json)</sub>
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-lookup.json`](bench/results/2026-10-26-postgres-lookup.json)</sub>
 <!-- /bench:pg-lookup -->
 
 <!-- bench:sqlite-lookup -->
 | | 시간 (ms) | 호출당 (µs) |
 |---|---:|---:|
-| Django 커서에 SQL 직접 | 29.2 | 5.84 |
-| Django `objects.get(pk=...)` | 512 | 102 |
-| Django `values_list(...).get(pk=...)` | 613 | 123 |
-| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 81.5 | 16.3 |
-| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 247 | 49.4 |
-| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 433 | 86.7 |
-| 브리지 `execute()`, 매번 문장 생성 | 629 | 126 |
-| (참고) 브리지 컴파일·파라미터 변환만, DB 없음 | 338 | 67.6 |
-| (가상) 컴파일 1회 후 커서·변환기만 — 캐시의 상한 | 46.1 | 9.22 |
+| Django 커서에 SQL 직접 | 28.0 | 5.60 |
+| Django `objects.get(pk=...)` | 501 | 100 |
+| Django `values_list(...).get(pk=...)` | 620 | 124 |
+| SQLAlchemy Core, 문장 1회 생성 + `bindparam` (별도 엔진) | 78.9 | 15.8 |
+| SQLAlchemy Core, 매번 문장 생성 (별도 엔진) | 249 | 49.9 |
+| 브리지 `execute()`, 문장 1회 생성 + `bindparam` | 118 | 23.6 |
+| 브리지 `execute()`, 매번 문장 생성 | 666 | 133 |
+| (참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음 | 62.5 | 12.5 |
+| (참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만 | 45.6 | 9.12 |
 
-<sub>결과 파일: [`bench/results/2026-10-25-sqlite-lookup.json`](bench/results/2026-10-25-sqlite-lookup.json)</sub>
+<sub>결과 파일: [`bench/results/2026-10-26-sqlite-lookup.json`](bench/results/2026-10-26-sqlite-lookup.json)</sub>
 <!-- /bench:sqlite-lookup -->
 
-- 브리지 `execute()`는 **매 호출 문장을 컴파일합니다(컴파일 캐시 없음).** "컴파일·파라미터 변환만" 행이 그 비용이고, "(가상) 컴파일 1회" 행은 브리지 내부 함수로 컴파일을 한 번만 하고 커서·변환기만 돌린 값으로, 캐시를 넣으면 다가갈 수 있는 상한입니다(공개 API 가 아닙니다). 캐시 여부는 #17 에서 정합니다.
-- PostgreSQL 에서 브리지는 Django ORM 과 같은 수준(호출당 230~290µs)이고, 둘 다 커서에 SQL 을 직접 보내는 것(약 90µs)보다 2.5~3배 느립니다. "(가상) 컴파일 1회" 행이 커서 직접과 비슷하므로 브리지 쪽 차이는 대부분 컴파일·변환 비용입니다. 왕복이 더 싼 SQLite 에서는 호출 시간의 대부분이 컴파일입니다. 문장을 한 번 만들어 `bindparam`으로 재사용하면 매번 만드는 것보다 빠릅니다.
+- 이 표는 위 환경 줄과 다른 실행(결과 파일의 `ci_run`)에서 같은 종류의 러너로 다시 잰 값입니다(#28 컴파일 캐시 반영).
+- 브리지는 **같은 문장 객체를 다시 실행하면 컴파일을 건너뜁니다**(위 "실행하기"의 컴파일 캐시). `bindparam`으로 한 번 만든 문장은 첫 호출에만 컴파일하고, 매번 새로 만든 문장은 매번 컴파일합니다. 두 행의 차이(PostgreSQL 약 165µs, SQLite 약 110µs)가 호출당 컴파일 비용입니다. 문장을 한 번 만들어 `bindparam`으로 재사용하세요.
+- "(참고) `prepare()`만" 행은 캐시 적중 뒤 남는 브리지 쪽 일(파라미터 변환, 결과 변환기 찾기)이고 호출당 약 10~13µs 입니다. "(참고) `prepare()` 1회" 행은 그것마저 한 번만 하고 커서 하나로 실행·변환만 한 값으로, 공개 API 가 아닙니다. 브리지 `execute()`는 호출마다 Django 커서를 새로 엽니다(Django `objects.get()`도 마찬가지). PostgreSQL 에서 `execute()`가 두 참고 행의 합보다 느린 몫은 그 때문으로 보이지만 따로 재지는 않았습니다.
+- PostgreSQL 에서 `bindparam` 재사용 브리지(호출당 150µs)는 Django `objects.get()`(263µs)보다 빠르고, SQLAlchemy 단독 엔진(110µs)과의 차이는 40µs 입니다. SQLite 에서는 23.6µs 로 SQLAlchemy 단독(15.8µs)과 같은 자릿수이고 Django ORM 조회(100µs 이상)보다 4배 남짓 빠릅니다.
 
 ### 5. 비동기 (PostgreSQL, PK 조회)
 
@@ -435,7 +438,7 @@ uv run python -m bench.readme --write                  # 시나리오·DB 마다
 
 ### 브리지가 도움이 안 되는 경우
 
-- **일반 CRUD.** 한 행을 읽고 쓰는 일은 Django ORM 과 같은 수준이고 매번 문장을 만들면 조금 느립니다(시나리오 4, 컴파일 캐시 없음). 얻는 것이 없으니 signal·`save()`·검증이 따라오는 ORM 을 쓰세요.
+- **일반 CRUD.** 한 행을 읽고 쓰는 일은 `bindparam` 문장을 재사용하면 Django ORM 보다 빠르지만 매번 문장을 만들면 조금 느립니다(시나리오 4). 속도 차이 말고는 얻는 것이 없으니 signal·`save()`·검증이 따라오는 ORM 을 쓰세요.
 - **대량 INSERT 만 필요하고 생성된 id 가 필요 없을 때.** PostgreSQL 에서는 django-pgbulk `copy()`(COPY)가 브리지 `bulk_insert()`보다 빠르고 메모리도 거의 쓰지 않습니다(시나리오 2). 브리지 `bulk_insert()`는 Django `bulk_create()`보다 20,000행에서 25~30% 빠르지만 200,000행에서는 `batch_size=1000`과 거의 같습니다. 브리지는 `RETURNING`이나 SQLAlchemy 식이 필요할 때의 선택지입니다.
 - **django-pgbulk 를 이미 쓴다면.** PK 기준 대량 UPDATE 에서 브리지가 더 빠르긴 하지만 둘 다 Django `bulk_update`보다 한 자릿수 이상 빠른 같은 부류입니다(시나리오 1). 바꿀 이유는 속도보다 SQLAlchemy 식이 필요한지에 있습니다.
 - **ORM 으로 쓸 수 있는 리포트 쿼리.** CTE·윈도 함수 쿼리는 실행 시간이 DB 에서 정해져 도구 차이가 거의 없고, 이 예처럼 Django ORM(CTE 없이 `Window`로)이나 django-cte 로 표현되면 그대로 두면 됩니다(시나리오 6). 브리지는 ORM 으로 쓰기 어려운 식(여러 CTE, `LATERAL`, 복잡한 조인)에서 의미가 있습니다.

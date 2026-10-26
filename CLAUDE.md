@@ -1,6 +1,6 @@
 # django-sqlalchemy-bridge AI Guide
 
-> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.1.0 (알파, 2026-10-26 릴리스)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`. v0.1 이후 후보는 #17.
+> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.1.0 (알파, 2026-10-26 릴리스)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`. v0.1 이후 후보는 #17. Unreleased: 컴파일 캐시(#28).
 
 ## 정본
 
@@ -51,3 +51,4 @@
 - 구현 중 발견(#5·#6·#7): psycopg dialect 의 bind cast(`%s::JSON`)는 `BindTyping.NONE` 으로 끈다. PG 단일 INSERT 의 암묵적 `RETURNING id` 는 `Insert.inline()` 으로 끈다. SA 2.0 PG 컴파일러는 연결 전 리터럴 백슬래시를 두 번 쓴다. PG `DECLARE` 는 DML RETURNING·데이터 변경 CTE 를 못 받는다. `unnest` 캐스트는 `varchar(n)[]` 가 값을 조용히 자르므로 타입 수식어를 뗀다.
 - 구현 중 발견(#12): SA 비교자는 dialect 를 고르기 전 식의 기본 타입에서 나온다. `JSON().with_variant(JSONB(), "postgresql")` 는 `contains()` 가 조용히 `LIKE` 가 되므로 `JSONB().with_variant(JSON(), "sqlite")` 로 둔다. JSON 키·경로 bind(`JSONIndexType`·`JSONPathType`)는 값이 아니라 문법이라 SA dialect bind processor 를 쓴다(안 쓰면 SQLite `bad JSON path`). RETURNING 하한은 Django 5.2·6.1 공통 feature `can_return_columns_from_insert`(`can_return_rows_from_update` 는 5.2 에 없음).
 - 구현 중 발견(#21): SA DML 의 `exported_columns`·`_all_selected_columns` 는 `HasMemoized` 에 등록되지 않는 `ro_memoized_property` 라 `_generate()` 가 파생 문장에 복사한다 — 한 번 읽은(실행한) `insert(t)` 에서 `.returning()` 을 파생하면 컬럼이 비어 보인다. `compiled.effective_returning` 도 같은 메모를 읽는다. RETURNING 컬럼은 dialect 컴파일러의 `returning_clause` 가 받는 컬럼으로 얻는다(`_ReturningCompiler`). SELECT 의 `selected_columns` 는 등록된 메모라 안전.
+- 구현 중 발견(#28): `Compiled.statement` 가 컴파일한 문장을 붙잡으므로 문장을 weak key 로 하는 캐시는 생성형 복사본(`inline()`·인자 없는 `execution_options()`)을 컴파일해야 항목이 풀린다. 결과 컨버터는 `connection.ops` bound method 라(SQLite 는 `self.connection.timezone` 을 읽음) vendor·연결을 넘어 캐시하지 않는다 — 매 호출 그 연결로 찾는다.

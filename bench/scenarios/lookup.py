@@ -1,13 +1,15 @@
 """Scenario 4: query-building overhead, 5,000 lookups of one row by primary key.
 
 Every lookup is a round trip, so the differences are what each tool spends
-building, compiling and converting around it. The bridge has no compile cache
-(#17): ``execute`` compiles the statement on every call. Two variants that are
-not bridge API bound that cost from both sides: ``bridge_prepare_only``
-compiles and converts without touching the database, and
-``bridge_compiled_once_hypothetical`` compiles once through the bridge's
-internal ``prepare()`` and then runs only the Django cursor and the result
-converters, which is roughly what a compile cache could reach.
+building, compiling and converting around it. ``execute`` compiles a statement
+object once and reuses it when the same object runs again (#28), so a
+statement built once with ``bindparam`` compiles on its first call only, and
+one built per call compiles on every call. Two variants that are not bridge
+API bound the per-call cost: ``bridge_prepare_only`` runs the internal
+``prepare()`` on the statement built once (a cache hit: converting the params
+and finding the result converters) without touching the database, and
+``bridge_prepared_once`` calls ``prepare()`` once and then runs only the
+Django cursor and the result converters, the floor for ``execute``.
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ def variants(engine) -> list[Variant]:
     def bridge_prepare_only(_, __):
         return [prepare(by_pk, {"pk": pk}, connection).sql for pk in pks]
 
-    def bridge_compiled_once(_, __):
+    def bridge_prepared_once(_, __):
         prepared = prepare(by_pk, {"pk": 0}, connection)
         out = []
         with connection.cursor() as cursor:
@@ -110,20 +112,20 @@ def variants(engine) -> list[Variant]:
             "bridge_execute_bindparam",
             bridge_bindparam,
             check=check,
-            note="execute(stmt, {'pk': pk}) with stmt built once; still compiled per call (no cache)",
+            note="execute(stmt, {'pk': pk}) with stmt built once: compiled on the first call, then cached",
         ),
         Variant(
             "bridge_prepare_only",
             bridge_prepare_only,
             scope=no_scope,
             check=check,
-            note="internal prepare() alone (compile + convert params), no database: the per-call overhead",
+            note="internal prepare() alone on stmt built once (cache hit + convert params), no database",
         ),
         Variant(
-            "bridge_compiled_once_hypothetical",
-            bridge_compiled_once,
+            "bridge_prepared_once",
+            bridge_prepared_once,
             check=check,
-            note="NOT bridge API: compiled once by internal prepare(), then Django cursor + converters only",
+            note="NOT bridge API: internal prepare() once, then Django cursor + converters only",
         ),
         Variant(
             "sqlalchemy_core_build_each",

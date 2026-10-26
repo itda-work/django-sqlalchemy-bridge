@@ -69,8 +69,8 @@ LOOKUP_ROWS = [
     ("sqlalchemy_core_build_each", "SQLAlchemy Core, 매번 문장 생성 (별도 엔진)"),
     ("bridge_execute_bindparam", "브리지 `execute()`, 문장 1회 생성 + `bindparam`"),
     ("bridge_execute_build_each", "브리지 `execute()`, 매번 문장 생성"),
-    ("bridge_prepare_only", "(참고) 브리지 컴파일·파라미터 변환만, DB 없음"),
-    ("bridge_compiled_once_hypothetical", "(가상) 컴파일 1회 후 커서·변환기만 — 캐시의 상한"),
+    ("bridge_prepare_only", "(참고) 브리지 내부 `prepare()`만 (캐시 적중 + 파라미터 변환), DB 없음"),
+    ("bridge_prepared_once", "(참고) 내부 `prepare()` 1회 후 커서 하나로 실행·변환만"),
 ]
 ASYNC_ROWS = [
     ("sync_execute_sequential", "(기준) 동기 코드에서 `execute()` 1,000번"),

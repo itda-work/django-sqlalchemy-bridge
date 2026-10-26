@@ -20,6 +20,7 @@ statement that leaves such a column for them to fill is refused before it runs.
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -127,6 +128,63 @@ class Prepared:
     rowcount_only: bool = False
 
 
+@dataclass(frozen=True)
+class _Compiled:
+    """What compiling a statement for one vendor gives, whatever the connection or values.
+
+    ``types`` are the result columns' types (empty when the statement's columns
+    are unknown); ``defaults_error`` is why the statement is refused, if it is.
+    """
+
+    compiled: Compiled
+    dml: bool
+    types: tuple[sa.types.TypeEngine, ...]
+    defaults_error: str | None
+
+
+# Statement -> {(vendor, params' names): _Compiled}. The entry goes when the
+# statement object does: what is compiled is a generative copy of it, so nothing
+# cached refers back to it. Racing threads may both compile a statement; each
+# entry is complete before it is stored, and the last one stored stays.
+_cache: weakref.WeakKeyDictionary[sa.sql.ClauseElement, dict[tuple[str, tuple[str, ...] | None], _Compiled]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _compile(
+    stmt: sa.sql.ClauseElement, column_keys: tuple[str, ...] | None, connection: BaseDatabaseWrapper
+) -> _Compiled:
+    dialect = dialect_for(connection)
+    key = (connection.vendor, column_keys)
+    try:
+        entries = _cache.get(stmt)
+    except TypeError:  # cannot be weakly referenced: not cached
+        entries = None
+    entry = entries.get(key) if entries is not None else None
+    if entry is not None:
+        return entry
+    if isinstance(stmt, sa.Insert):
+        # Otherwise PostgreSQL compiles an implicit "RETURNING id" for SQLAlchemy's
+        # inserted_primary_key when no RETURNING is given, and the caller would get
+        # rows instead of a rowcount. With an explicit RETURNING it changes nothing.
+        target = stmt.inline()
+    elif isinstance(stmt, sa.Executable):
+        # A copy, so the Compiled (which holds its statement) keeps no hold on stmt.
+        target = stmt.execution_options()
+    else:
+        target = stmt
+    compiled = target.compile(dialect=dialect, column_keys=list(column_keys) if column_keys is not None else None)
+    dml = isinstance(stmt, sa.sql.dml.UpdateBase)
+    columns = compiled.returned_columns if dml else getattr(target, "exported_columns", None)
+    entry = _Compiled(compiled, dml, tuple(column.type for column in columns or ()), _python_defaults_error(compiled))
+    if target is not stmt:
+        try:
+            _cache.setdefault(stmt, {})[key] = entry
+        except TypeError:
+            pass
+    return entry
+
+
 def prepare(
     stmt: sa.sql.ClauseElement,
     params: Params | Sequence[Params] | None,
@@ -135,22 +193,20 @@ def prepare(
     """Compile ``stmt`` for ``connection`` and convert ``params`` through the Django fields.
 
     ``params`` is ``None``, one mapping, or a sequence of mappings (executemany).
+    The compilation is reused when the same statement object runs again on the
+    same database vendor with params of the same names; the parameters, the
+    result converters and the RETURNING check are worked out on every call.
     """
     many = params is not None and not isinstance(params, Mapping)
     rows: list[Params] = list(params) if many else [params or {}]
-    if isinstance(stmt, sa.Insert):
-        # Otherwise PostgreSQL compiles an implicit "RETURNING id" for SQLAlchemy's
-        # inserted_primary_key when no RETURNING is given, and the caller would get
-        # rows instead of a rowcount. With an explicit RETURNING it changes nothing.
-        stmt = stmt.inline()
-    compiled = stmt.compile(dialect=dialect_for(connection), column_keys=list(rows[0]) if rows else None)
-    dml = isinstance(stmt, sa.sql.dml.UpdateBase)
-    columns = compiled.returned_columns if dml else getattr(stmt, "exported_columns", None)
-    if many and columns:
+    entry = _compile(stmt, tuple(rows[0]) if rows else None, connection)
+    compiled = entry.compiled
+    if many and entry.types:
         raise ValueError("executemany cannot return rows; run a statement with RETURNING once per row")
-    if dml and columns:
+    if entry.dml and entry.types:
         check_returning(connection)
-    _check_python_defaults(compiled)
+    if entry.defaults_error is not None:
+        raise ValueError(entry.defaults_error)
     sql = None
     param_rows = []
     for row in rows:
@@ -160,8 +216,8 @@ def prepare(
         elif state.statement != sql:
             raise ValueError("every executemany row must compile to the same SQL (check expanding IN lists)")
         param_rows.append(_positional(compiled, state, connection))
-    converters = [_field_converters(column.type, connection) for column in columns or ()]
-    return Prepared(sql or compiled.string, param_rows, many, converters, rowcount_only=dml and not columns)
+    converters = [_field_converters(type_, connection) for type_ in entry.types]
+    return Prepared(sql or compiled.string, param_rows, many, converters, rowcount_only=entry.dml and not entry.types)
 
 
 def check_returning(connection: BaseDatabaseWrapper) -> None:
@@ -175,7 +231,7 @@ def check_returning(connection: BaseDatabaseWrapper) -> None:
         raise NotSupportedError(f"database {connection.alias!r} ({connection.display_name}) does not support RETURNING")
 
 
-def _check_python_defaults(compiled: Compiled) -> None:
+def _python_defaults_error(compiled: Compiled) -> str | None:
     # A column left out of an INSERT or UPDATE whose Column(default=...) or
     # Column(onupdate=...) is a Python value or callable is still compiled into
     # the SQL; SQLAlchemy's execution context would fill its bind, Django's
@@ -183,11 +239,11 @@ def _check_python_defaults(compiled: Compiled) -> None:
     # never land here.
     prefetch = [*compiled.insert_prefetch, *compiled.update_prefetch]
     if not prefetch:
-        return
+        return None
     # A multi-VALUES insert adds copies ("<key>_m2", ...) of the first row's columns.
     columns = [column for column in prefetch if isinstance(column, sa.Column)]
     names = ", ".join(dict.fromkeys(f"{column.table.name}.{column.key}" for column in columns))
-    raise ValueError(
+    return (
         f"SQLAlchemy Python-side default or onupdate of {names} cannot be applied: the bridge runs "
         "on Django's cursor, which would store NULL there; pass the value in the statement or params"
     )

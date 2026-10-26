@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `execute`·`execute_result`·`stream` 컴파일 캐시: 같은 문장 객체를 같은 DB vendor 에서 같은 이름의 params 로 다시 실행하면 컴파일하지 않는다(키는 문장 객체·vendor·params 이름, 문장이 사라지면 항목도 사라짐). 결과 변환기·`RETURNING` 검사·파라미터 변환은 매 호출. README 에 `bindparam()` 문장 재사용 안내 (#28).
+
 ## [0.1.0] - 2026-10-26
 
 ### Added
