@@ -2,7 +2,7 @@
 
 브리지는 튜플과 SQLAlchemy `Row`를 돌려주고 QuerySet·모델 인스턴스를 만들지 않습니다. Django 제네릭 CBV 와 DRF 의 확장 지점(`get_queryset`·`get_object`·`ModelSerializer`·`filter_backends`·페이지네이션)은 QuerySet 계약 위에 있어 그대로는 못 씁니다. 이 문서는 어디까지 되고 어디서 끊기는지를 돌아가는 코드로 보여 줍니다.
 
-아래 코드는 [`tests/test_recipes_drf.py`](../tests/test_recipes_drf.py)에 그대로 있고 SQLite·PostgreSQL 에서 돕니다(문서와 어긋나면 `tests/test_readme_examples.py`가 실패합니다). 모델은 테스트의 상점 모델 `Category(name, parent)`·`Product(sku, category, price)`·`Sale(product, sold_at, quantity, amount)`입니다. 공통 import:
+아래 코드는 [`tests/test_recipes_drf.py`](../tests/test_recipes_drf.py)에 그대로 있고 SQLite·PostgreSQL·MySQL 에서 돕니다(레시피 3 은 MySQL 제외, 문서와 어긋나면 `tests/test_readme_examples.py`가 실패합니다). 모델은 테스트의 상점 모델 `Category(name, parent)`·`Product(sku, category, price)`·`Sale(product, sold_at, quantity, amount)`입니다. 공통 import:
 
 ```python
 import sqlalchemy as sa
@@ -114,6 +114,8 @@ class ProductCreateView(APIView):
         return Response(ProductSerializer(row).data, status=status.HTTP_201_CREATED)
 ```
 <!-- /example:drf-create -->
+
+MySQL 에는 `RETURNING`이 없어 이 레시피는 `NotSupportedError`입니다. `execute(sa.insert(products), serializer.validated_data)`로 넣고 유일 키(`sku`)로 다시 SELECT 하거나 ORM 으로 쓰세요.
 
 여러 행이면 `ProductSerializer(data=request.data, many=True)`로 검증한 뒤 `bulk_insert(products, serializer.validated_data, returning=["id"])`로 한 번에 넣습니다. README 의 경고가 여기에도 그대로 적용됩니다.
 

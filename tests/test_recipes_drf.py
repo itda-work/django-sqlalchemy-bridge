@@ -215,7 +215,7 @@ def test_limit_offset_pagination_runs_a_count_and_a_sliced_statement(shop):
     assert view(api.get("/products/")).data["results"][-1]["sku"] == "TEA"  # default_limit
 
 
-def test_validated_data_is_inserted_with_returning(shop):
+def test_validated_data_is_inserted_with_returning(shop, needs_returning):
     data = {"sku": "CAP", "category_id": shop["clothes"].pk, "price": "12.50"}
 
     response = ProductCreateView.as_view()(api.post("/products/", data, format="json"))
