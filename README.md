@@ -223,15 +223,21 @@ bulk_update(orders, rows, key="uid", columns=["status"])  # 키·설정 컬럼 �
 
 # INSERT. returning 을 주면 행마다 튜플(필드 변환을 거친 값), rows 순서대로
 ids = bulk_insert(orders, rows, returning=["id"])
+
+# 수십만 행 이상: batch_size 행씩 문장을 나눠 메모리를 줄인다(전부 쓰이거나 하나도 안 쓰임)
+bulk_insert(orders, rows, batch_size=10_000)
 ```
 
-- `bulk_update(table, rows, *, key=None, columns=None, using="default")`, `bulk_insert(table, rows, *, returning=None, using="default")`. `table`은 `table_for()` 테이블이나 모델입니다. `rows`는 컬럼 이름(`db_column`, FK 는 `<이름>_id`)을 키로 한 매핑의 시퀀스입니다.
+- `bulk_update(table, rows, *, key=None, columns=None, batch_size=None, using="default")`, `bulk_insert(table, rows, *, returning=None, batch_size=None, using="default")`. `table`은 `table_for()` 테이블이나 모델입니다. `rows`는 컬럼 이름(`db_column`, FK 는 `<이름>_id`)을 키로 한 매핑의 시퀀스입니다.
 - **PostgreSQL에서는 문장 하나입니다.** 컬럼마다 배열 파라미터 하나를 Django 컬럼 타입으로 캐스트하고(`(%s)::jsonb[]`, `(%s)::numeric[]` …) `unnest()`로 행을 만듭니다. UPDATE 는 `UPDATE t SET c = v.c FROM unnest(...) AS v(...) WHERE t.k = v.k`, INSERT 는 `INSERT INTO t (...) SELECT * FROM unnest(...)` 꼴로, Django `bulk_create`가 PostgreSQL에서 쓰는 방식과 같습니다. 캐스트에서는 길이·자릿수를 떼므로(`varchar(50)[]`가 아니라 `varchar[]`) 값이 잘리지 않고, 너무 긴 값은 ORM 쓰기처럼 컬럼에 넣을 때 오류가 납니다. `CaptureQueriesContext`에는 1건으로 잡힙니다.
-- **그 밖의 백엔드(SQLite)에서는 같은 호출이 `cursor.executemany()`입니다.** `returning`이 있는 INSERT 는 executemany 로 행을 받을 수 없어서 다중 `VALUES` 문장을 `connection.ops.bulk_batch_size()`(SQLite 변수 한도) 단위로 나눠 실행합니다. 결과는 PostgreSQL과 같습니다.
+- **그 밖의 백엔드(SQLite)에서는 같은 호출이 `cursor.executemany()`입니다(`atomic()` 안에서, 아래 "원자성").** `returning`이 있는 INSERT 는 executemany 로 행을 받을 수 없어서 다중 `VALUES` 문장을 `connection.ops.bulk_batch_size()`(SQLite 변수 한도) 단위로 나눠 실행합니다. 결과는 PostgreSQL과 같습니다.
 - 값 변환은 `execute`와 같습니다. 행 값마다 `field.get_db_prep_value()`(`None`은 SQL `NULL`), `returning` 컬럼은 ORM 변환기를 거칩니다. 파라미터는 행마다 SQLAlchemy로 만들지 않고 컬럼마다 리스트 하나로 바로 만듭니다.
 - **빠진 값은 오류입니다.** 실행 전에 `ValueError`를 냅니다.
   - `bulk_update`: 키나 설정할 컬럼이 없는 행, 키가 같은 두 행(PostgreSQL은 그중 아무 행 하나로, executemany 는 둘 다 차례로 갱신해 결과가 달라지므로 거부). `columns`를 생략하면 첫 행의 키 외 컬럼을 설정하고 모든 행이 같은 키를 가져야 합니다. `columns`를 주면 행의 다른 키는 무시합니다. 없는 키 값은 아무 행도 바꾸지 않고, rowcount 는 맞은 행만 셉니다.
   - `bulk_insert`: 행끼리 키가 다르거나, 테이블 컬럼을 빠뜨린 경우. 자동 증가 PK 와 `db_default`가 있는 컬럼만 빠뜨릴 수 있습니다. Django 필드 `default`·`auto_now`를 채우지 않으므로 nullable 컬럼도 `None`을 직접 넣어야 합니다(잊은 컬럼이 조용히 `NULL`이 되지 않게).
+- **`batch_size`**: 양의 정수면 그 행 수마다 문장 하나(SQLite 는 `executemany()` 호출 하나)로 나눕니다. `None`(기본값)이면 위와 같습니다. 0 이하나 정수가 아니면 실행 전에 `ValueError`입니다. SQLite 의 `returning` 배치는 `bulk_batch_size()`를 넘지 않습니다. 키 중복·누락 검사는 나누기 전에 전체 행으로 하고, rowcount 는 배치의 합, `returning` 결과는 배치와 상관없이 `rows` 순서입니다.
+- **원자성**: 문장을 둘 이상 실행하는 호출(배치가 여럿이거나 SQLite `executemany()`)은 Django `bulk_create`·`bulk_update`처럼 `transaction.atomic(using=..., savepoint=False)` 안에서 돕니다. 한 배치가 실패하면 그 호출이 쓴 행은 모두 롤백됩니다. 바깥 `atomic()` 안에서는 savepoint 를 만들지 않으므로, 실패를 잡아 트랜잭션을 이어가려면 호출을 `atomic()`으로 한 번 더 감싸세요(ORM 쓰기와 같습니다).
+- **언제 `batch_size`를 주나.** PostgreSQL 의 한 문장은 행 수에 비례해 클라이언트(파라미터 배열)와 서버 백엔드(배열과 `unnest` 결과) 메모리를 씁니다. 1,000,000행(컬럼 6개)에서 `bulk_insert`는 클라이언트 tracemalloc 피크 849 MiB, 서버 백엔드 233 MiB 였고, `batch_size=10_000`이면 226 MiB·6 MiB 로 줄면서 시간은 4% 빨랐습니다. `bulk_update`는 나누면 느려집니다(1,000,000행에서 `10_000`은 22% 느림, `200_000`은 3% 느림). 한 문장은 대상 테이블과 해시 조인 한 번으로, 작은 배치는 행마다 PK 인덱스 조회로 갱신하기 때문입니다(로컬 PostgreSQL 18 의 `EXPLAIN ANALYZE`로 확인). 그래서 기본값은 `None`이고, 수십만 행 이상에서 메모리가 문제일 때 `bulk_insert`는 `10_000`~`50_000`, `bulk_update`는 `200_000` 안팎을 권합니다. SQLite 는 차이가 작습니다(아래 "성능과 메모리" 7).
 - 빈 `rows`는 쿼리를 실행하지 않고 `0`(또는 `returning`이면 `[]`)을 돌려줍니다.
 - **`RETURNING` 순서**: 결과는 `rows` 순서입니다(테스트로 고정). 다만 PostgreSQL·SQLite 모두 `RETURNING` 순서를 문서로 보장하지는 않으며, Django `bulk_create`가 PK 를 객체에 채울 때도 같은 동작에 기댑니다. 아래 "제약"을 보세요.
 - signal·`save()`를 거치지 않는 것은 다른 브리지 쓰기와 같습니다(아래).
@@ -516,6 +522,64 @@ uv run python -m bench.readme --write                  # 시나리오·DB 마다
 <!-- /bench:pg-running -->
 
 모든 변형이 같은 행을 돌려주는지 측정 중에 확인합니다. 결과가 작은 집계(위 표)는 DB 실행이 시간의 대부분이라 도구 차이가 거의 없고, 행이 많은 결과(아래 표)는 행을 만들고 변환하는 비용에서 차이가 납니다.
+
+### 7. 대량 쓰기의 `batch_size` (1,000,000행)
+
+`batch_size`에 따른 시간, 클라이언트 tracemalloc 피크, (PostgreSQL) 서버 백엔드 메모리입니다. PostgreSQL 에서 `batch_size=None`은 한 문장입니다. 서버 백엔드 메모리는 따로 한 번 더, 새 연결에서 그 연결의 PostgreSQL 백엔드 프로세스 `/proc/<pid>/status`를 2 ms 마다 읽어 호출 중 `RssAnon`(공유 버퍼를 뺀 개인 메모리) 최댓값에서 호출 전 값을 뺀 것입니다. 200,000행 결과와 `VmHWM`은 결과 파일에 있습니다. 이 절의 표는 위 표들과 다른 실행(다른 러너 CPU)에서 쟀습니다.
+
+<!-- bench:env-postgres-batch -->
+PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) · Python 3.12.3 · Django 6.1.2 · SQLAlchemy 2.1.6 · psycopg 3.3.6 · django-pgbulk 3.3.0 · django-cte 4.0.0 · AMD EPYC 7763 64-Core Processor (4코어, 메모리 16 GiB) · Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 · 반복 5회(+예열 1회) 중 최솟값
+<!-- /bench:env-postgres-batch -->
+
+<!-- bench:pg-batch-insert -->
+| | 시간 (ms) | tracemalloc 피크 (MiB) | 서버 백엔드 메모리 증가 (MiB) |
+|---|---:|---:|---:|
+| `bulk_insert()` (batch_size=None) | 17,395 | 848.9 | 233.0 |
+| `bulk_insert(batch_size=10_000)` | 16,642 | 226.0 | 6.1 |
+| `bulk_insert(batch_size=50_000)` | 16,644 | 388.9 | 26.9 |
+| `bulk_insert(batch_size=200_000)` | 16,998 | 643.5 | 68.2 |
+| `bulk_insert(returning=['id'])` (batch_size=None) | 18,035 | 848.9 | 235.5 |
+| `bulk_insert(returning=['id'], batch_size=50_000)` | 17,053 | 259.4 | 28.9 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-batch.json`](bench/results/2026-10-26-postgres-batch.json)</sub>
+<!-- /bench:pg-batch-insert -->
+
+<!-- bench:pg-batch-update -->
+| | 시간 (ms) | tracemalloc 피크 (MiB) | 서버 백엔드 메모리 증가 (MiB) |
+|---|---:|---:|---:|
+| `bulk_update()` (batch_size=None) | 15,843 | 609.6 | 195.4 |
+| `bulk_update(batch_size=10_000)` | 19,342 | 163.1 | 12.8 |
+| `bulk_update(batch_size=50_000)` | 20,003 | 299.0 | 26.5 |
+| `bulk_update(batch_size=200_000)` | 16,257 | 435.9 | 55.6 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-postgres-batch.json`](bench/results/2026-10-26-postgres-batch.json)</sub>
+<!-- /bench:pg-batch-update -->
+
+SQLite 에서는 차이가 작습니다. 시간은 3% 안, tracemalloc 피크는 많아야 7% 줄었습니다. 어차피 `executemany()`가 행마다 실행하기 때문입니다(`returning`은 `bulk_batch_size()` 단위 배치).
+
+<!-- bench:sqlite-batch-insert -->
+| | 시간 (ms) | tracemalloc 피크 (MiB) |
+|---|---:|---:|
+| `bulk_insert()` (batch_size=None) | 12,687 | 221.4 |
+| `bulk_insert(batch_size=10_000)` | 12,536 | 205.4 |
+| `bulk_insert(batch_size=50_000)` | 12,599 | 206.0 |
+| `bulk_insert(batch_size=200_000)` | 12,625 | 208.4 |
+| `bulk_insert(returning=['id'])` (batch_size=None) | 12,702 | 304.6 |
+| `bulk_insert(returning=['id'], batch_size=50_000)` | 12,849 | 304.6 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-sqlite-batch.json`](bench/results/2026-10-26-sqlite-batch.json)</sub>
+<!-- /bench:sqlite-batch-insert -->
+
+<!-- bench:sqlite-batch-update -->
+| | 시간 (ms) | tracemalloc 피크 (MiB) |
+|---|---:|---:|
+| `bulk_update()` (batch_size=None) | 4,876 | 148.2 |
+| `bulk_update(batch_size=10_000)` | 4,760 | 148.2 |
+| `bulk_update(batch_size=50_000)` | 4,841 | 148.2 |
+| `bulk_update(batch_size=200_000)` | 4,863 | 148.2 |
+
+<sub>결과 파일: [`bench/results/2026-10-26-sqlite-batch.json`](bench/results/2026-10-26-sqlite-batch.json)</sub>
+<!-- /bench:sqlite-batch-update -->
 
 ### 브리지가 도움이 안 되는 경우
 

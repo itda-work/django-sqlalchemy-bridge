@@ -92,6 +92,20 @@ RANK_ROWS = [
     ("django_cte", "Django + django-cte"),
     ("bridge", "브리지 (`select().cte()` + `rank().over()`)"),
 ]
+BATCH_INSERT_ROWS = [
+    ("insert_none", "`bulk_insert()` (batch_size=None)"),
+    ("insert_batch10000", "`bulk_insert(batch_size=10_000)`"),
+    ("insert_batch50000", "`bulk_insert(batch_size=50_000)`"),
+    ("insert_batch200000", "`bulk_insert(batch_size=200_000)`"),
+    ("insert_returning_none", "`bulk_insert(returning=['id'])` (batch_size=None)"),
+    ("insert_returning_batch50000", "`bulk_insert(returning=['id'], batch_size=50_000)`"),
+]
+BATCH_UPDATE_ROWS = [
+    ("update_none", "`bulk_update()` (batch_size=None)"),
+    ("update_batch10000", "`bulk_update(batch_size=10_000)`"),
+    ("update_batch50000", "`bulk_update(batch_size=50_000)`"),
+    ("update_batch200000", "`bulk_update(batch_size=200_000)`"),
+]
 RUNNING_ROWS = [
     ("django_window", "Django ORM `Window(Sum(...), partition_by=...)`"),
     ("bridge", "브리지 `func.sum().over(partition_by=...)`"),
@@ -176,6 +190,30 @@ TABLES: dict[str, dict] = {
         "rows": RUNNING_ROWS,
         "metric": "ms",
     },
+    "pg-batch-insert": {
+        "file": _file("postgres", "batch"),
+        "cases": [("", {"op": "insert", "n": 1_000_000})],
+        "rows": BATCH_INSERT_ROWS,
+        "metric": ["ms", "tracemalloc", "server"],
+    },
+    "pg-batch-update": {
+        "file": _file("postgres", "batch"),
+        "cases": [("", {"op": "update", "n": 1_000_000})],
+        "rows": BATCH_UPDATE_ROWS,
+        "metric": ["ms", "tracemalloc", "server"],
+    },
+    "sqlite-batch-insert": {
+        "file": _file("sqlite", "batch"),
+        "cases": [("", {"op": "insert", "n": 1_000_000})],
+        "rows": BATCH_INSERT_ROWS,
+        "metric": ["ms", "tracemalloc"],
+    },
+    "sqlite-batch-update": {
+        "file": _file("sqlite", "batch"),
+        "cases": [("", {"op": "update", "n": 1_000_000})],
+        "rows": BATCH_UPDATE_ROWS,
+        "metric": ["ms", "tracemalloc"],
+    },
 }
 
 METRIC_HEADERS = {
@@ -184,6 +222,7 @@ METRIC_HEADERS = {
     "rss": "RSS 증가 (MiB)",
     "us_per_call": "호출당 (µs)",
     "us_per_query": "쿼리당 (µs)",
+    "server": "서버 백엔드 메모리 증가 (MiB)",
 }
 
 
@@ -225,6 +264,9 @@ def _cell(measurement: dict | None, metric: str, case: dict) -> str:
     if metric == "rss":
         rss = measurement.get("rss_delta_bytes_median")
         return "—" if rss is None else f"{rss / 2**20:.1f}"
+    if metric == "server":
+        value = measurement.get("server", {}).get("rss_anon_peak_delta_bytes")
+        return "—" if value is None else f"{value / 2**20:.1f}"
     if metric == "us_per_call":
         return _num(measurement["best_s"] / case["n"] * 1e6)
     if metric == "us_per_query":
@@ -252,9 +294,9 @@ def render(name: str) -> str:
     return "\n".join(lines)
 
 
-def environment(db: str) -> str:
-    """The one-line environment of a backend's run, from its update result file."""
-    result = _load(_file(db, "update"))
+def environment(db: str, scenario: str = "update") -> str:
+    """The one-line environment of a backend's run, from its ``scenario`` (by default update) result file."""
+    result = _load(_file(db, scenario))
     e = result["environment"]
     p = e["packages"]
     m = e["machine"]
@@ -271,6 +313,7 @@ def blocks() -> dict[str, str]:
     out = {name: render(name) for name in TABLES}
     for db in ("postgres", "sqlite"):
         out[f"env-{db}"] = environment(db)
+    out["env-postgres-batch"] = environment("postgres", "batch")
     return out
 
 
@@ -291,7 +334,11 @@ def differences(text: str) -> list[str]:
 
 
 def referenced_files() -> set[str]:
-    return {spec["file"] for spec in TABLES.values()} | {_file(db, "update") for db in ("postgres", "sqlite")}
+    return (
+        {spec["file"] for spec in TABLES.values()}
+        | {_file(db, "update") for db in ("postgres", "sqlite")}
+        | {_file("postgres", "batch")}
+    )
 
 
 def write(text: str) -> str:
