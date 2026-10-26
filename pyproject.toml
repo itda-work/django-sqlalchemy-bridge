@@ -36,6 +36,7 @@ bench = [
     "psutil>=7.2.2",
 ]
 dev = [
+    "mysqlclient>=2.3.0",
     "psycopg[binary]>=3.2",
     "pytest>=8",
     "pytest-django>=4.9",

@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 import sqlalchemy as sa
-from django.db import OperationalError, connection
+from django.db import OperationalError, ProgrammingError, connection
 from django.db.models.fields.json import KT
 
 from django_sqlalchemy_bridge import execute, table_for
@@ -18,8 +18,11 @@ books = table_for(Book)
 meta = books.c.meta
 
 IS_PG = connection.vendor == "postgresql"
+IS_SQLITE = connection.vendor == "sqlite"
+IS_MYSQL = connection.vendor == "mysql"
 pg_only = pytest.mark.skipif(not IS_PG, reason="jsonb operators are PostgreSQL only")
-sqlite_only = pytest.mark.skipif(IS_PG, reason="SQLite behaviour")
+sqlite_only = pytest.mark.skipif(not IS_SQLITE, reason="SQLite behaviour")
+mysql_only = pytest.mark.skipif(not IS_MYSQL, reason="MySQL behaviour")
 
 METAS = [
     {"k": 1},
@@ -48,7 +51,7 @@ def orm(**lookup):
     return sorted(Book.objects.filter(**lookup).values_list("pk", flat=True))
 
 
-# --- both backends: keys and paths ---------------------------------------------
+# --- every backend: keys and paths ---------------------------------------------
 
 
 @pytest.mark.parametrize("value", [1, "1", 2, "a"])
@@ -57,7 +60,7 @@ def test_key_equality_matches_the_orm(ids, value):
 
 
 def test_key_equality_with_a_structured_value(ids):
-    if IS_PG:
+    if not IS_SQLITE:
         assert bridge(meta["k"] == [1, 2]) == orm(meta__k=[1, 2]) == [ids[4]]
     else:
         # SQLite compares JSON text: its "[1,2]" is not Django's dumped "[1, 2]".
@@ -71,6 +74,17 @@ def test_index_and_path_match_the_orm(ids):
     assert bridge(meta[0] == 1) == orm(meta__0=1) == [ids[6]]
     assert bridge(meta[("x", "k")] == 1) == orm(meta__x__k=1) == [ids[3]]
     assert bridge(meta[("k", 1)] == 2) == orm(meta__k__1=2) == [ids[4]]
+
+
+@pytest.mark.parametrize("value", [{"k": 1}, {}, [1, "k"], "k"])
+def test_whole_document_equality_matches_the_orm(ids, value):
+    assert bridge(meta == value) == orm(meta=value)
+
+
+def test_key_in_a_list_matches_the_orm(ids):
+    assert bridge(meta["k"].in_([1, "1"])) == orm(meta__k__in=[1, "1"])
+    if not IS_SQLITE:  # SQLite: a structured value compares as JSON text (see above)
+        assert bridge(meta["k"].in_([2, [1, 2]])) == orm(meta__k__in=[2, [1, 2]])
 
 
 def test_key_text_with_as_string(ids):
@@ -134,3 +148,33 @@ def test_has_key_fails_on_sqlite(ids):
 def test_astext_on_sqlite_is_sqlite_json_text_extraction(ids):
     # SQLite's ->> returns the SQL value: 1 for {"k": 1}, which is not the text '1'.
     assert bridge(meta["k"].astext == "1") == [ids[1]]
+
+
+# --- MySQL: JSON documents, no jsonb operators ----------------------------------
+
+
+@mysql_only
+def test_contains_and_has_key_fail_on_mysql(ids):
+    with pytest.raises(ProgrammingError):
+        bridge(meta.contains({"k": 1}))
+    with pytest.raises(ProgrammingError):
+        bridge(meta.has_key("k"))
+
+
+@mysql_only
+def test_astext_on_mysql_is_the_unquoted_text(ids):
+    # MySQL's ->> is JSON_UNQUOTE(JSON_EXTRACT()): the text '1' for {"k": 1} and {"k": "1"}.
+    assert bridge(meta["k"].astext == "1") == [ids[0], ids[1]]
+
+
+@mysql_only
+def test_bound_values_are_json_documents_on_mysql(ids):
+    # MySQL compares a JSON value with a string as a JSON string; the bridge, like
+    # the ORM, binds JSON_EXTRACT(%s, '$') so 1 does not match {"k": "1"}.
+    assert bridge(meta["k"] == 1) == [ids[0]]
+    assert bridge(meta["k"] == "1") == [ids[1]]
+    # A stored document reads back as the document it was given.
+    pk = ids[0]
+    execute(sa.update(books).where(books.c.id == pk).values(meta={"k": "1", "n": None}))
+    assert execute(sa.select(meta).where(books.c.id == pk)) == [({"k": "1", "n": None},)]
+    assert Book.objects.get(pk=pk).meta == {"k": "1", "n": None}

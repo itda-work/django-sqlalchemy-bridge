@@ -19,7 +19,7 @@ from typing import Any
 import sqlalchemy as sa
 from django.conf import settings
 from django.db import connections, models
-from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects import mysql, postgresql
 from sqlalchemy.dialects.postgresql import operators as pg_operators
 from sqlalchemy.sql import operators
 
@@ -98,6 +98,21 @@ def _generic_type(type_: sa.types.TypeEngine) -> sa.types.TypeEngine:
     return type_.impl if isinstance(type_, FieldType) else type_
 
 
+class _MySQLJSON(mysql.JSON):
+    """MySQL's JSON, with each bound value read as a JSON document.
+
+    Django binds a JSON value as its text. MySQL compares a JSON value with a
+    string as a JSON string, so ``meta["k"] == 1`` would match ``{"k": "1"}``;
+    the ORM wraps the value in ``JSON_EXTRACT(%s, '$')`` (MySQL and MariaDB), and
+    so does this. Storing the wrapped value stores the same document.
+    """
+
+    cache_ok = True
+
+    def bind_expression(self, bindvalue: Any) -> Any:
+        return sa.func.JSON_EXTRACT(bindvalue, sa.literal_column("'$'"), type_=self)
+
+
 def _string(field: models.Field) -> sa.types.TypeEngine:
     return sa.String(field.max_length)
 
@@ -132,8 +147,11 @@ _TYPES = {
     "UUIDField": lambda f: sa.Uuid(),
     # Django stores JSONField as jsonb on PostgreSQL. The comparator comes from the
     # type an expression is built with, before any dialect is chosen, so JSONB has
-    # to be the base type for contains() and has_key() to exist; SQLite compiles JSON.
-    "JSONField": lambda f: postgresql.JSONB().with_variant(sa.JSON(), "sqlite"),
+    # to be the base type for contains() and has_key() to exist; SQLite compiles
+    # JSON, MySQL and MariaDB JSON with bound values read as documents.
+    "JSONField": lambda f: (
+        postgresql.JSONB().with_variant(sa.JSON(), "sqlite").with_variant(_MySQLJSON(), "mysql", "mariadb")
+    ),
     "BinaryField": lambda f: sa.LargeBinary(),
 }
 

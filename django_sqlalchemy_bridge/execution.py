@@ -92,22 +92,69 @@ def _postgresql_dialect() -> Dialect:
     return dialect
 
 
-# Both Django backends take "%s" placeholders and "%%" for a literal percent sign
-# (the SQLite wrapper rewrites them to "?" and "%") whenever params are passed.
-_DIALECT_FACTORIES = {"sqlite": _sqlite_dialect, "postgresql": _postgresql_dialect}
+def _mysql_dialect(*, mariadb: bool, backslash_escapes: bool) -> Dialect:
+    from sqlalchemy.dialects.mysql import mariadb as sa_mariadb
+    from sqlalchemy.dialects.mysql import mysqldb
+
+    # Django's MySQL backend runs on mysqlclient (MySQLdb), a "format" driver.
+    factory = sa_mariadb.loader("mysqldb") if mariadb else mysqldb.dialect
+    dialect = factory(paramstyle="format")
+    # What initialize() would read from the server; the dialect never connects.
+    # Every MySQL Django supports (8.0.11+) has FOR UPDATE OF and FOR SHARE.
+    dialect.supports_for_update_of = dialect.use_mysql_for_share = not mariadb
+
+    class Compiler(_ReturningCompiler, dialect.statement_compiler):
+        if not backslash_escapes:
+
+            def render_literal_value(self, value: Any, type_: sa.types.TypeEngine) -> str:
+                # The MySQL compiler doubles backslashes in literals, as the server's
+                # default sql_mode wants. Under NO_BACKSLASH_ESCAPES a backslash is
+                # an ordinary character, as in standard SQL.
+                return SQLCompiler.render_literal_value(self, value, type_)
+
+    dialect.statement_compiler = Compiler
+    return dialect
+
+
+# Every Django backend here takes "%s" placeholders and "%%" for a literal percent
+# sign (the SQLite wrapper rewrites them to "?" and "%") whenever params are passed.
+_DIALECT_FACTORIES = {
+    "sqlite": _sqlite_dialect,
+    "postgresql": _postgresql_dialect,
+    "mysql": lambda: _mysql_dialect(mariadb=False, backslash_escapes=True),
+    "mysql-no-backslash-escapes": lambda: _mysql_dialect(mariadb=False, backslash_escapes=False),
+    "mariadb": lambda: _mysql_dialect(mariadb=True, backslash_escapes=True),
+    "mariadb-no-backslash-escapes": lambda: _mysql_dialect(mariadb=True, backslash_escapes=False),
+}
 _dialects: dict[str, Dialect] = {}
+
+
+def _dialect_key(connection: BaseDatabaseWrapper) -> str:
+    """Which dialect ``connection`` compiles with: its vendor, told apart further on MySQL.
+
+    Django's "mysql" vendor is MySQL or MariaDB (which differ in RETURNING), and
+    the server's sql_mode decides how a literal backslash is written. Asking
+    either connects, as running the statement would.
+    """
+    vendor = connection.vendor
+    if vendor != "mysql":
+        return vendor
+    key = "mariadb" if connection.mysql_is_mariadb else "mysql"
+    if "NO_BACKSLASH_ESCAPES" in connection.sql_mode:
+        key += "-no-backslash-escapes"
+    return key
 
 
 def dialect_for(connection: BaseDatabaseWrapper) -> Dialect:
     """The SQLAlchemy dialect statements are compiled with for ``connection``."""
-    vendor = connection.vendor
-    dialect = _dialects.get(vendor)
+    key = _dialect_key(connection)
+    dialect = _dialects.get(key)
     if dialect is None:
         try:
-            factory = _DIALECT_FACTORIES[vendor]
+            factory = _DIALECT_FACTORIES[key]
         except KeyError:
-            raise NotImplementedError(f"database vendor {vendor!r} is not supported") from None
-        dialect = _dialects.setdefault(vendor, factory())
+            raise NotImplementedError(f"database vendor {connection.vendor!r} is not supported") from None
+        dialect = _dialects.setdefault(key, factory())
     return dialect
 
 
@@ -130,7 +177,7 @@ class Prepared:
 
 @dataclass(frozen=True)
 class _Compiled:
-    """What compiling a statement for one vendor gives, whatever the connection or values.
+    """What compiling a statement for one dialect gives, whatever the connection or values.
 
     ``types`` are the result columns' types (empty when the statement's columns
     are unknown); ``defaults_error`` is why the statement is refused, if it is.
@@ -142,7 +189,7 @@ class _Compiled:
     defaults_error: str | None
 
 
-# Statement -> {(vendor, params' names): _Compiled}. The entry goes when the
+# Statement -> {(dialect key, params' names): _Compiled}. The entry goes when the
 # statement object does: what is compiled is a generative copy of it, so nothing
 # cached refers back to it. Racing threads may both compile a statement; each
 # entry is complete before it is stored, and the last one stored stays.
@@ -155,7 +202,7 @@ def _compile(
     stmt: sa.sql.ClauseElement, column_keys: tuple[str, ...] | None, connection: BaseDatabaseWrapper
 ) -> _Compiled:
     dialect = dialect_for(connection)
-    key = (connection.vendor, column_keys)
+    key = (_dialect_key(connection), column_keys)
     try:
         entries = _cache.get(stmt)
     except TypeError:  # cannot be weakly referenced: not cached
@@ -204,7 +251,10 @@ def prepare(
     if many and entry.types:
         raise ValueError("executemany cannot return rows; run a statement with RETURNING once per row")
     if entry.dml and entry.types:
-        check_returning(connection)
+        check_returning(
+            connection,
+            "UPDATE" if isinstance(stmt, sa.Update) else "DELETE" if isinstance(stmt, sa.Delete) else "INSERT",
+        )
     if entry.defaults_error is not None:
         raise ValueError(entry.defaults_error)
     sql = None
@@ -220,15 +270,22 @@ def prepare(
     return Prepared(sql or compiled.string, param_rows, many, converters, rowcount_only=entry.dml and not entry.types)
 
 
-def check_returning(connection: BaseDatabaseWrapper) -> None:
-    """Refuse ``RETURNING`` before it runs on a database that lacks it.
+def check_returning(connection: BaseDatabaseWrapper, verb: str = "INSERT") -> None:
+    """Refuse ``verb ... RETURNING`` (``INSERT``, ``UPDATE``, ``DELETE``) before it runs on a database that lacks it.
 
     The dialects compile without connecting, so they render ``RETURNING`` for
-    any SQLite; it arrived in SQLite 3.35 for INSERT, UPDATE and DELETE alike,
+    any database. SQLite has it from 3.35 for INSERT, UPDATE and DELETE alike,
     and Django (5.2 runs on 3.31) reports it as ``can_return_columns_from_insert``.
+    MySQL has none; MariaDB, which Django also reports as vendor "mysql", has
+    INSERT and DELETE ... RETURNING but no UPDATE ... RETURNING.
     """
-    if not connection.features.can_return_columns_from_insert:
-        raise NotSupportedError(f"database {connection.alias!r} ({connection.display_name}) does not support RETURNING")
+    supported = connection.features.can_return_columns_from_insert
+    if supported and verb == "UPDATE" and connection.vendor == "mysql":
+        supported = False
+    if not supported:
+        raise NotSupportedError(
+            f"database {connection.alias!r} ({connection.display_name}) does not support {verb} ... RETURNING"
+        )
 
 
 def _python_defaults_error(compiled: Compiled) -> str | None:
