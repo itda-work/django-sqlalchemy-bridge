@@ -111,6 +111,21 @@ def test_values_convert_both_ways_as_in_execute(needs_returning):
     assert rows[2][0][0].utcoffset() == datetime.timedelta(0)
 
 
+def test_compared_values_convert_as_orm_lookups(monkeypatch, pipelines):
+    # As tests/test_lookup_values.py: a backend that refuses 0 for a written AutoField
+    # (MySQL) still compares with it, so a lookup by pk 0 finds nothing rather than raising.
+    def validate_autopk_value(value):
+        if value == 0:
+            raise ValueError("The database backend does not accept 0 as a value for AutoField.")
+        return value
+
+    monkeypatch.setattr(connection.ops, "validate_autopk_value", validate_autopk_value)
+    author = make_author("x")
+    by_pk = sa.select(authors.c.name).where(authors.c.id == sa.bindparam("pk"))
+    items = [(by_pk, {"pk": 0}), sa.select(authors.c.name).where(authors.c.id.in_([0, author.pk]))]
+    assert execute_pipeline(items) == [[], [("x",)]]
+
+
 def test_executemany_items_give_their_rowcount(pipelines):
     rows = execute_pipeline(
         [
