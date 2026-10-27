@@ -203,6 +203,70 @@ def _postgresql_dialect() -> Dialect:
     return dialect
 
 
+def _is_json(type_: sa.types.TypeEngine) -> bool:
+    return isinstance(_generic_type(type_), sa.JSON)
+
+
+class _JSONTupleCompiler(SQLCompiler):
+    """Compare a tuple with a JSON member member by member, as a lone JSON comparison compiles.
+
+    SQLAlchemy renders ``tuple_(a, meta).in_([...])`` as one expanding bind and
+    applies no ``bind_expression`` to its members, so on MySQL the value lacks
+    ``JSON_EXTRACT(%s, '$')`` and the document compares as text; Oracle
+    compares the ``NCLOB`` with ``=`` (ORA-22848). A literal list is written as
+    the ``OR`` of each row's ``AND`` of member comparisons, an empty one as
+    ``1 != 1``. An expanding ``bindparam``'s rows come only at run time, so it is
+    refused before anything runs. ``json_tuple_operators`` are the operators
+    rewritten: Oracle adds ``==`` and ``!=`` with a tuple of values.
+    """
+
+    json_tuple_operators: frozenset[Any] = frozenset({operators.in_op, operators.not_in_op})
+
+    def visit_binary(self, binary: Any, override_operator: Any = None, **kw: Any) -> str:
+        if override_operator is None and binary.operator in self.json_tuple_operators:
+            rewritten = _json_tuple_comparison(binary, self.dialect.name)
+            if rewritten is not None:
+                return self.process(rewritten, **kw)
+        return super().visit_binary(binary, override_operator=override_operator, **kw)
+
+
+def _json_tuple_comparison(binary: Any, dialect_name: str) -> sa.ColumnElement[bool] | None:
+    """``binary`` member by member if it compares a ``tuple_()`` with a JSON member, else ``None``."""
+    left, op, right = binary.left, binary.operator, binary.right
+    if not (isinstance(left, sa.sql.expression.Tuple) and any(_is_json(c.type) for c in left.clauses)):
+        return None
+    members = list(left.clauses)
+    if op in (operators.eq, operators.ne):
+        if not (isinstance(right, sa.sql.expression.Tuple) and len(right.clauses) == len(members)):
+            return None
+        both = sa.and_(*(member == value for member, value in zip(members, right.clauses, strict=True)))
+        return both.self_group() if op is operators.eq else sa.not_(both.self_group())
+    if not (isinstance(right, sa.BindParameter) and right.expanding):
+        return None  # a subquery compares columns with columns
+    # in_([...]) makes an anonymous (unique) expanding bind holding the rows.
+    if not right.unique or right.callable is not None or right.value is None:
+        raise NotSupportedError(
+            f"{dialect_name} cannot compare a tuple with a JSON member IN an expanding bindparam: its rows "
+            "are bound at run time, where the JSON member would not compare as a document. Pass a literal "
+            "list (tuple_(...).in_([(x, y), ...])) or compare the JSON column in a condition of its own."
+        )
+    types = right.type.types
+    rows = [
+        sa.and_(
+            *(
+                member == sa.bindparam(None, value, type_=types[i], unique=True)
+                for i, (member, value) in enumerate(zip(members, row, strict=True))
+            )
+        ).self_group()
+        for row in right.value
+    ]
+    if not rows:
+        # SQLAlchemy's empty set still compares the tuple with NULLs, which Oracle refuses for the NCLOB.
+        return sa.literal_column("1 != 1" if op is operators.in_op else "1 = 1")
+    either = sa.or_(*rows).self_group()
+    return either if op is operators.in_op else sa.not_(either)
+
+
 def _mysql_dialect(*, mariadb: bool, backslash_escapes: bool) -> Dialect:
     from sqlalchemy.dialects.mysql import mariadb as sa_mariadb
     from sqlalchemy.dialects.mysql import mysqldb
@@ -214,7 +278,7 @@ def _mysql_dialect(*, mariadb: bool, backslash_escapes: bool) -> Dialect:
     # Every MySQL Django supports (8.0.11+) has FOR UPDATE OF and FOR SHARE.
     dialect.supports_for_update_of = dialect.use_mysql_for_share = not mariadb
 
-    class Compiler(_LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
+    class Compiler(_JSONTupleCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
         if not backslash_escapes:
 
             def render_literal_value(self, value: Any, type_: sa.types.TypeEngine) -> str:
@@ -225,10 +289,6 @@ def _mysql_dialect(*, mariadb: bool, backslash_escapes: bool) -> Dialect:
 
     dialect.statement_compiler = Compiler
     return dialect
-
-
-def _is_json(type_: sa.types.TypeEngine) -> bool:
-    return isinstance(_generic_type(type_), sa.JSON)
 
 
 _ERROR_ON_ERROR = " ERROR ON ERROR)"
@@ -244,7 +304,9 @@ def _oracle_dialect() -> Dialect:
     # Django's Oracle cursor takes "%s" and rewrites it to ":arg0", ":arg1", ...
     dialect = oracledb.dialect(paramstyle="format")
 
-    class Compiler(_LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
+    class Compiler(_JSONTupleCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
+        json_tuple_operators = _JSONTupleCompiler.json_tuple_operators | {operators.eq, operators.ne}
+
         def visit_binary(self, binary: Any, override_operator: Any = None, **kw: Any) -> str:
             # Django stores JSONField as text (NCLOB IS JSON), which Oracle cannot
             # compare with "=" (ORA-22848), and a key compiles to JSON_QUERY(),
