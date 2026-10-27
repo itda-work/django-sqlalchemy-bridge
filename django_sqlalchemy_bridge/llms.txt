@@ -26,12 +26,12 @@ Supported: SQLite, PostgreSQL (psycopg 3), MySQL 8.4 (mysqlclient), Oracle (orac
 
 ## Public API
 
-All from `from django_sqlalchemy_bridge import ...`. `using` is a Django database alias.
+All from `from django_sqlalchemy_bridge import ...`. `using` is a Django database alias. Tables come from models and belong to no database: pick the database per call with `using`, and the same table and statement run on any alias.
 
 ```
-table_for(model, *, using='default') -> sa.Table
+table_for(model) -> sa.Table
 ```
-The model's `sa.Table` (cached per model, in the shared `metadata`). Column types are `FieldType` (a `TypeDecorator`; `.impl` is the generic SA type, `.field` the Django field). `using` accepts only `'default'` for now (anything else raises `NotImplementedError`). A field with a database column but no mapping (`ArrayField` and the like) raises `UnsupportedFieldError`. Many-to-many and reverse relations are skipped (`table_for` the through model separately). `metadata` is that shared `sa.MetaData`.
+The model's `sa.Table` (cached per model, in the shared `metadata`). Column types are `FieldType` (a `TypeDecorator`; `.impl` is the generic SA type, `.field` the Django field). A field with a database column but no mapping (`ArrayField` and the like) raises `UnsupportedFieldError`. Many-to-many and reverse relations are skipped (`table_for` the through model separately). `metadata` is that shared `sa.MetaData`.
 
 ```
 execute(stmt, params=None, *, using='default')
@@ -84,7 +84,7 @@ forget_table(model)
 ## Not supported, and pitfalls
 
 - Databases other than SQLite, PostgreSQL, MySQL/MariaDB and Oracle. MariaDB is not tested in CI; its JSON comparisons can differ from the ORM's (MariaDB stores JSON as text).
-- `table_for(..., using=...)` other than `'default'`.
+- A JOIN across databases (Django aliases). A JOIN runs on one connection, as in the ORM and SQLAlchemy. With a server link (PostgreSQL `postgres_fdw`/`dblink`, SQLite `ATTACH`, MySQL `FEDERATED`, Oracle DB link) the remote table is a name on one connection: build it with `sa.table(name, sa.column(...), schema=...)` and `execute(stmt, using=...)` a plain JOIN (its values pass through unconverted). Without one, fetch the keys from one database and query the other with `in_()`, then join in Python.
 - SQLAlchemy Python-side `Column(default=...)` and `onupdate=...` (values or callables) on a hand-made `sa.Table` cannot be applied, so an INSERT or UPDATE that leaves such a column out raises `ValueError` before it runs. Give the value, or use `server_default` or Django `db_default`. SQL expression defaults (`sa.func.now()`) work.
 - PostgreSQL `standard_conforming_strings=off`.
 - On SQLite and MySQL the jsonb operators (`contains`, `has_key`) fail when run. For JSON, `meta["k"] == 1`, `meta[("a", "b")]`, `meta == {...}` and `.as_string()` work on every backend. On MySQL a JSON column's bound values are wrapped in `JSON_EXTRACT(%s, '$')`, as the ORM does, so they compare as JSON documents.

@@ -12,7 +12,15 @@ def test_readme_examples_match_the_tested_code():
 
 
 def test_every_snippet_is_shown_in_the_readme():
-    assert set(readme_examples.snippets()) == {"recursive-cte", "upsert", "upsert-mysql", "update-from"}
+    assert set(readme_examples.snippets()) == {
+        "recursive-cte",
+        "upsert",
+        "upsert-mysql",
+        "update-from",
+        "multi-db-using",
+        "multi-db-attach",
+        "multi-db-in",
+    }
 
 
 def test_an_edit_on_either_side_is_caught():

@@ -339,7 +339,7 @@ assert_table_matches(Order, check_db=True)
   - MySQL: `information_schema.columns`의 `COLUMN_TYPE`과 맞춥니다(`integer`→`int`, `bool`→`tinyint(1)`, `numeric`→`decimal`, `double precision`·`real`→`double`, `AUTO_INCREMENT`와 정수 표시 폭 `int(11)`은 뗌). varchar 길이, `decimal(p,s)` 정밀도, `datetime(6)`의 소수 자릿수, `unsigned`까지 비교합니다.
   - 그 밖의 백엔드(MariaDB: JSON 이 `longtext`, UUID 가 고유 타입. Oracle: 데이터 사전이 `db_type()`과 다르게 씀, 예를 들어 `DOUBLE PRECISION`을 `FLOAT(126)`으로)에서는 타입을 비교하지 않습니다.
   - Oracle 에서는 컬럼 이름을 Django 가 실제로 만든 이름(대문자, 30자를 넘으면 해시로 줄임)으로 맞춰 보고, nullable 은 Django 스키마 편집기의 규칙대로 봅니다. Oracle 은 빈 문자열을 `NULL`로 저장하므로 Django 가 빈 문자열을 받는 필드(`CharField`·`TextField` 등, PK 제외)를 `null=False`여도 NULL 허용 컬럼으로 만들고, `compare_table`도 그 컬럼을 NULL 허용으로 기대합니다.
-- 다중 DB 는 아직 `default` 만 받습니다(`using` 인자 자리만 있음).
+- 테이블은 모델에서 만들고 어느 DB 에도 묶이지 않습니다. 어느 DB 에서 실행할지는 호출의 `using`이 정합니다(아래 "다중 DB").
 - `forget_table(model)`은 캐시와 공용 `MetaData`에서 테이블을 지웁니다. 테스트(`isolate_apps` 등)에서 동적 모델을 정리하는 용도입니다.
 
 ### 지원 필드
@@ -549,6 +549,64 @@ bulk_insert(orders, rows, method="copy")
 
 > ⚠️ **브리지로 쓴 내용은 모델 계층을 거치지 않습니다.** `save()`·`delete()`가 불리지 않고, `pre_save`/`post_save`/`pre_delete`/`post_delete` 등 **signal이 발생하지 않으며**, Django 필드의 `default`·`auto_now`도 채워지지 않습니다. 값은 모두 직접 넣어야 합니다.
 
+## 다중 DB
+
+`table_for()`의 테이블은 모델에서 오므로 어느 DB 에도 묶이지 않습니다. 어느 DB 에서 실행할지는 호출마다 `using`(Django DB 별칭)이 정하고, 같은 테이블·같은 문장을 `default`와 다른 DB 에 번갈아 실행해도 됩니다. dialect 는 실행할 때 `connections[using]`의 vendor 로 고르고, 컴파일 캐시는 vendor 별, 결과 컨버터 캐시는 연결 객체별이라 서로 섞이지 않습니다. `execute`·`execute_result`·`stream`·`raw`·`execute_pipeline`·`copy_to`·`bulk_*` 모두 `using`을 받습니다.
+
+<!-- example:multi-db-using -->
+```python
+price_changes = table_for(PriceChange)  # 모델에서 만든 테이블은 어느 DB 에도 묶이지 않는다
+
+stmt = sa.select(price_changes.c.sku, price_changes.c.price)
+here = execute(stmt)  # default: [("SHIRT", Decimal("27.50"))]
+there = execute(stmt, using="other")  # 같은 문장을 other 에서: [("TEA", Decimal("8.50"))]
+```
+<!-- /example:multi-db-using -->
+
+**서로 다른 DB 의 테이블은 한 문장에서 JOIN 할 수 없습니다.** JOIN 은 한 연결 위에서 DB 서버가 실행하기 때문이고, Django ORM 도 SQLAlchemy 도 같습니다. 길은 둘입니다.
+
+- **서버 링크.** PostgreSQL `postgres_fdw`·`dblink`, SQLite `ATTACH`, MySQL `FEDERATED`, Oracle DB link 처럼 한 DB 가 다른 DB 의 테이블을 자기 이름으로 보여 주면, 그 테이블은 한 연결 안의 이름입니다. 모델이 없으니 `sa.table()`로 손수 만들어 평범한 JOIN 을 그 연결(`using`)로 보냅니다. 손수 만든 테이블의 컬럼에는 Django 필드가 없으므로 그 값은 변환 없이 드라이버 값 그대로 오갑니다(위 "실행하기"의 컬럼으로 추적되지 않는 값과 같음). 아래는 SQLite 에서 실제로 도는 예입니다(`linked`는 다른 SQLite 파일).
+
+<!-- example:multi-db-attach -->
+```python
+# 다른 SQLite 파일을 이 연결의 linked 스키마로 붙인다(연결 상태라 연결마다 한 번)
+with connection.cursor() as cursor:
+    cursor.execute("ATTACH DATABASE %s AS linked", [path])
+
+products = table_for(Product)
+remote_sales = sa.table("remote_sale", sa.column("product_id"), sa.column("quantity"), schema="linked")
+
+stmt = (
+    sa.select(products.c.sku, sa.func.sum(remote_sales.c.quantity))
+    .join(remote_sales, remote_sales.c.product_id == products.c.id)
+    .group_by(products.c.sku)
+    .order_by(products.c.sku)
+)
+rows = execute(stmt)  # 한 연결 안의 평범한 JOIN: [("SHIRT", 3), ("TEA", 5)]
+```
+<!-- /example:multi-db-attach -->
+
+- **애플리케이션에서 합치기.** 서버 링크가 없으면 Django 의 교차 DB `prefetch_related`처럼 한쪽에서 키를 뽑아 다른 쪽을 `in_()`으로 조회하고 파이썬에서 합칩니다. 문장이 둘이고 트랜잭션도 DB 마다 따로입니다.
+
+<!-- example:multi-db-in -->
+```python
+products = table_for(Product)  # default DB 의 상품
+price_changes = table_for(PriceChange)  # other DB 의 가격표
+
+skus = [sku for (sku,) in execute(sa.select(products.c.sku).order_by(products.c.sku))]
+new_prices = dict(
+    execute(
+        sa.select(price_changes.c.sku, price_changes.c.price).where(price_changes.c.sku.in_(skus)),
+        using="other",
+    )
+)
+rows = [(sku, new_prices.get(sku)) for sku in skus]
+# [("JEANS", None), ("SHIRT", Decimal("27.50")), ("TEA", Decimal("8.50"))]
+```
+<!-- /example:multi-db-in -->
+
+`arun`에는 `using`이 없습니다. `fn` 안의 호출이 저마다 `using`을 받습니다(아래 "비동기").
+
 ## 제약
 
 브리지가 실행 전에 막는 것과, 막지 않거나 막을 수 없는 것들입니다.
@@ -602,7 +660,7 @@ async def view(request):
 ```
 
 - `arun(fn, /, *args, **kwargs)`는 `fn(*args, **kwargs)`를 `sync_to_async(thread_sensitive=True)`로 한 번에 실행하고 반환값을 돌려줍니다. `fn`이 낸 예외도 그대로 올라옵니다. `fn` 안에서는 `execute`·`stream`·`bulk_*`·`atomic()`·`on_commit`·ORM을 동기 코드처럼 씁니다.
-- `fn`은 위치 전용 인자라 `fn`이나 `using`이라는 키워드 인자도 그대로 `fn`에 넘어갑니다. `arun`에는 `using`이 없습니다. 어느 DB를 쓸지는 `fn` 안의 `execute(..., using=...)`·`atomic(using=...)`이 정합니다.
+- `fn`은 위치 전용 인자라 `fn`이나 `using`이라는 키워드 인자도 그대로 `fn`에 넘어갑니다. `arun`에는 `using`이 없습니다. 어느 DB를 쓸지는 `fn` 안의 `execute(..., using=...)`·`atomic(using=...)`이 정합니다(위 "다중 DB").
 - 코루틴 함수를 넘기면 `TypeError`입니다(`await fn()`을 쓰세요). 동기 함수가 awaitable을 돌려줘도 `TypeError`입니다.
 - `arun` 여러 건을 `asyncio.gather`로 동시에 돌려도 서로 섞이지 않습니다. thread-sensitive 호출은 한 스레드에서 차례로 돌고, 각 `fn`의 트랜잭션은 그 `fn` 안에서 시작해 끝나므로 한쪽의 롤백이 다른 쪽의 커밋에 영향을 주지 않습니다(테스트로 확인).
 - **연결 수명.** `fn` 앞뒤로 Django `close_old_connections()`와 같은 정리를 합니다. 그 스레드의 연결 중 오류 뒤 쓸 수 없게 된 것, `CONN_MAX_AGE`가 지난 것을 닫습니다(Channels `database_sync_to_async`와 같은 동작). 요청 밖에서 오래 도는 코루틴(워커, consumer)은 Django의 요청 시작·끝 정리를 받지 못해, 서버가 끊은 연결이 그 스레드에서 계속 `connection is closed`로 실패하기 때문입니다. 이 정리가 있으면 끊긴 뒤 첫 호출만 실패하고 다음 호출은 새 연결을 씁니다. `CONN_HEALTH_CHECKS: True`면 첫 호출부터 새 연결을 씁니다(PostgreSQL에서 테스트로 확인).
