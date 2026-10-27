@@ -145,6 +145,11 @@ def bulk_insert(
     auto-increment primary key and a column with a ``db_default``: Django field
     defaults and ``auto_now`` are not applied, so a column left out raises
     ``ValueError`` instead of silently storing ``NULL`` or failing on ``NOT NULL``.
+    Rows that leave every column out (``[{}, {}]``) insert one row each, as
+    ``bulk_create()`` of objects with no field values does: the auto-increment
+    primary key gets ``pk_default_value()``. Without one, PostgreSQL and MySQL
+    give the first column ``DEFAULT``; SQLite and Oracle raise
+    ``NotSupportedError`` before running.
 
     ``returning`` names columns (or gives :class:`sa.Column` objects of the
     table) to return; the result is then one tuple per row, converted by the
@@ -191,6 +196,10 @@ def bulk_insert(
     dialect_for(connection)  # refuses an unsupported backend
     if returned is not None:
         check_returning(connection)
+    if not given:
+        if method == "copy":
+            raise ValueError("method='copy' cannot insert rows with no column: COPY reads the columns it names")
+        return _insert_defaults(table, len(rows), returned, batch_size, connection, using)
     values = [_db_values(column, rows, connection) for column in given]
 
     if method == "copy":
@@ -234,6 +243,53 @@ def bulk_insert(
             )
             out.extend(_convert(cursor.fetchall(), returned, connection))
     return out
+
+
+def _insert_defaults(
+    table: sa.Table,
+    count: int,
+    returned: list[sa.Column] | None,
+    batch_size: int | None,
+    connection: BaseDatabaseWrapper,
+    using: str,
+) -> int | list[tuple[Any, ...]]:
+    # Rows that give no column, every one left to the database. An INSERT names
+    # at least one column, so name the one Django's bulk_create names for
+    # objects with no field values: the auto-increment primary key, given
+    # pk_default_value() (NULL, DEFAULT on PostgreSQL), in the multi-row form of
+    # ops.bulk_insert_sql() (UNION ALL of SELECTs on Oracle). Without one, a
+    # db_default column given DEFAULT, where VALUES takes that keyword.
+    # Neither ops method is in Django's documentation; the Django matrix in CI
+    # keeps them in check.
+    qn = connection.ops.quote_name
+    auto = [c for c in table.primary_key.columns if c.autoincrement is True]
+    if auto:
+        column, value = auto[0], connection.ops.pk_default_value()
+    elif connection.vendor in ("postgresql", "mysql"):
+        column, value = next(iter(table.columns)), "DEFAULT"
+    else:
+        raise NotSupportedError(
+            f"{connection.display_name} cannot insert a row with no column into {table.name!r}: it has no "
+            "auto-increment primary key to name, and its VALUES does not take DEFAULT"
+        )
+    if returned is not None and not connection.features.can_return_rows_from_bulk_insert:
+        raise NotSupportedError(f"{connection.vendor} cannot return rows from a multi-row INSERT")
+    placeholder_rows = [[value]] * count
+    size = max(connection.ops.bulk_batch_size([column.type.field], placeholder_rows), 1)
+    batches = _batches(count, min(size, batch_size or size))
+    head = f"INSERT INTO {qn(table.name)} ({qn(column.name)}) "
+    tail = f" RETURNING {', '.join(qn(c.name) for c in returned)}" if returned is not None else ""
+    total = 0
+    out: list[tuple[Any, ...]] = []
+    with _atomic(using, len(batches) > 1), connection.cursor() as cursor:
+        for batch in batches:
+            # Always pass params, even empty: the backends turn "%%" into "%" only then.
+            cursor.execute(f"{head}{connection.ops.bulk_insert_sql([None], placeholder_rows[batch])}{tail}", ())
+            if returned is None:
+                total += cursor.rowcount
+            else:
+                out.extend(_convert(cursor.fetchall(), returned, connection))
+    return total if returned is None else out
 
 
 def _check_copy(connection: BaseDatabaseWrapper) -> None:

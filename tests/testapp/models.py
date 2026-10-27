@@ -127,3 +127,19 @@ class OracleSpelledNameModelWithALongName(models.Model):
 
     cased = models.CharField(max_length=20, db_column="MixedCase")
     a_column_name_longer_than_thirty_characters = models.IntegerField()
+
+
+class Counter(models.Model):
+    """Nothing but an auto primary key: a row of it gives no column."""
+
+
+class Defaulted(models.Model):
+    """An auto primary key and a ``db_default``: every column may be left to the database."""
+
+    label = models.CharField(max_length=20, db_default="dflt")
+
+
+class DefaultKey(models.Model):
+    """A primary key the database fills from a ``db_default``, not an auto-increment."""
+
+    code = models.CharField(primary_key=True, max_length=10, db_default="k")
