@@ -98,6 +98,11 @@ def _is_decimal(type_: sa.types.TypeEngine) -> bool:
     return isinstance(type_, FieldType) and type_.field.get_internal_type() == "DecimalField"
 
 
+# The compile keyword a window, FILTER or WITHIN GROUP passes its element (in a
+# list it empties) so the element leaves the cast to it.
+_CAST_OUTSIDE = "dsb_cast_outside"
+
+
 class _SQLiteNumericCompiler(SQLCompiler):
     """Cast an expression of a ``DecimalField``'s type to ``NUMERIC``, as the ORM does on SQLite.
 
@@ -109,43 +114,60 @@ class _SQLiteNumericCompiler(SQLCompiler):
     ``(CAST(... AS NUMERIC))`` (``SQLiteNumericMixin``), which has the affinity;
     so does this, by the expression's type. A function under a window or
     ``FILTER`` is cast outside them, where the ORM casts it.
+
+    Only the element right under the one being compiled is left uncast: the
+    window passes it down in the compile keywords, and the element takes it off
+    as it is compiled. The same object anywhere else in the statement (in
+    ``HAVING``, beside it in the columns, in the window's ``ORDER BY``) is cast
+    as the ORM casts it there (#72).
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.cast_outside: set[int] = set()  # the compiler compiles in __init__
-        super().__init__(*args, **kwargs)
+    def outside_cast(self, element: Any, kw: dict[str, Any]) -> bool:
+        """Whether a window or ``FILTER`` casts this element; takes the mark off ``kw`` either way."""
+        under = kw.pop(_CAST_OUTSIDE, None)
+        if under and under[0] is element:
+            under.clear()  # once: the window's PARTITION BY or ORDER BY may hold the same object
+            return True
+        return False
 
-    def cast_numeric(self, element: Any, sql: str) -> str:
-        if _is_decimal(element.type) and id(element) not in self.cast_outside:
+    def cast_numeric(self, element: Any, sql: str, outside: bool = False) -> str:
+        if _is_decimal(element.type) and not outside:
             return f"(CAST({sql} AS NUMERIC))"
         return sql
 
     def visit_function(self, func: Any, **kw: Any) -> str:
-        return self.cast_numeric(func, super().visit_function(func, **kw))
+        outside = self.outside_cast(func, kw)
+        return self.cast_numeric(func, super().visit_function(func, **kw), outside)
 
     def visit_funcfilter(self, funcfilter: Any, **kw: Any) -> str:
-        self.cast_outside.add(id(funcfilter.func))
-        return self.cast_numeric(funcfilter, super().visit_funcfilter(funcfilter, **kw))
+        outside = self.outside_cast(funcfilter, kw)
+        sql = super().visit_funcfilter(funcfilter, **kw, **{_CAST_OUTSIDE: [funcfilter.func]})
+        return self.cast_numeric(funcfilter, sql, outside)
 
     def visit_over(self, over: Any, **kw: Any) -> str:
-        self.cast_outside.add(id(over.element))
-        return self.cast_numeric(over, super().visit_over(over, **kw))
+        outside = self.outside_cast(over, kw)
+        return self.cast_numeric(over, super().visit_over(over, **kw, **{_CAST_OUTSIDE: [over.element]}), outside)
 
     def visit_withingroup(self, withingroup: Any, **kw: Any) -> str:
-        self.cast_outside.add(id(withingroup.element))
-        return self.cast_numeric(withingroup, super().visit_withingroup(withingroup, **kw))
+        outside = self.outside_cast(withingroup, kw)
+        sql = super().visit_withingroup(withingroup, **kw, **{_CAST_OUTSIDE: [withingroup.element]})
+        return self.cast_numeric(withingroup, sql, outside)
 
     def visit_case(self, clause: Any, **kw: Any) -> str:
-        return self.cast_numeric(clause, super().visit_case(clause, **kw))
+        outside = self.outside_cast(clause, kw)
+        return self.cast_numeric(clause, super().visit_case(clause, **kw), outside)
 
     def visit_binary(self, binary: Any, override_operator: Any = None, **kw: Any) -> str:
+        outside = self.outside_cast(binary, kw)
         # A comparison is a boolean; this is arithmetic.
-        return self.cast_numeric(binary, super().visit_binary(binary, override_operator=override_operator, **kw))
+        sql = super().visit_binary(binary, override_operator=override_operator, **kw)
+        return self.cast_numeric(binary, sql, outside)
 
     def visit_unary(self, unary: Any, **kw: Any) -> str:
+        outside = self.outside_cast(unary, kw)
         sql = super().visit_unary(unary, **kw)
         # Not a modifier (DESC, NULLS FIRST) nor DISTINCT, which keep their operand's type.
-        return self.cast_numeric(unary, sql) if unary.operator is operators.neg else sql
+        return self.cast_numeric(unary, sql, outside) if unary.operator is operators.neg else sql
 
 
 def _sqlite_dialect() -> Dialect:
