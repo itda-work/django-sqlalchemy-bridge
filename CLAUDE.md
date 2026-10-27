@@ -42,6 +42,7 @@
   docker run -d --name dsb-oracle -e ORACLE_PASSWORD=dsb -p 127.0.0.1:51521:1521 gvenzl/oracle-free:23-slim-faststart
   DSB_DB=oracle DSB_ORACLE_HOST=127.0.0.1 DSB_ORACLE_PORT=51521 DSB_ORACLE_USER=system DSB_ORACLE_PASSWORD=dsb DSB_ORACLE_NAME=FREEPDB1 REQUIRE_ORACLE=1 uv run --no-sync pytest
   ```
+- 교차 vendor 테스트(`tests/test_joins_cross_vendor.py`)는 세 서버 변수(`DSB_PG_HOST`·`DSB_MYSQL_HOST`·`DSB_ORACLE_HOST` 등) + `REQUIRE_CROSS=1`(또는 `DSB_CROSS=1`)로 `pg`·`mysql`·`oracle` alias 가 켜질 때만 돈다(`REQUIRE_CROSS=1` 은 서버가 빠지면 실패, `DSB_CROSS=1` 은 skip). 테스트 DB 는 `test_<NAME>_cross`(Oracle 은 사용자 `test_<USER>_cross`)라 `default` 와 겹치지 않는다. 여러 worktree 가 같은 컨테이너를 쓰면 `default` 의 테스트 DB 이름(`test_dsb`, Oracle `test_system`)이 겹쳐 동시 실행 시 플레이크가 난다(#87, `ORA-00942`).
 - 테스트 모델을 바꾸면 `uv run django-admin makemigrations testapp --settings tests.settings --pythonpath .` (스모크 테스트가 누락을 잡는다).
 - CI(`.github/workflows/ci.yml`)는 lint + Python 3.12/3.14 × Django 5.2/6.1 × SQLAlchemy 2.0/2.1 매트릭스. 잡마다 PG 18·MySQL 8.4·Oracle 23ai Free 서비스로 SQLite·PG·PG(서버측 바인딩)·MySQL·Oracle 을 각각 돈다(MariaDB 는 CI 에 없다). 매트릭스 버전은 `uv sync --locked` 뒤 `uv pip install` 로 덮어쓴다. 로컬에서 같은 식으로 버전을 바꿔 돌릴 때는 `uv run --no-sync` 로 실행한다(그냥 `uv run` 은 lock 버전으로 되돌린다, #34).
 

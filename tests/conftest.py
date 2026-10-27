@@ -8,10 +8,17 @@ def pytest_report_header(config):
         f"django-sqlalchemy-bridge: DSB_DB={dbenv.BACKEND} REQUIRE_PG={int(dbenv.REQUIRE_PG)}"
         f" REQUIRE_MYSQL={int(dbenv.REQUIRE_MYSQL)} REQUIRE_ORACLE={int(dbenv.REQUIRE_ORACLE)}"
         f" DSB_PG_SERVER_SIDE_BINDING={int(dbenv.PG_SERVER_SIDE_BINDING)}"
+        f" DSB_CROSS={int(dbenv.CROSS)} REQUIRE_CROSS={int(dbenv.REQUIRE_CROSS)}"
+        f" cross-vendor aliases={int(dbenv.CROSS_CONFIGURED)}"
     )
 
 
 def pytest_collection_modifyitems(config, items):
+    if dbenv.REQUIRE_CROSS and not dbenv.CROSS_SERVERS:
+        raise pytest.UsageError(
+            "REQUIRE_CROSS=1 but DSB_PG_HOST, DSB_MYSQL_HOST and DSB_ORACLE_HOST are not all set;"
+            " refusing to skip the cross-vendor tests"
+        )
     if dbenv.PG_MISSING:
         name, host, required, flag = "PostgreSQL", "DSB_PG_HOST", dbenv.REQUIRE_PG, "REQUIRE_PG"
     elif dbenv.MYSQL_MISSING:
