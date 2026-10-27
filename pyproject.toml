@@ -68,3 +68,4 @@ DJANGO_SETTINGS_MODULE = "tests.settings"
 django_find_project = false
 pythonpath = ["."]
 testpaths = ["tests"]
+filterwarnings = ["error"]
