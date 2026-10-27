@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.0rc2] - 2026-10-27
+
 ### Added
 
 - `execute_in(stmt, column, values, params=None, *, ...)`·`join_across(outer, inner, on, *, params=None, inner_params=None, ...)`: `execute` 와 같은 `bindparam()` 값 매핑 하나를 받는다(`join_across` 는 outer 에 `params`, inner 에 `inner_params`). 전에는 값을 `stmt.params(...)` 로 박아 새 문장 객체를 만들어야 해 호출마다 컴파일했다(컴파일 캐시는 문장 객체 기준). 청크 문장(`column IN` expanding bind 를 붙인 것)을 사용자 문장마다 하나 두어(사용자 문장을 약하게 참조하고, 다른 `column` 이 오면 바꿔 끼움) 같은 문장을 값·params 만 바꿔 다시 불러도 컴파일은 한 번이다. 매핑의 리스트와 브리지의 `IN` bind 이름 `dsb_in_values` 를 쓴 params 는 `ValueError`, 빠진 bindparam 은 `execute` 와 같은 에러. `chunk_size` 기본값의 "문장 자신의 파라미터 수" 에 params 도 든다 (#95).
