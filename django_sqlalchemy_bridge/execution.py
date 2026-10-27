@@ -91,7 +91,79 @@ class _LookupCompiler(SQLCompiler):
             while isinstance(operand, Grouping):
                 operand = operand.element
             items = operand.clauses if isinstance(operand, (ClauseList, ExpressionClauseList)) else [operand]
+            # A row of an IN list of tuple_()s is a tuple in the list.
+            items = [
+                i for item in items for i in (item.clauses if isinstance(item, sa.sql.expression.Tuple) else [item])
+            ]
             self.lookup_binds += [item for item in items if isinstance(item, sa.BindParameter)]
+
+
+class _TupleValuesCompiler(SQLCompiler):
+    """Bind the values of a ``tuple_()`` compared with a tuple of columns with the columns' types.
+
+    ``tuple_(a, b) == (x, y)`` and ``.in_([(x, y)])`` bind each value with its
+    column's type, so it converts as an ORM lookup on that column. Wrapped in
+    ``tuple_()`` (``tuple_(a, b) == tuple_(x, y)``, ``.in_([tuple_(x, y)])``) each
+    value is a bind of its own, typed by what SQLAlchemy guesses from the value,
+    and would go to the driver unconverted: on SQLite an aware datetime would
+    match nothing, a dict fail. Such a comparison is compiled with those binds
+    rebound with the columns' types; a list of rows of plain values becomes the
+    plain tuples' list. A value that is not a bind (a column, an expression) and
+    a member with no Django field (``sa.literal()``) are left as they are.
+    """
+
+    def visit_binary(self, binary: Any, override_operator: Any = None, **kw: Any) -> str:
+        if override_operator is None and operators.is_comparison(binary.operator):
+            rewritten = _typed_tuple_values(binary)
+            if rewritten is not None:
+                return self.process(rewritten, **kw)
+        return super().visit_binary(binary, override_operator=override_operator, **kw)
+
+
+def _typed_tuple_values(binary: Any) -> sa.ColumnElement[bool] | None:
+    """``binary`` with its ``tuple_()`` values bound with the left tuple's types, or ``None`` if none needs it."""
+    left, op, right = binary.left, binary.operator, binary.right
+    if not isinstance(left, sa.sql.expression.Tuple):
+        return None
+    types = [member.type for member in left.clauses]
+    if not any(isinstance(type_, FieldType) for type_ in types):
+        return None
+
+    def retyped(row: Any) -> list[Any] | None:
+        """The row's values rebound, or ``None`` if it has other than binds or none to rebind."""
+        values = list(row.clauses)
+        if len(values) != len(types) or not all(isinstance(v, sa.BindParameter) and not v.expanding for v in values):
+            return None
+        rebound = [_retyped_bind(value, type_) for value, type_ in zip(values, types, strict=True)]
+        return None if all(new is old for new, old in zip(rebound, values, strict=True)) else rebound
+
+    if isinstance(right, sa.sql.expression.Tuple):
+        values = retyped(right)
+        return None if values is None else op(left, sa.tuple_(*values))
+    if op not in (operators.in_op, operators.not_in_op) or not isinstance(right, Grouping):
+        return None
+    rows = right.element.clauses if isinstance(right.element, ClauseList) else ()
+    if not rows or not all(isinstance(row, sa.sql.expression.Tuple) for row in rows):
+        return None
+    if all(
+        isinstance(v, sa.BindParameter) and v.unique and v.callable is None and not v.expanding
+        for row in rows
+        for v in row.clauses
+    ) and all(len(row.clauses) == len(types) for row in rows):
+        # Literal values only: the plain tuples' list, one expanding bind typed by the columns.
+        return op(left, [tuple(v.value for v in row.clauses) for row in rows])
+    typed = [retyped(row) for row in rows]
+    if all(values is None for values in typed):
+        return None
+    return op(left, [sa.tuple_(*(values or row.clauses)) for values, row in zip(typed, rows, strict=True)])
+
+
+def _retyped_bind(bind: sa.BindParameter[Any], type_: sa.types.TypeEngine) -> sa.BindParameter[Any]:
+    if isinstance(bind.type, FieldType) or not isinstance(type_, FieldType):
+        return bind
+    if bind.unique:
+        return sa.bindparam(None, bind.value, type_=type_, unique=True, callable_=bind.callable)
+    return sa.bindparam(bind.key, bind.value, type_=type_, required=bind.required, callable_=bind.callable)
 
 
 def _is_decimal(type_: sa.types.TypeEngine) -> bool:
@@ -175,7 +247,9 @@ def _sqlite_dialect() -> Dialect:
 
     dialect = sqlite.dialect(paramstyle="format")
 
-    class Compiler(_SQLiteNumericCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
+    class Compiler(
+        _TupleValuesCompiler, _SQLiteNumericCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler
+    ):
         pass
 
     dialect.statement_compiler = Compiler
@@ -191,7 +265,7 @@ def _postgresql_dialect() -> Dialect:
     # jsonb, so the casts would be wrong. Compile plain placeholders, as the ORM does.
     dialect.bind_typing = BindTyping.NONE
 
-    class Compiler(_LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
+    class Compiler(_TupleValuesCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
         def render_literal_value(self, value: Any, type_: sa.types.TypeEngine) -> str:
             # The PostgreSQL compiler doubles backslashes in literals until it has
             # connected and read standard_conforming_strings (SQLAlchemy 2.0 assumes
@@ -215,7 +289,7 @@ class _JSONTupleCompiler(SQLCompiler):
     ``JSON_EXTRACT(%s, '$')`` and the document compares as text; Oracle
     compares the ``NCLOB`` with ``=`` (ORA-22848). A literal list is written as
     the ``OR`` of each row's ``AND`` of member comparisons, an empty one as
-    ``1 != 1``. An expanding ``bindparam``'s rows come only at run time, so it is
+    ``1 != 1``; so is a list of ``tuple_()`` rows. An expanding ``bindparam``'s rows come only at run time, so it is
     refused before anything runs. ``json_tuple_operators`` are the operators
     rewritten: Oracle adds ``==`` and ``!=`` with a tuple of values.
     """
@@ -241,30 +315,64 @@ def _json_tuple_comparison(binary: Any, dialect_name: str) -> sa.ColumnElement[b
             return None
         both = sa.and_(*(member == value for member, value in zip(members, right.clauses, strict=True)))
         return both.self_group() if op is operators.eq else sa.not_(both.self_group())
-    if not (isinstance(right, sa.BindParameter) and right.expanding):
+    if isinstance(right, Grouping) and isinstance(right.element, ClauseList):
+        # in_([tuple_(...), ...]) whose rows hold named binds or expressions (see _typed_tuple_values).
+        rows = [row.clauses for row in right.element.clauses if isinstance(row, sa.sql.expression.Tuple)]
+        if len(rows) != len(right.element.clauses) or any(len(row) != len(members) for row in rows):
+            return None
+        values = [list(row) for row in rows]
+    elif isinstance(right, sa.BindParameter) and right.expanding:
+        # in_([...]) makes an anonymous (unique) expanding bind holding the rows.
+        _refuse_expanding(right, dialect_name, "a tuple with a JSON member", "tuple_(...).in_([(x, y), ...])")
+        types = right.type.types
+        values = [
+            [sa.bindparam(None, value, type_=types[i], unique=True) for i, value in enumerate(row)]
+            for row in right.value
+        ]
+    else:
         return None  # a subquery compares columns with columns
-    # in_([...]) makes an anonymous (unique) expanding bind holding the rows.
-    if not right.unique or right.callable is not None or right.value is None:
-        raise NotSupportedError(
-            f"{dialect_name} cannot compare a tuple with a JSON member IN an expanding bindparam: its rows "
-            "are bound at run time, where the JSON member would not compare as a document. Pass a literal "
-            "list (tuple_(...).in_([(x, y), ...])) or compare the JSON column in a condition of its own."
-        )
-    types = right.type.types
     rows = [
-        sa.and_(
-            *(
-                member == sa.bindparam(None, value, type_=types[i], unique=True)
-                for i, (member, value) in enumerate(zip(members, row, strict=True))
-            )
-        ).self_group()
-        for row in right.value
+        sa.and_(*(member == value for member, value in zip(members, row, strict=True))).self_group() for row in values
     ]
-    if not rows:
-        # SQLAlchemy's empty set still compares the tuple with NULLs, which Oracle refuses for the NCLOB.
+    return _either(rows, op)
+
+
+def _refuse_expanding(bind: sa.BindParameter[Any], dialect_name: str, what: str, literal: str) -> None:
+    """Refuse an expanding ``bindparam`` given by name, whose values are bound only at run time."""
+    if not bind.unique or bind.callable is not None or bind.value is None:
+        raise NotSupportedError(
+            f"{dialect_name} cannot compare {what} IN an expanding bindparam: its values are bound at run "
+            f"time, where the JSON value would not compare as a document. Pass a literal list ({literal}) "
+            "or compare the JSON column in a condition of its own."
+        )
+
+
+def _either(comparisons: list[sa.ColumnElement[bool]], op: Any) -> sa.ColumnElement[bool]:
+    """The ``OR`` of ``comparisons`` for ``in_op``, its negation for ``not_in_op``."""
+    if not comparisons:
+        # SQLAlchemy's empty set still compares with NULLs, which Oracle refuses for the NCLOB.
         return sa.literal_column("1 != 1" if op is operators.in_op else "1 = 1")
-    either = sa.or_(*rows).self_group()
+    either = sa.or_(*comparisons).self_group()
     return either if op is operators.in_op else sa.not_(either)
+
+
+def _json_in_comparison(binary: Any, dialect_name: str) -> sa.ColumnElement[bool] | None:
+    """``binary`` as an ``OR`` of ``==`` if it compares a JSON document ``IN`` a list, else ``None``.
+
+    A key or path (``meta["k"]``) is not a document: its ``IN`` is left as SQLAlchemy writes it.
+    """
+    left, right = binary.left, binary.right
+    if not _is_json(left.type) or (
+        isinstance(left, sa.BinaryExpression)
+        and left.operator in (operators.json_getitem_op, operators.json_path_getitem_op)
+    ):
+        return None
+    if not (isinstance(right, sa.BindParameter) and right.expanding):
+        return None  # a subquery
+    _refuse_expanding(right, dialect_name, "a JSON column", "meta.in_([{...}, ...])")
+    return _either(
+        [left == sa.bindparam(None, value, type_=right.type, unique=True) for value in right.value], binary.operator
+    )
 
 
 def _mysql_dialect(*, mariadb: bool, backslash_escapes: bool) -> Dialect:
@@ -278,7 +386,9 @@ def _mysql_dialect(*, mariadb: bool, backslash_escapes: bool) -> Dialect:
     # Every MySQL Django supports (8.0.11+) has FOR UPDATE OF and FOR SHARE.
     dialect.supports_for_update_of = dialect.use_mysql_for_share = not mariadb
 
-    class Compiler(_JSONTupleCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
+    class Compiler(
+        _TupleValuesCompiler, _JSONTupleCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler
+    ):
         if not backslash_escapes:
 
             def render_literal_value(self, value: Any, type_: sa.types.TypeEngine) -> str:
@@ -304,7 +414,9 @@ def _oracle_dialect() -> Dialect:
     # Django's Oracle cursor takes "%s" and rewrites it to ":arg0", ":arg1", ...
     dialect = oracledb.dialect(paramstyle="format")
 
-    class Compiler(_JSONTupleCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler):
+    class Compiler(
+        _TupleValuesCompiler, _JSONTupleCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler
+    ):
         json_tuple_operators = _JSONTupleCompiler.json_tuple_operators | {operators.eq, operators.ne}
 
         def visit_binary(self, binary: Any, override_operator: Any = None, **kw: Any) -> str:
@@ -312,6 +424,11 @@ def _oracle_dialect() -> Dialect:
             # compare with "=" (ORA-22848), and a key compiles to JSON_QUERY(),
             # whose text "=" would tell [1,2] from Django's "[1, 2]". Compare JSON
             # values with JSON_EQUAL(), as the ORM compares whole documents.
+            if override_operator is None and binary.operator in (operators.in_op, operators.not_in_op):
+                # meta.in_([...]) would compare the NCLOB with "=" too.
+                rewritten = _json_in_comparison(binary, self.dialect.name)
+                if rewritten is not None:
+                    return self.process(rewritten, **kw)
             if (
                 override_operator is None
                 and binary.operator in (operators.eq, operators.ne)
