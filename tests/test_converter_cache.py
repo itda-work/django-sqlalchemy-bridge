@@ -1,4 +1,4 @@
-"""Result converters are found once per connection object and column type (#60).
+"""Result converters are found once per connection object and column type (#60), apart for an expression (#68).
 
 The ORM finds a column's converters with ``connection.ops.get_db_converters()``
 and the field's ``get_db_converters()``. They are bound methods (or closures) of
@@ -37,7 +37,8 @@ def lookups(monkeypatch):
 
     def counting(original):
         def get_db_converters(self, expression):
-            found.append((self.connection.vendor, expression.target.name))
+            # A Col has its column (target); an expression only its output field.
+            found.append((self.connection.vendor, getattr(expression, "target", expression.output_field).name))
             return original(self, expression)
 
         return get_db_converters
@@ -67,6 +68,19 @@ def test_a_second_call_finds_no_converters_again(lookups):
     prepare(sa.select(authors.c.joined_at), None, connection)
     assert lookups == []
     assert second.converters == first.converters
+
+
+def test_a_column_and_an_expression_of_its_type_find_their_own_converters(lookups):
+    # The ORM converts a Col and an expression of the same field differently (#68).
+    column = authors.c.joined_at
+    first = prepare(sa.select(column, sa.func.max(column)), None, connection)
+    assert [column for _, column in lookups] == ["joined_at", "joined_at"]
+    if connection.vendor == "sqlite":  # PostgreSQL's driver gives aware datetimes and needs no converter
+        assert [type(expression).__name__ for _, expression in first.converters] == ["Col", "Expression"]
+    lookups.clear()
+    second = prepare(sa.select(sa.func.min(column), column.label("j")), None, connection)
+    assert lookups == []
+    assert second.converters == first.converters[::-1]
 
 
 def test_a_forgotten_table_finds_its_converters_again(lookups):
