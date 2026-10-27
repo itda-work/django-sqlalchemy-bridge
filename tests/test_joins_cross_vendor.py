@@ -3,7 +3,8 @@
 The keys are converted by the outer column's field and looked up again through the
 inner column's, so a string, a ``Decimal``, an aware datetime and a UUID read on one
 vendor must find the same value stored on another. "other" is the SQLite side; "pg",
-"mysql" and "oracle" exist only when all three servers are given (``tests/dbenv.py``).
+"mysql" and "oracle" exist only with DSB_CROSS=1 or REQUIRE_CROSS=1 and all three
+servers given (``tests/dbenv.py``).
 """
 
 import uuid
@@ -22,7 +23,7 @@ from tests.testapp.models import Author, Book, Category, PriceChange, Product
 ALIASES = ["other", "pg", "mysql", "oracle"]
 if not set(ALIASES) <= set(settings.DATABASES):
     pytest.skip(
-        "cross-vendor aliases not configured (set DSB_PG_HOST, DSB_MYSQL_HOST and DSB_ORACLE_HOST)",
+        "cross-vendor aliases not configured (set DSB_CROSS=1, DSB_PG_HOST, DSB_MYSQL_HOST and DSB_ORACLE_HOST)",
         allow_module_level=True,
     )
 

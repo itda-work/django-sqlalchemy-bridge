@@ -16,12 +16,13 @@ server-side binding and prepared statements from the fifth run of a statement
 A second alias, "other", is always an in-memory SQLite database with its own
 TIME_ZONE, for tests that run one statement on two connections.
 
-When all three servers are given (DSB_PG_HOST, DSB_MYSQL_HOST and
-DSB_ORACLE_HOST), three more aliases, "pg", "mysql" and "oracle", reach them for
-the cross-vendor tests, each with its own test database name (test user and
-tablespaces on Oracle) so it never shares a test database with "default" on the
-same server. Without one of them the aliases are left out, and REQUIRE_CROSS=1
-turns that into a failure.
+DSB_CROSS=1 (or REQUIRE_CROSS=1) with all three servers given (DSB_PG_HOST,
+DSB_MYSQL_HOST and DSB_ORACLE_HOST) adds three more aliases, "pg", "mysql" and
+"oracle", for the cross-vendor tests, each with its own test database name (test
+user and tablespaces on Oracle) so it never shares a test database with
+"default" on the same server. Without the flag or one of the servers the aliases
+are left out and those tests are skipped; REQUIRE_CROSS=1 turns a missing server
+into a failure.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ REQUIRE_PG = os.environ.get("REQUIRE_PG") == "1"
 REQUIRE_MYSQL = os.environ.get("REQUIRE_MYSQL") == "1"
 REQUIRE_ORACLE = os.environ.get("REQUIRE_ORACLE") == "1"
 REQUIRE_CROSS = os.environ.get("REQUIRE_CROSS") == "1"
+CROSS = REQUIRE_CROSS or os.environ.get("DSB_CROSS") == "1"
 BACKEND = os.environ.get("DSB_DB") or (
     "postgres" if REQUIRE_PG else "mysql" if REQUIRE_MYSQL else "oracle" if REQUIRE_ORACLE else "sqlite"
 )
@@ -46,7 +48,9 @@ PG_SERVER_SIDE_BINDING = os.environ.get("DSB_PG_SERVER_SIDE_BINDING") == "1"
 PG_MISSING = BACKEND == "postgres" and not PG_CONFIGURED
 MYSQL_MISSING = BACKEND == "mysql" and not MYSQL_CONFIGURED
 ORACLE_MISSING = BACKEND == "oracle" and not ORACLE_CONFIGURED
-CROSS_CONFIGURED = PG_CONFIGURED and MYSQL_CONFIGURED and ORACLE_CONFIGURED
+CROSS_SERVERS = PG_CONFIGURED and MYSQL_CONFIGURED and ORACLE_CONFIGURED
+# The cross-vendor aliases are opt-in: three servers alone do not turn them on.
+CROSS_CONFIGURED = CROSS and CROSS_SERVERS
 
 
 def database() -> dict:
@@ -100,7 +104,7 @@ def other_database() -> dict:
 
 
 def cross_vendor_databases() -> dict:
-    """The "pg", "mysql" and "oracle" aliases, or none unless all three servers are given."""
+    """The "pg", "mysql" and "oracle" aliases, or none unless asked for and all three servers are given."""
     if not CROSS_CONFIGURED:
         return {}
     # Test database names of their own: Django merges aliases whose test settings
