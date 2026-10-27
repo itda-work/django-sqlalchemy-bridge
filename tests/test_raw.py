@@ -303,6 +303,25 @@ def test_using_another_database():
     assert [a.name for a in raw(Author, stmt)] == ["here"]
 
 
+@pytest.mark.django_db(databases=["default", "other"])
+def test_using_on_the_raw_queryset_keeps_the_sql_and_params_of_raw():
+    # raw() compiles and converts for its own `using`; Django's
+    # RawQuerySet.using() only moves the same SQL and params to another
+    # connection. "other" is SQLite under TIME_ZONE America/New_York, so an
+    # aware datetime converts there to a different value than on "default".
+    assert connections["other"].timezone_name == "America/New_York"
+    there = make_author("there", using="other")
+    stmt = sa.select(authors).where(authors.c.joined_at == sa.bindparam("at"))
+    here, moved = raw(Author, stmt, {"at": AT}), raw(Author, stmt, {"at": AT}).using("other")
+    converted_there = raw(Author, stmt, {"at": AT}, using="other")
+    assert moved.raw_query == here.raw_query and moved.params == here.params
+    assert moved.params != converted_there.params
+    assert [a.pk for a in converted_there] == [there.pk]
+    if connection.vendor == "sqlite":
+        # The UTC value "default" gives matches none of New York's naive times.
+        assert list(moved) == []
+
+
 def test_prefetch_related():
     author = make_author()
     first, second = make_book(author, title="1"), make_book(author, title="2")

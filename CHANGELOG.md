@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- README·`llms.txt` 의 부정확한 문장을 코드에 맞게 고쳤다(라이브러리 동작은 그대로). README 상태 줄을 0.2 와 현재 공개 API·지원 DB 로. `bulk_*`: 실행 전 중복 키 검사는 `bulk_update` 만이고 `bulk_insert` 의 유일 키 중복은 DB 의 `IntegrityError`, `key`·`columns` 는 ORM 별칭 `"pk"` 가 아니라 컬럼 이름(`"id"`, 복합이면 튜플), `columns=None` 은 첫 행의 키 외 컬럼이고 모든 행의 컬럼 이름이 같아야 하며(다르면 실행 전 `ValueError`), rowcount 는 맞은 행 수(중복 키면 실행하지 않음). `raw()` 의 SQL·params 는 `raw(..., using=)` 연결 기준으로 정해지고 `RawQuerySet.using()` 은 다시 컴파일·변환하지 않으니 대상 DB 는 `raw(..., using=)` 로 고르라는 안내(테스트로 고정). `llms.txt` 의 `execute_pipeline` "one round trip" 에 executemany 항목 뒤 Sync 와 트랜잭션 밖 `atomic(savepoint=False)` 단서. 튜플 비교의 값 쪽은 평범한 튜플로(`tuple_() == tuple_()` 은 값을 변환하지 않음) (#71).
+
 ### Fixed
 
 - `bulk_insert` 에 모든 컬럼을 기본값에 맡긴 행(`bulk_insert(Model, [{}, {}])`, 자동 PK·`db_default` 컬럼만 있는 모델)을 주면 행 수를 잃었다. 넣을 컬럼이 없어 파라미터 행이 비었기 때문으로, SQLite·MySQL·Oracle 은 `batch_size` 가 없으면 에러 없이 0행(`[{}]` 도), 있으면 `ValueError: range() arg 3 must not be zero`, SQLite 의 `returning=["id"]` 는 `[]` 를 돌려주고 0행, PostgreSQL 은 `INSERT INTO t () SELECT * FROM unnest()` 문법 오류, `method="copy"` 는 `IndexError` 였다. 이제 Django `bulk_create([Model(), Model()])` 가 필드 값이 없는 객체에 쓰는 SQL 과 같은 꼴로 행 수만큼 넣는다: 자동 증가 PK 에 `connection.ops.pk_default_value()`(`NULL`, PostgreSQL 은 `DEFAULT`)를 준 `connection.ops.bulk_insert_sql()` 다중 행 INSERT(Oracle 은 `SELECT … UNION ALL`). `returning` 은 PostgreSQL·SQLite(·MariaDB)에서 입력 순서로 새 행을, MySQL·Oracle 은 전처럼 실행 전 `NotSupportedError`. `batch_size`·`atomic(savepoint=False)` 규칙은 같고 한 문장은 `bulk_batch_size()` 행을 넘지 않는다. 자동 증가 PK 가 없는 모델은 PostgreSQL·MySQL 에서 첫 컬럼에 `DEFAULT` 를, SQLite·Oracle 은 실행 전 `NotSupportedError`. `method="copy"` 는 COPY 가 읽을 컬럼이 없어 실행 전 `ValueError`. 빈 `rows` 는 전처럼 `0`/`[]` (#74).
