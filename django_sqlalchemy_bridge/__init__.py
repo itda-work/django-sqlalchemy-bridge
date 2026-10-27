@@ -21,6 +21,7 @@ from django_sqlalchemy_bridge.execution import (
     raw,
     stream,
 )
+from django_sqlalchemy_bridge.joins import execute_in, join_across
 from django_sqlalchemy_bridge.tables import (
     Difference,
     FieldType,
@@ -49,9 +50,11 @@ __all__ = [
     "compare_table",
     "copy_to",
     "execute",
+    "execute_in",
     "execute_pipeline",
     "execute_result",
     "forget_table",
+    "join_across",
     "metadata",
     "raw",
     "stream",

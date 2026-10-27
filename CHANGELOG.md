@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `execute_in(stmt, column, values, *, using="default", chunk_size=None)`: `select()` 에 `column IN (…)` 을 붙여 값을 청크로 나눠 실행하고 행을 이어 붙인다. `None` 을 빼고 중복을 지우며(처음 나온 순서), 남는 값이 없으면 질의 없이 `[]`. `chunk_size` 기본값은 연결의 `ops.max_in_list_size()`(Django 의 Oracle 백엔드 1,000)와 `features.max_query_params`(SQLite) 에서 문장 자신의 파라미터 수(값 하나로 컴파일해 셈)를 뺀 값 중 작은 것, 둘 다 없으면 1,000. 전에는 `col.in_(values)` 가 값 수를 나누지 않아 SQLite 는 변수 한도를 넘으면 에러였다. Oracle 은 19c 까지 `IN` 목록 1,000 개 한도(`ORA-01795`)이고 23ai 는 65,535 인데, Django 의 Oracle 백엔드가 `max_in_list_size()` 로 1,000 을 주므로 브리지도 1,000 으로 나눈다(검증은 23ai 뿐). 모든 청크가 같은 expanding `bindparam` 문장이라 호출마다 컴파일은 한 번. `ORDER BY`·`LIMIT` 은 청크 안에서만 맞는다 (#79).
+- `join_across(outer, inner, on, *, using="default", inner_using=None, how="inner", chunk_size=None)`: 다른 DB 의 테이블을 앱 레벨 세미조인으로 합친다. `outer` 를 한 번 실행하고 outer 키 값으로 `inner` 를 `inner_using` 에서 `execute_in` 으로 조회한 뒤 파이썬 동등성으로 짝지어 `outer 행 + inner 행` 을 outer 순서로 돌려준다(1:N 은 행이 늘고, `how="left"` 는 짝 없는 행을 `None` 으로 채움). 키는 `selected_columns` 에서 객체·`.compare()`·라벨을 벗긴 식·결과 키 이름으로 찾고, 없으면 실행 전 `ValueError`, 복합 키는 `NotImplementedError`. DB collation(MySQL `_ci`)은 따르지 않고 두 DB 사이에 트랜잭션은 없다. README "다중 DB" 의 손으로 쓴 `in_()` 예시를 `join_across` 로 바꾸고 "긴 `IN` 목록" 절, `llms.txt` 규칙·시그니처·예시 (#79).
+
 ## [0.2.0] - 2026-10-27
 
 ### Added
