@@ -372,4 +372,5 @@ def _unnest(columns: list[sa.Column], connection: BaseDatabaseWrapper) -> str:
 def _convert(
     rows: Sequence[Sequence[Any]], columns: list[sa.Column], connection: BaseDatabaseWrapper
 ) -> list[tuple[Any, ...]]:
-    return from_db(rows, _result_converters([c.type for c in columns], connection), connection)
+    # RETURNING table columns: each reads as the ORM reads its column.
+    return from_db(rows, _result_converters([c.type for c in columns], [True] * len(columns), connection), connection)

@@ -332,7 +332,8 @@ class _Compiled:
     """What compiling a statement for one dialect gives, whatever the connection or values.
 
     ``types`` and ``names`` are the result columns' types and names (empty when
-    the statement's columns are unknown); ``defaults_error`` is why the
+    the statement's columns are unknown), and ``direct`` says which of them are
+    table columns rather than expressions (see :func:`_is_column`); ``defaults_error`` is why the
     statement is refused, if it is. ``lookups`` names the binds whose values are
     compared with a column (see :class:`_LookupCompiler`).
     """
@@ -340,6 +341,7 @@ class _Compiled:
     compiled: Compiled
     dml: bool
     types: tuple[sa.types.TypeEngine, ...]
+    direct: tuple[bool, ...]
     names: tuple[str, ...]
     defaults_error: str | None
     lookups: frozenset[str]
@@ -384,7 +386,13 @@ def _compile(
     compared = {id(bind) for bind in compiled.lookup_binds}
     lookups = frozenset(name for name, bind in compiled.binds.items() if id(bind) in compared)
     entry = _Compiled(
-        compiled, dml, tuple(column.type for column in columns), names, _python_defaults_error(compiled), lookups
+        compiled,
+        dml,
+        tuple(column.type for column in columns),
+        tuple(_is_column(column) for column in columns),
+        names,
+        _python_defaults_error(compiled),
+        lookups,
     )
     if target is not stmt:
         try:
@@ -392,6 +400,18 @@ def _compile(
         except TypeError:
             pass
     return entry
+
+
+def _is_column(column: sa.ColumnElement) -> bool:
+    """Whether a result column reads a table column (the ORM's ``Col``) rather than an expression.
+
+    A column stays one through labels, subqueries, CTEs and the first SELECT
+    of a UNION (the ORM reads a union by its first query's columns too): its
+    base columns are the table's. An aggregate, arithmetic, ``CASE``, window
+    or scalar subquery, and a derived table's column of one, is its own base
+    column. So is ``literal_column()``, which may spell anything.
+    """
+    return all(isinstance(base, sa.ColumnClause) and not base.is_literal for base in column.base_columns)
 
 
 def prepare(
@@ -404,7 +424,8 @@ def prepare(
     ``params`` is ``None``, one mapping, or a sequence of mappings (executemany).
     The compilation is reused when the same statement object runs again on the
     same database vendor with params of the same names, and the result
-    converters of a column type are found once per connection object; the
+    converters of a column type, for a table column and for an expression, are
+    found once per connection object; the
     parameters and the RETURNING check are worked out on every call.
     """
     many = params is not None and not isinstance(params, Mapping)
@@ -429,7 +450,7 @@ def prepare(
         elif state.statement != sql:
             raise ValueError("every executemany row must compile to the same SQL (check expanding IN lists)")
         param_rows.append(_positional(compiled, state, entry.lookups, connection))
-    converters = _result_converters(entry.types, connection)
+    converters = _result_converters(entry.types, entry.direct, connection)
     return Prepared(
         sql or compiled.string,
         param_rows,
@@ -539,49 +560,48 @@ def lookup_value(field: Any, value: Any, connection: BaseDatabaseWrapper) -> Any
     return target.get_db_prep_value(field.get_prep_value(value), connection, prepared=True)
 
 
-# Result converters by column type, kept on the connection object they were
-# found for (connections[alias], one per thread). They are bound methods or
-# closures of that object's ops, so in a module-level map keyed weakly by the
+# Result converters by column type, then by whether a table column (True) or
+# an expression (False) has it, kept on the connection object they were found
+# for (connections[alias], one per thread). They are bound methods or closures
+# of that object's ops, so in a module-level map keyed weakly by the
 # connection they would keep it alive. Through the django.db.connection proxy,
 # getattr and setattr reach the calling thread's own object. The column types
 # are held weakly: a table rebuilt after forget_table() has new ones.
 _CONVERTERS = "_django_sqlalchemy_bridge_converters"
-_MISSING = object()
 
 
 def _result_converters(
-    types: Sequence[sa.types.TypeEngine], connection: BaseDatabaseWrapper
+    types: Sequence[sa.types.TypeEngine], direct: Sequence[bool], connection: BaseDatabaseWrapper
 ) -> list[tuple[tuple[Any, ...], Any] | None]:
     cache = getattr(connection, _CONVERTERS, None)
     if cache is None:
         cache = weakref.WeakKeyDictionary()
         setattr(connection, _CONVERTERS, cache)
     out = []
-    for type_ in types:
+    for type_, column in zip(types, direct, strict=True):
         if not isinstance(type_, FieldType):
             out.append(None)
             continue
-        found = cache.get(type_, _MISSING)
-        if found is _MISSING:
-            found = cache[type_] = _find_converters(type_.field, connection)
-        out.append(found)
+        found = cache.setdefault(type_, {})
+        if column not in found:
+            found[column] = _find_converters(type_.field, column, connection)
+        out.append(found[column])
     return out
 
 
-def _find_converters(field: Any, connection: BaseDatabaseWrapper) -> tuple[tuple[Any, ...], Any] | None:
-    # The ORM reads a column through Col(field) with the backend's converters
-    # first, then the field's (SQLCompiler.get_converters()); do the same.
-    expression = field.get_col(field.model._meta.db_table)
-    functions = connection.ops.get_db_converters(expression)
-    if connection.vendor == "oracle":
-        # Django's Oracle cursor gives a number with no declared precision (sum(),
-        # avg(), CASE) as int or Decimal by its text. The ORM coerces an
-        # expression's number to its field's type (BaseExpression.convert_value)
-        # before the field's converters; a plain column is typed already.
-        coerce = Expression(output_field=field).convert_value
-        if coerce is not Expression._convert_value_noop:
-            functions.append(coerce)
-    functions += expression.get_db_converters(connection)
+def _find_converters(field: Any, column: bool, connection: BaseDatabaseWrapper) -> tuple[tuple[Any, ...], Any] | None:
+    # The ORM reads a column through Col(field) and anything else (Func,
+    # CombinedExpression, Case, Window, Subquery) through the expression, which
+    # has only its output_field: the backend's converters first, then the
+    # expression's (SQLCompiler.get_converters()). The backends tell them apart:
+    # SQLite quantizes a Col's decimal to its field's decimal_places and
+    # max_digits, an expression's only to 15 significant digits. An
+    # expression's own converters coerce a number to its field's type
+    # (BaseExpression.convert_value), which Django's Oracle cursor needs: it
+    # gives a number with no declared precision (sum(), CASE) as int or Decimal
+    # by its text.
+    expression = field.get_col(field.model._meta.db_table) if column else Expression(output_field=field)
+    functions = connection.ops.get_db_converters(expression) + expression.get_db_converters(connection)
     return (tuple(functions), expression) if functions else None
 
 
