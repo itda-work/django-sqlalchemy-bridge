@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- 튜플 IN(`sa.tuple_(a, b).in_([(x, y), ...])`, 리터럴 목록·`bindparam(..., expanding=True)` 모두)의 값이 Django 필드 변환 없이 드라이버로 갔다. SQLAlchemy 는 튜플 IN 을 `TupleType` bind 하나로 두고 `name_1_1`, `name_1_2`, `name_2_1` … 로 펼치는데, 브리지는 펼친 값에 원본 bind 의 타입을 쓰므로 `FieldType` 이 아닌 `TupleType` 에서 변환을 건너뛰었다. 이제 펼친 순서(행 우선)의 자리로 `TupleType.types` 의 컬럼 타입을 골라 ORM 조회 값으로 변환한다(#47 과 같음). 수정 전 증상: SQLite 는 aware datetime(UTC 텍스트로 저장)·UUID(하이픈 없는 32자)·Decimal 이 맞지 않아 에러 없이 0행, MySQL 은 mysqlclient 가 datetime 오프셋을 버리고 UUID 가 맞지 않아 0행, Oracle 도 ORM 과 다른 행, PostgreSQL 은 psycopg 가 값을 그대로 다뤄 결과는 맞았지만 작은 정수(`Int2` 등)·`BinaryField`·`JSONField` 파라미터가 ORM 과 다른 타입이었다. 튜플 안의 `None` 과 컬럼이 아닌 원소(`sa.literal()`)는 그대로 간다. 튜플을 평범한 튜플과 비교하는 `tuple_(a, b) == (x, y)`·`> (x, y)` 는 SQLAlchemy 가 원소마다 컬럼 타입 bind 를 만들어 이미 맞았고, 네 백엔드에서 테스트로 고정했다 (#73).
+
 ## [0.2.0rc1] - 2026-10-27
 
 ### Added
