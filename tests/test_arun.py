@@ -11,6 +11,7 @@ from django.test.utils import CaptureQueriesContext
 
 from django_sqlalchemy_bridge import arun, bulk_insert, execute, stream, table_for
 from tests.testapp.models import Gadget
+from tests.threads import close_connections
 
 pytestmark = pytest.mark.django_db
 
@@ -175,10 +176,19 @@ def test_two_aruns_gathered_commit_or_roll_back_independently(failing):
 
 def test_outside_a_running_event_loop_thread_too():
     # asyncio.run gives arun no calling sync thread: it hops to asgiref's shared one.
-    async def main():
-        return await arun(lambda: Gadget.objects.exists())
+    def exists():
+        try:
+            return Gadget.objects.exists()
+        finally:
+            close_connections()
 
-    assert asyncio.run(main()) in (True, False)
+    async def main(fn):
+        return await arun(fn)
+
+    assert asyncio.run(main(exists)) in (True, False)
+    # That thread outlives the test, so it keeps no open connection for the
+    # garbage collector to finalize during a later one (#94).
+    assert asyncio.run(main(lambda: connection.connection)) is None
 
 
 # --- connection lifetime -----------------------------------------------------

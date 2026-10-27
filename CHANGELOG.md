@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- 테스트 스위트를 경고 에러로 돈다(`pyproject.toml` `filterwarnings = ["error"]`). `-W error` 로 돌리면 실행마다 다른 테스트 두어 개가 `ResourceWarning: unclosed database in <sqlite3.Connection>` 으로 실패하던 것은 테스트가 워커 스레드(`ThreadPoolExecutor`, `asyncio.run` 이 쓰는 asgiref 공용 스레드)에서 연 in-memory SQLite 연결이었다: Django SQLite 의 `close()` 는 in-memory DB 의 연결을 닫지 않으므로 GC 가 아무 테스트 중에나 마무리했다. 두 테스트가 `tests/threads.py` 의 `close_connections()` 로 스레드 연결을 실제로 닫는다. 라이브러리(`arun` 포함)는 그대로 — PostgreSQL 에서는 같은 경로가 연결을 남기지 않는다 (#94).
+
 ## [0.3.0rc1] - 2026-10-27
 
 ### Added

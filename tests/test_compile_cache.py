@@ -24,6 +24,7 @@ from django.test.utils import CaptureQueriesContext
 from django_sqlalchemy_bridge import execute, execute_result, execution, forget_table, stream, table_for
 from django_sqlalchemy_bridge.execution import _ReturningCompiler, prepare
 from tests.testapp.models import Author, Book, Stamp
+from tests.threads import close_connections
 
 pytestmark = pytest.mark.django_db
 
@@ -310,6 +311,7 @@ def test_the_cache_entry_goes_with_its_statement(make, request):
 # --- threads -------------------------------------------------------------------
 
 
+@pytest.mark.filterwarnings("error")
 @pytest.mark.django_db(transaction=True)
 def test_threads_running_one_statement_get_their_own_rows(compiles):
     pks = {Author.objects.create(name=f"a{i}", joined_at=AT + datetime.timedelta(hours=i)).pk: i for i in range(8)}
@@ -321,7 +323,7 @@ def test_threads_running_one_statement_get_their_own_rows(compiles):
             start.wait()
             return [execute(stmt, {"pk": pk}) for _ in range(30)]
         finally:
-            connection.close()
+            close_connections()
 
     with ThreadPoolExecutor(len(pks)) as pool:
         results = dict(zip(pks, pool.map(lookups, pks)))
@@ -329,3 +331,4 @@ def test_threads_running_one_statement_get_their_own_rows(compiles):
         assert results[pk] == [[(f"a{i}", AT + datetime.timedelta(hours=i))]] * 30
     # Racing threads may each compile it once, never once per call.
     assert 1 <= len(compiles) <= len(pks)
+    gc.collect()  # a thread's connection left open warns here, not in a later test (#94)
