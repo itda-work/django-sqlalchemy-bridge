@@ -14,7 +14,7 @@ INSTALLED_APPS = [
     "bench.benchapp",
 ]
 
-DATABASES = {"default": dbenv.database(), "other": dbenv.other_database()}
+DATABASES = {"default": dbenv.database(), "other": dbenv.other_database(), **dbenv.cross_vendor_databases()}
 
 # The DRF recipes (tests/test_recipes_drf.py) run without django.contrib.auth: no authentication, no user object.
 REST_FRAMEWORK = {

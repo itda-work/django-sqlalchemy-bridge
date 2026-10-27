@@ -629,6 +629,7 @@ rows = join_across(
 - 행은 SQL JOIN 처럼 `outer 행 + inner 행`(inner 의 키 컬럼 포함)입니다. outer 행의 순서를 지키고, outer 한 행에 inner 행이 여럿이면 inner 를 가져온 순서대로 그만큼 늘어납니다. `how="inner"`는 짝이 없는 outer 행을 버리고 `how="left"`는 inner 자리를 `None`으로 채워 남깁니다(그 밖의 값은 `ValueError`). outer 키가 `None`인 행은 짝이 없습니다.
 - 키는 각 문장의 `selected_columns`에서 찾습니다. 같은 컬럼 객체, 같은 식(`.compare()`), 라벨을 벗긴 같은 식 순서로 찾고, 문자열이면 결과 키 이름(`label()`의 이름)입니다. 선택 목록에 없으면 실행 전 `ValueError`, 복합 키(`(a, b)`·`sa.tuple_()`)는 `NotImplementedError`, `select()`가 아니면 `TypeError`입니다.
 - **짝은 파이썬 동등성으로 맞춥니다.** 키 값은 outer 컬럼의 Django 필드로 읽은 값이고, inner 의 `IN`은 그 값을 inner 컬럼의 필드로 다시 조회 변환합니다. 그래서 시간대가 다른 aware datetime(같은 순간)·자릿수가 다른 `Decimal`·UUID 도 맞습니다. DB 의 collation 은 따르지 않습니다. MySQL `_ci` collation 은 `IN`에서 `"shirt"`를 `"SHIRT"`에 맞춰 가져오지만 파이썬에서는 다른 값이라 짝이 되지 않습니다.
+- 서로 다른 vendor 사이도 됩니다. SQLite·PostgreSQL·MySQL·Oracle 의 모든 순서쌍(12가지)을 문자열·`Decimal`·aware datetime·UUID 키로 테스트합니다.
 - **트랜잭션은 DB 마다 따로입니다.** 두 DB 의 문장 사이에 원자성이 없고, 한쪽을 롤백해도 다른 쪽은 그대로입니다. inner 의 청크도 하나의 시점을 보장하지 않습니다(`execute_in`과 같음).
 
 `arun`에는 `using`이 없습니다. `fn` 안의 호출이 저마다 `using`을 받습니다(아래 "비동기").

@@ -111,6 +111,13 @@ jobs:
         env:
           DSB_DB: mysql
           REQUIRE_MYSQL: "1"
+      # join_across between every ordered pair of SQLite, PostgreSQL, MySQL and Oracle:
+      # the job's three servers turn on the "pg", "mysql" and "oracle" aliases (tests/dbenv.py).
+      - name: pytest (cross-vendor)
+        run: uv run --no-sync pytest tests/test_joins_cross_vendor.py
+        env:
+          DSB_DB: sqlite
+          REQUIRE_CROSS: "1"
       - name: pytest (Oracle)
         run: uv run --no-sync pytest
         env:
