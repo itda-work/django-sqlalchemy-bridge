@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.0rc2] - 2026-10-27
+
 ### Changed
 
 - README·`llms.txt` 의 부정확한 문장을 코드에 맞게 고쳤다(라이브러리 동작은 그대로). README 상태 줄을 0.2 와 현재 공개 API·지원 DB 로. `bulk_*`: 실행 전 중복 키 검사는 `bulk_update` 만이고 `bulk_insert` 의 유일 키 중복은 DB 의 `IntegrityError`, `key`·`columns` 는 ORM 별칭 `"pk"` 가 아니라 컬럼 이름(`"id"`, 복합이면 튜플), `columns=None` 은 첫 행의 키 외 컬럼이고 모든 행의 컬럼 이름이 같아야 하며(다르면 실행 전 `ValueError`), rowcount 는 맞은 행 수(중복 키면 실행하지 않음). `raw()` 의 SQL·params 는 `raw(..., using=)` 연결 기준으로 정해지고 `RawQuerySet.using()` 은 다시 컴파일·변환하지 않으니 대상 DB 는 `raw(..., using=)` 로 고르라는 안내(테스트로 고정). `llms.txt` 의 `execute_pipeline` "one round trip" 에 executemany 항목 뒤 Sync 와 트랜잭션 밖 `atomic(savepoint=False)` 단서. 튜플 비교의 값 쪽은 평범한 튜플로(`tuple_() == tuple_()` 은 값을 변환하지 않음) (#71).
