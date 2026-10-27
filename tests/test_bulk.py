@@ -4,12 +4,12 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
-from django.db import IntegrityError, connection, transaction
+from django.db import IntegrityError, NotSupportedError, connection, transaction
 from django.db.models.signals import post_save, pre_save
 from django.test.utils import CaptureQueriesContext
 
 from django_sqlalchemy_bridge import bulk_insert, bulk_update, execute, table_for
-from tests.testapp.models import Author, Book, Gadget, Specimen
+from tests.testapp.models import Author, Book, Counter, Defaulted, DefaultKey, Gadget, Specimen
 
 pytestmark = pytest.mark.django_db
 
@@ -244,6 +244,97 @@ def test_empty_rows_run_nothing():
         assert bulk_insert(authors, [], returning=["id"]) == []
         assert bulk_update(authors, []) == 0
     assert ctx.captured_queries == []
+
+
+# --- rows that leave every column to the database ----------------------------
+
+
+def returns_rows():
+    """Whether bulk_insert() returns rows from a multi-row INSERT: not on MySQL (MariaDB does) or Oracle."""
+    return connection.features.can_return_rows_from_bulk_insert and connection.vendor != "oracle"
+
+
+def without_ids(model):
+    """The model's rows in pk order, each without its pk."""
+    names = [f.attname for f in model._meta.concrete_fields if not f.primary_key]
+    return [tuple(getattr(obj, name) for name in names) for obj in model.objects.order_by("pk")]
+
+
+def stored_by_the_orm(model, count):
+    """What ORM bulk_create(count empty objects) stores, without the ids; the rows are then deleted."""
+    with transaction.atomic():
+        model.objects.bulk_create([model() for _ in range(count)])
+        rows = without_ids(model)
+        model.objects.all().delete()
+    return rows
+
+
+@pytest.mark.parametrize("model", [Counter, Defaulted])
+@pytest.mark.parametrize("count", [1, 2, 5])
+@pytest.mark.parametrize("batch_size", [None, 2])
+def test_insert_of_rows_with_no_column_inserts_each_row_as_bulk_create_does(model, count, batch_size):
+    expected = stored_by_the_orm(model, count)
+    assert len(expected) == count
+    with CaptureQueriesContext(connection) as ctx:
+        assert bulk_insert(model, [{}] * count, batch_size=batch_size) == count
+    assert len(ctx.captured_queries) == -(-count // (batch_size or count))
+    assert without_ids(model) == expected
+
+
+@pytest.mark.parametrize("model", [Counter, Defaulted])
+@pytest.mark.parametrize("batch_size", [None, 2])
+def test_insert_of_rows_with_no_column_returns_the_new_rows_in_order(model, batch_size):
+    if not returns_rows():
+        pytest.skip("no rows returned from a bulk INSERT here")
+    out = bulk_insert(model, [{}] * 5, returning=list(table_for(model).columns), batch_size=batch_size)
+    assert out == list(model.objects.order_by("pk").values_list())
+    assert len(out) == 5
+
+
+def test_insert_of_rows_with_no_column_refuses_returning_where_it_cannot_return_rows():
+    if returns_rows():
+        pytest.skip("rows are returned here")
+    with pytest.raises(NotSupportedError):
+        bulk_insert(Counter, [{}, {}], returning=["id"])
+    assert Counter.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_insert_of_rows_with_no_column_writes_all_or_none_across_batches(monkeypatch):
+    # The second batch fails: the first one's rows go too.
+    calls = []
+    real = type(connection.ops).bulk_insert_sql
+
+    def failing(self, fields, placeholder_rows):
+        calls.append(len(placeholder_rows))
+        if len(calls) == 2:
+            raise ZeroDivisionError
+        return real(self, fields, placeholder_rows)
+
+    monkeypatch.setattr(type(connection.ops), "bulk_insert_sql", failing)
+    with pytest.raises(ZeroDivisionError):
+        bulk_insert(Counter, [{}] * 3, batch_size=2)
+    assert Counter.objects.count() == 0
+
+
+def test_insert_of_no_rows_with_no_column_runs_nothing():
+    with CaptureQueriesContext(connection) as ctx:
+        assert bulk_insert(Counter, []) == 0
+        assert bulk_insert(Counter, [], returning=["id"]) == []
+    assert ctx.captured_queries == []
+
+
+def test_insert_of_a_row_with_no_column_where_the_key_is_a_db_default():
+    # No auto-increment key to name: the database fills the db_default column through DEFAULT where VALUES takes it.
+    if connection.vendor in ("postgresql", "mysql"):
+        assert bulk_insert(DefaultKey, [{}]) == 1
+        assert list(DefaultKey.objects.values_list("code", flat=True)) == ["k"]
+    else:
+        with CaptureQueriesContext(connection) as ctx:
+            with pytest.raises(NotSupportedError, match="DEFAULT"):
+                bulk_insert(DefaultKey, [{}])
+        assert ctx.captured_queries == []
+        assert DefaultKey.objects.count() == 0
 
 
 # --- RETURNING ---------------------------------------------------------------

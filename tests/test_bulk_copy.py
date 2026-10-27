@@ -14,7 +14,7 @@ from django.test.utils import CaptureQueriesContext
 
 from django_sqlalchemy_bridge import bulk_insert
 from tests.test_bulk import AT, HAS_COPY, authors, book_row, books, columns_of, make_author, specimen_values, specimens
-from tests.testapp.models import Author, Book, Specimen, Stamp
+from tests.testapp.models import Author, Book, Counter, Specimen, Stamp
 
 pytestmark = pytest.mark.django_db
 
@@ -196,3 +196,13 @@ def test_copy_of_no_rows_runs_nothing():
         assert bulk_insert(authors, [], method="copy") == 0
         assert bulk_insert(authors, [], method="copy", batch_size=3) == 0
     assert ctx.captured_queries == []
+
+
+@needs_copy
+def test_copy_refuses_rows_with_no_column():
+    # COPY names the columns it reads; a row with none has nothing to copy.
+    with CaptureQueriesContext(connection) as ctx:
+        with pytest.raises(ValueError, match="no column"):
+            bulk_insert(Counter, [{}, {}], method="copy")
+    assert ctx.captured_queries == []
+    assert Counter.objects.count() == 0
