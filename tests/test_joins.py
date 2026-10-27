@@ -181,8 +181,9 @@ def test_more_values_than_sqlite_takes_variables():
     assert len(queries) == 2
 
 
-@pytest.mark.skipif(connection.vendor != "oracle", reason="Oracle's IN list limit (ORA-01795)")
-def test_more_values_than_an_oracle_in_list_takes():
+@pytest.mark.skipif(connection.vendor != "oracle", reason="Django's Oracle max_in_list_size()")
+def test_oracle_chunks_at_djangos_in_list_size():
+    """Django's Oracle backend gives max_in_list_size() 1,000 (19c's ORA-01795 limit; 23ai takes more): two chunks."""
     make_prices({"SHIRT": "1"})
     values = [f"X{i}" for i in range(1000)] + ["SHIRT"]
 

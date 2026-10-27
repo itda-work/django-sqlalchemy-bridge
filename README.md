@@ -2,7 +2,7 @@
 
 > ⚠️ **실험적 프로젝트입니다 (Experimental).** API·동작·지원 범위가 예고 없이 바뀔 수 있고, 운영 환경에서 쓰는 것을 권하지 않습니다.
 >
-> **상태: 0.2 (알파).** 공개 API 는 모델 → `sa.Table`(`table_for`), `execute`, `execute_result`, `stream`, `bulk_insert`/`bulk_update`, `execute_pipeline`, `raw`, `copy_to`, `arun`, `compare_table`/`assert_table_matches`이고, SQLite·PostgreSQL·MySQL 8.4·Oracle 23ai 에서 테스트합니다. 0.x 동안은 마이너 버전 사이에도 API가 바뀔 수 있으니 버전을 고정해 쓰세요.
+> **상태: 0.2 (알파).** 공개 API 는 모델 → `sa.Table`(`table_for`), `execute`, `execute_result`, `stream`, `bulk_insert`/`bulk_update`, `execute_pipeline`, `raw`, `copy_to`, `execute_in`, `join_across`, `arun`, `compare_table`/`assert_table_matches`이고, SQLite·PostgreSQL·MySQL 8.4·Oracle 23ai 에서 테스트합니다. 0.x 동안은 마이너 버전 사이에도 API가 바뀔 수 있으니 버전을 고정해 쓰세요.
 
 Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식(대량 DML, CTE, 윈도 함수, 복잡한 조인)을 쓰게 해 주는 라이브러리입니다.
 
@@ -519,9 +519,9 @@ stmt = sa.select(orders.c.id, orders.c.status).where(orders.c.status != "void")
 rows = execute_in(stmt, orders.c.id, ids)  # ids 가 수만 개여도 된다
 ```
 
-- `execute_in(stmt, column, values, *, using="default", chunk_size=None)`은 `stmt`(`sa.select()`)에 `column IN (…)`을 붙여 `values`를 청크로 나눠 실행하고 행을 이어 붙인 리스트를 줍니다. DB 마다 한도가 있기 때문입니다. Oracle 은 `IN` 목록이 1,000 개를 넘으면 `ORA-01795`, SQLite 는 문장 하나의 파라미터 수(`features.max_query_params`, 보통 32,766)를 넘으면 에러입니다. ORM 의 `__in` 조회는 `ops.max_in_list_size()`로 `OR` 를 나누지만 `col.in_(values)`는 나누지 않습니다.
+- `execute_in(stmt, column, values, *, using="default", chunk_size=None)`은 `stmt`(`sa.select()`)에 `column IN (…)`을 붙여 `values`를 청크로 나눠 실행하고 행을 이어 붙인 리스트를 줍니다. DB 마다 한도가 있기 때문입니다. SQLite 는 문장 하나의 파라미터 수(`features.max_query_params`, 보통 32,766)를 넘으면 에러이고, Oracle 은 19c 까지 `IN` 목록 1,000 개 한도(`ORA-01795`)이며 23ai 는 65,535 입니다. Django 의 Oracle 백엔드는 `max_in_list_size()`로 1,000 을 주므로 브리지도 1,000 으로 나눕니다(검증은 23ai 뿐, 아래 "지원 대상"). ORM 의 `__in` 조회는 `ops.max_in_list_size()`로 `OR` 를 나누지만 `col.in_(values)`는 나누지 않습니다.
 - `values`는 `None`을 빼고(SQL `IN (NULL)`은 아무것에도 맞지 않음) 처음 나온 순서로 중복을 지웁니다. 남는 것이 없으면 질의 없이 `[]`입니다.
-- `chunk_size` 기본값은 그 연결의 `ops.max_in_list_size()`(Oracle 1,000)와 `features.max_query_params`에서 문장 자신의 파라미터 수를 뺀 값 중 작은 것이고, 둘 다 없으면(PostgreSQL·MySQL) 1,000 입니다. 주면 그대로 씁니다(양의 정수, 아니면 `ValueError`).
+- `chunk_size` 기본값은 그 연결의 `ops.max_in_list_size()`(Django 의 Oracle 백엔드 1,000)와 `features.max_query_params`에서 문장 자신의 파라미터 수를 뺀 값 중 작은 것이고, 둘 다 없으면(PostgreSQL·MySQL) 1,000 입니다. 주면 그대로 씁니다(양의 정수, 아니면 `ValueError`).
 - 값은 `in_()`과 같이 컬럼의 Django 필드로 조회 값 변환을 하고, 결과는 `execute`와 같이 변환합니다. 모든 청크가 같은 문장(expanding `bindparam`)이라 호출마다 컴파일은 한 번입니다.
 - **청크마다 따로 실행하는 문장입니다.** `ORDER BY`·`LIMIT`·`DISTINCT`·집계는 청크 안에서만 맞고 청크를 넘어 정렬·제한·합산되지 않습니다. 순서가 필요하면 받은 뒤 파이썬에서 정렬하세요. 청크 사이를 한 트랜잭션으로 묶지도 않으므로 같은 시점의 결과가 필요하면 `atomic()` 안에서 부르세요.
 - 행을 고르는 `select()`만 받습니다(그 밖은 `TypeError`). 서로 다른 DB 의 테이블을 합치는 `join_across`는 아래 "다중 DB"에 있습니다.

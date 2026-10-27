@@ -5,8 +5,10 @@ one statement. :func:`join_across` does what Django's cross-database
 ``prefetch_related()`` does: it runs one statement, looks the other up by the
 keys it returned with ``IN``, and pairs the rows in Python. :func:`execute_in`
 is that lookup: one ``column IN (...)`` statement per chunk of values, so a
-long list stays under the database's limits (Oracle takes 1,000 items in an
-``IN`` list, SQLite a fixed number of parameters per statement).
+long list stays under the database's limits: SQLite takes a fixed number of
+parameters per statement, Oracle up to 19c 1,000 items in an ``IN`` list
+(``ORA-01795``; 23ai takes 65,535, but Django's Oracle backend still gives
+``max_in_list_size()`` 1,000, and so the bridge splits at 1,000).
 
 Each chunk is its own statement: ``ORDER BY``, ``LIMIT`` and ``DISTINCT`` hold
 within a chunk only. The statements run in whatever transaction each
@@ -30,7 +32,7 @@ __all__ = ["execute_in", "join_across"]
 # column's Django field as any IN list compared with the column does.
 _VALUES = "dsb_in_values"
 
-# The chunk when the database states no limit: the size Oracle allows.
+# The chunk when the database states no limit: Oracle's IN list limit up to 19c.
 DEFAULT_IN_CHUNK = 1000
 
 _HOW = ("inner", "left")
