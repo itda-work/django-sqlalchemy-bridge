@@ -488,12 +488,18 @@ def _positional(
     compiled: Compiled, state: Any, lookups: frozenset[str], connection: BaseDatabaseWrapper
 ) -> tuple[Any, ...]:
     # Expanded IN parameters ("ids_1", "ids_2") take the type of the one they came from ("ids").
-    origin = {name: original for original, names in state.parameter_expansion.items() for name in names}
+    # A tuple's ("keys_1_1", "keys_1_2", "keys_2_1", ...) come row by row, each member
+    # taking the type of its place in the tuple.
+    origin = {
+        name: (original, i) for original, names in state.parameter_expansion.items() for i, name in enumerate(names)
+    }
     values = []
     for name in state.positiontup or ():
-        key = origin.get(name, name)
+        key, i = origin.get(name, (name, 0))
         bind = compiled.binds.get(key)
         type_ = bind.type if bind is not None else None
+        if isinstance(type_, sa.types.TupleType):
+            type_ = type_.types[i % len(type_.types)]
         values.append(to_db(state.parameters[name], type_, connection, lookup=key in lookups))
     return tuple(values)
 
