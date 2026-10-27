@@ -4,14 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-### Changed
-
-- 문서의 빈 곳(0.3.0rc2 인수 테스트에서 짚인 것, 동작은 그대로). README "대량 쓰기"·`llms.txt` `bulk_*` 문단: 빈 `rows` 는 쿼리 없이 `0`(`returning` 이면 `[]`)이고, 인자 검사(`method`·`batch_size`·컬럼 이름·`columns=[]`)와 `method="copy"` 의 백엔드 검사는 그대로 하며, MySQL·Oracle 의 `RETURNING` 거부는 실행할 행이 있을 때만이라 `bulk_insert([], returning=[...])` 는 `[]`. README "다중 DB"·`llms.txt` `join_across` 문단: outer 결과가 0행이거나 키가 모두 `None` 이면 `inner` 를 실행하지 않는다(쿼리는 outer 하나). `None` 키 문구는 피하라는 권고 대신 결과(`how="left"` 면 inner 자리가 `None` 으로 남고 `how="inner"` 면 빠짐)로 고쳤다. `llms.txt` 규칙 9: 키 짝짓기는 라이브러리가, 짝지은 뒤의 산술·합계는 파이썬이 한다. README 상태 줄을 0.3.0rc2 로. 빈 `rows` 의 인자 검사와 `join_across` 의 outer 0행(두 DB 포함)을 테스트로 고정 (#99).
-
-## [0.3.0rc2] - 2026-10-27
+## [0.3.0] - 2026-10-27
 
 ### Added
 
+- `execute_in(stmt, column, values, *, using="default", chunk_size=None)`: `select()` 에 `column IN (…)` 을 붙여 값을 청크로 나눠 실행하고 행을 이어 붙인다. `None` 을 빼고 중복을 지우며(처음 나온 순서), 남는 값이 없으면 질의 없이 `[]`. `chunk_size` 기본값은 연결의 `ops.max_in_list_size()`(Django 의 Oracle 백엔드 1,000)와 `features.max_query_params`(SQLite) 에서 문장 자신의 파라미터 수(값 하나로 컴파일해 셈)를 뺀 값 중 작은 것, 둘 다 없으면 1,000. 전에는 `col.in_(values)` 가 값 수를 나누지 않아 SQLite 는 변수 한도를 넘으면 에러였다. Oracle 은 19c 까지 `IN` 목록 1,000 개 한도(`ORA-01795`)이고 23ai 는 65,535 인데, Django 의 Oracle 백엔드가 `max_in_list_size()` 로 1,000 을 주므로 브리지도 1,000 으로 나눈다(검증은 23ai 뿐). 모든 청크가 같은 expanding `bindparam` 문장이라 호출마다 컴파일은 한 번. `ORDER BY`·`LIMIT` 은 청크 안에서만 맞는다 (#79).
+- `join_across(outer, inner, on, *, using="default", inner_using=None, how="inner", chunk_size=None)`: 다른 DB 의 테이블을 앱 레벨 세미조인으로 합친다. `outer` 를 한 번 실행하고 outer 키 값으로 `inner` 를 `inner_using` 에서 `execute_in` 으로 조회한 뒤 파이썬 동등성으로 짝지어 `outer 행 + inner 행` 을 outer 순서로 돌려준다(1:N 은 행이 늘고, `how="left"` 는 짝 없는 행을 `None` 으로 채움). 키는 `selected_columns` 에서 객체·`.compare()`·라벨을 벗긴 식·결과 키 이름으로 찾고, 없으면 실행 전 `ValueError`, 복합 키는 `NotImplementedError`. DB collation(MySQL `_ci`)은 따르지 않고 두 DB 사이에 트랜잭션은 없다. README "다중 DB" 의 손으로 쓴 `in_()` 예시를 `join_across` 로 바꾸고 "긴 `IN` 목록" 절, `llms.txt` 규칙·시그니처·예시 (#79).
 - `execute_in(stmt, column, values, params=None, *, ...)`·`join_across(outer, inner, on, *, params=None, inner_params=None, ...)`: `execute` 와 같은 `bindparam()` 값 매핑 하나를 받는다(`join_across` 는 outer 에 `params`, inner 에 `inner_params`). 전에는 값을 `stmt.params(...)` 로 박아 새 문장 객체를 만들어야 해 호출마다 컴파일했다(컴파일 캐시는 문장 객체 기준). 청크 문장(`column IN` expanding bind 를 붙인 것)을 사용자 문장마다 하나 두어(사용자 문장을 약하게 참조하고, 다른 `column` 이 오면 바꿔 끼움) 같은 문장을 값·params 만 바꿔 다시 불러도 컴파일은 한 번이다. 매핑의 리스트와 브리지의 `IN` bind 이름 `dsb_in_values` 를 쓴 params 는 `ValueError`, 빠진 bindparam 은 `execute` 와 같은 에러. `chunk_size` 기본값의 "문장 자신의 파라미터 수" 에 params 도 든다 (#95).
 
 ### Changed
@@ -19,13 +17,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - README "긴 `IN` 목록"·"다중 DB" 와 `llms.txt` 규칙 9·`execute_in`·`join_across` 문단에 `params`, OUTER JOIN 으로 `None` 이 될 수 있는 outer 키는 아무것에도 맞지 않는다는 것, 교차 DB 집계는 inner 를 키별 `GROUP BY` 로 미리 집계하고 키를 넘는 합은 파이썬에서 한다는 패턴(키는 두 청크에 나뉘지 않음)을 적었다 (#95).
 
 - 테스트 스위트를 경고 에러로 돈다(`pyproject.toml` `filterwarnings = ["error"]`). `-W error` 로 돌리면 실행마다 다른 테스트 두어 개가 `ResourceWarning: unclosed database in <sqlite3.Connection>` 으로 실패하던 것은 테스트가 워커 스레드(`ThreadPoolExecutor`, `asyncio.run` 이 쓰는 asgiref 공용 스레드)에서 연 in-memory SQLite 연결이었다: Django SQLite 의 `close()` 는 in-memory DB 의 연결을 닫지 않으므로 GC 가 아무 테스트 중에나 마무리했다. 두 테스트가 `tests/threads.py` 의 `close_connections()` 로 스레드 연결을 실제로 닫는다. 라이브러리(`arun` 포함)는 그대로 — PostgreSQL 에서는 같은 경로가 연결을 남기지 않는다 (#94).
-
-## [0.3.0rc1] - 2026-10-27
-
-### Added
-
-- `execute_in(stmt, column, values, *, using="default", chunk_size=None)`: `select()` 에 `column IN (…)` 을 붙여 값을 청크로 나눠 실행하고 행을 이어 붙인다. `None` 을 빼고 중복을 지우며(처음 나온 순서), 남는 값이 없으면 질의 없이 `[]`. `chunk_size` 기본값은 연결의 `ops.max_in_list_size()`(Django 의 Oracle 백엔드 1,000)와 `features.max_query_params`(SQLite) 에서 문장 자신의 파라미터 수(값 하나로 컴파일해 셈)를 뺀 값 중 작은 것, 둘 다 없으면 1,000. 전에는 `col.in_(values)` 가 값 수를 나누지 않아 SQLite 는 변수 한도를 넘으면 에러였다. Oracle 은 19c 까지 `IN` 목록 1,000 개 한도(`ORA-01795`)이고 23ai 는 65,535 인데, Django 의 Oracle 백엔드가 `max_in_list_size()` 로 1,000 을 주므로 브리지도 1,000 으로 나눈다(검증은 23ai 뿐). 모든 청크가 같은 expanding `bindparam` 문장이라 호출마다 컴파일은 한 번. `ORDER BY`·`LIMIT` 은 청크 안에서만 맞는다 (#79).
-- `join_across(outer, inner, on, *, using="default", inner_using=None, how="inner", chunk_size=None)`: 다른 DB 의 테이블을 앱 레벨 세미조인으로 합친다. `outer` 를 한 번 실행하고 outer 키 값으로 `inner` 를 `inner_using` 에서 `execute_in` 으로 조회한 뒤 파이썬 동등성으로 짝지어 `outer 행 + inner 행` 을 outer 순서로 돌려준다(1:N 은 행이 늘고, `how="left"` 는 짝 없는 행을 `None` 으로 채움). 키는 `selected_columns` 에서 객체·`.compare()`·라벨을 벗긴 식·결과 키 이름으로 찾고, 없으면 실행 전 `ValueError`, 복합 키는 `NotImplementedError`. DB collation(MySQL `_ci`)은 따르지 않고 두 DB 사이에 트랜잭션은 없다. README "다중 DB" 의 손으로 쓴 `in_()` 예시를 `join_across` 로 바꾸고 "긴 `IN` 목록" 절, `llms.txt` 규칙·시그니처·예시 (#79).
+- 문서의 빈 곳(0.3.0rc2 인수 테스트에서 짚인 것, 동작은 그대로). README "대량 쓰기"·`llms.txt` `bulk_*` 문단: 빈 `rows` 는 쿼리 없이 `0`(`returning` 이면 `[]`)이고, 인자 검사(`method`·`batch_size`·컬럼 이름·`columns=[]`)와 `method="copy"` 의 백엔드 검사는 그대로 하며, MySQL·Oracle 의 `RETURNING` 거부는 실행할 행이 있을 때만이라 `bulk_insert([], returning=[...])` 는 `[]`. README "다중 DB"·`llms.txt` `join_across` 문단: outer 결과가 0행이거나 키가 모두 `None` 이면 `inner` 를 실행하지 않는다(쿼리는 outer 하나). `None` 키 문구는 피하라는 권고 대신 결과(`how="left"` 면 inner 자리가 `None` 으로 남고 `how="inner"` 면 빠짐)로 고쳤다. `llms.txt` 규칙 9: 키 짝짓기는 라이브러리가, 짝지은 뒤의 산술·합계는 파이썬이 한다. README 상태 줄을 0.3.0rc2 로. 빈 `rows` 의 인자 검사와 `join_across` 의 outer 0행(두 DB 포함)을 테스트로 고정 (#99).
 
 ### Fixed
 

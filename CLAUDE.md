@@ -1,6 +1,6 @@
 # django-sqlalchemy-bridge AI Guide
 
-> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.3.0rc2 (알파, 2026-10-27 릴리스. 0.3.0 정식은 rc2 검증 뒤, #93)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`·`execute_pipeline`·`raw`·`copy_to`·`execute_in`·`join_across`. 0.2.0(2026-10-27): 컴파일 캐시(#28), MySQL(#37), Oracle(#38), `execute_pipeline`(#50), `bulk_insert(method="copy")`(#54), `raw`(#57), `copy_to`(#62), `table_for(using=)` 제거(#67), 외부 리뷰(gpt-6-astra) 블로커 수정 #73·#68·#72·#74 와 문서 #71. 0.3.0rc1: `execute_in`·`join_across`(#79, 교차 vendor 검증 #87), JSON·튜플 비교 수정 #76·#86·#90. rc2: 두 함수의 `params`(#95), 스위트 경고 = 에러(#94). 열린 이슈 없음.
+> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.3.0 (알파, 2026-10-27 릴리스)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`·`execute_pipeline`·`raw`·`copy_to`·`execute_in`·`join_across`. 0.2.0(2026-10-27): 컴파일 캐시(#28), MySQL(#37), Oracle(#38), `execute_pipeline`(#50), `bulk_insert(method="copy")`(#54), `raw`(#57), `copy_to`(#62), `table_for(using=)` 제거(#67), 외부 리뷰(gpt-6-astra) 블로커 수정 #73·#68·#72·#74 와 문서 #71. 0.3.0(rc1·rc2 거침, #93): `execute_in`·`join_across`(#79, 교차 vendor 검증 #87)와 두 함수의 `params`(#95), JSON·튜플 비교 수정 #76·#86·#90, 스위트 경고 = 에러(#94), 가이드 빈 곳(#99). 열린 이슈 없음.
 
 ## 정본
 

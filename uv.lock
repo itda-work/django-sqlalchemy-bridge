@@ -208,7 +208,7 @@ wheels = [
 
 [[package]]
 name = "django-sqlalchemy-bridge"
-version = "0.3.0rc2"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "asgiref" },
