@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `execute_in(stmt, column, values, *, using="default", chunk_size=None)`: `select()` 에 `column IN (…)` 을 붙여 값을 청크로 나눠 실행하고 행을 이어 붙인다. `None` 을 빼고 중복을 지우며(처음 나온 순서), 남는 값이 없으면 질의 없이 `[]`. `chunk_size` 기본값은 연결의 `ops.max_in_list_size()`(Oracle 1,000)와 `features.max_query_params`(SQLite) 에서 문장 자신의 파라미터 수(값 하나로 컴파일해 셈)를 뺀 값 중 작은 것, 둘 다 없으면 1,000. 전에는 `col.in_(values)` 가 값 수를 나누지 않아 Oracle 은 1,000 개를 넘으면 `ORA-01795`, SQLite 는 변수 한도를 넘으면 에러였다. 모든 청크가 같은 expanding `bindparam` 문장이라 호출마다 컴파일은 한 번. `ORDER BY`·`LIMIT` 은 청크 안에서만 맞는다 (#79).
+- `join_across(outer, inner, on, *, using="default", inner_using=None, how="inner", chunk_size=None)`: 다른 DB 의 테이블을 앱 레벨 세미조인으로 합친다. `outer` 를 한 번 실행하고 outer 키 값으로 `inner` 를 `inner_using` 에서 `execute_in` 으로 조회한 뒤 파이썬 동등성으로 짝지어 `outer 행 + inner 행` 을 outer 순서로 돌려준다(1:N 은 행이 늘고, `how="left"` 는 짝 없는 행을 `None` 으로 채움). 키는 `selected_columns` 에서 객체·`.compare()`·라벨을 벗긴 식·결과 키 이름으로 찾고, 없으면 실행 전 `ValueError`, 복합 키는 `NotImplementedError`. DB collation(MySQL `_ci`)은 따르지 않고 두 DB 사이에 트랜잭션은 없다. README "다중 DB" 의 손으로 쓴 `in_()` 예시를 `join_across` 로 바꾸고 "긴 `IN` 목록" 절, `llms.txt` 규칙·시그니처·예시 (#79).
+
 ### Fixed
 
 - `bulk_insert` 에 모든 컬럼을 기본값에 맡긴 행(`bulk_insert(Model, [{}, {}])`, 자동 PK·`db_default` 컬럼만 있는 모델)을 주면 행 수를 잃었다. 넣을 컬럼이 없어 파라미터 행이 비었기 때문으로, SQLite·MySQL·Oracle 은 `batch_size` 가 없으면 에러 없이 0행(`[{}]` 도), 있으면 `ValueError: range() arg 3 must not be zero`, SQLite 의 `returning=["id"]` 는 `[]` 를 돌려주고 0행, PostgreSQL 은 `INSERT INTO t () SELECT * FROM unnest()` 문법 오류, `method="copy"` 는 `IndexError` 였다. 이제 Django `bulk_create([Model(), Model()])` 가 필드 값이 없는 객체에 쓰는 SQL 과 같은 꼴로 행 수만큼 넣는다: 자동 증가 PK 에 `connection.ops.pk_default_value()`(`NULL`, PostgreSQL 은 `DEFAULT`)를 준 `connection.ops.bulk_insert_sql()` 다중 행 INSERT(Oracle 은 `SELECT … UNION ALL`). `returning` 은 PostgreSQL·SQLite(·MariaDB)에서 입력 순서로 새 행을, MySQL·Oracle 은 전처럼 실행 전 `NotSupportedError`. `batch_size`·`atomic(savepoint=False)` 규칙은 같고 한 문장은 `bulk_batch_size()` 행을 넘지 않는다. 자동 증가 PK 가 없는 모델은 PostgreSQL·MySQL 에서 첫 컬럼에 `DEFAULT` 를, SQLite·Oracle 은 실행 전 `NotSupportedError`. `method="copy"` 는 COPY 가 읽을 컬럼이 없어 실행 전 `ValueError`. 빈 `rows` 는 전처럼 `0`/`[]` (#74).

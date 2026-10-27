@@ -509,6 +509,22 @@ with open("orders.csv", "wb") as f:
 - 쿼리 기록은 `bulk_insert(method="copy")`와 같습니다. 디버그 기록이 켜져 있으면 값을 넣은 `COPY (…) TO STDOUT …` 문장 한 건이 `connection.queries`에 남고(시간은 바이트를 다 내준 뒤까지), **`execute_wrapper()`에는 보이지 않습니다.** 에러는 Django 예외(`ProgrammingError` 등)로 올라오고, 깨진 트랜잭션에서는 `execute`처럼 `TransactionManagementError`입니다.
 - **언제 쓰나**: 많은 행을 그대로 파일·HTTP 로 내보낼 때. 200,000행(컬럼 7개)을 CSV 로 쓰는 데 `stream()` + `csv.writer` 766 ms 대 237 ms, tracemalloc 피크 40.0 MiB 대 12.3 MiB 였습니다(아래 "성능과 메모리" 9). 파이썬 값이 필요하거나 Django 식 표현(aware datetime 의 `+09:00`, `True`)이 필요하면 `stream`으로 읽어 `csv.writer`로 쓰세요(아래 "성능과 메모리" 9).
 
+### 긴 `IN` 목록: `execute_in`
+
+```python
+from django_sqlalchemy_bridge import execute_in
+
+stmt = sa.select(orders.c.id, orders.c.status).where(orders.c.status != "void")
+rows = execute_in(stmt, orders.c.id, ids)  # ids 가 수만 개여도 된다
+```
+
+- `execute_in(stmt, column, values, *, using="default", chunk_size=None)`은 `stmt`(`sa.select()`)에 `column IN (…)`을 붙여 `values`를 청크로 나눠 실행하고 행을 이어 붙인 리스트를 줍니다. DB 마다 한도가 있기 때문입니다. Oracle 은 `IN` 목록이 1,000 개를 넘으면 `ORA-01795`, SQLite 는 문장 하나의 파라미터 수(`features.max_query_params`, 보통 32,766)를 넘으면 에러입니다. ORM 의 `__in` 조회는 `ops.max_in_list_size()`로 `OR` 를 나누지만 `col.in_(values)`는 나누지 않습니다.
+- `values`는 `None`을 빼고(SQL `IN (NULL)`은 아무것에도 맞지 않음) 처음 나온 순서로 중복을 지웁니다. 남는 것이 없으면 질의 없이 `[]`입니다.
+- `chunk_size` 기본값은 그 연결의 `ops.max_in_list_size()`(Oracle 1,000)와 `features.max_query_params`에서 문장 자신의 파라미터 수를 뺀 값 중 작은 것이고, 둘 다 없으면(PostgreSQL·MySQL) 1,000 입니다. 주면 그대로 씁니다(양의 정수, 아니면 `ValueError`).
+- 값은 `in_()`과 같이 컬럼의 Django 필드로 조회 값 변환을 하고, 결과는 `execute`와 같이 변환합니다. 모든 청크가 같은 문장(expanding `bindparam`)이라 호출마다 컴파일은 한 번입니다.
+- **청크마다 따로 실행하는 문장입니다.** `ORDER BY`·`LIMIT`·`DISTINCT`·집계는 청크 안에서만 맞고 청크를 넘어 정렬·제한·합산되지 않습니다. 순서가 필요하면 받은 뒤 파이썬에서 정렬하세요. 청크 사이를 한 트랜잭션으로 묶지도 않으므로 같은 시점의 결과가 필요하면 `atomic()` 안에서 부르세요.
+- 행을 고르는 `select()`만 받습니다(그 밖은 `TypeError`). 서로 다른 DB 의 테이블을 합치는 `join_across`는 아래 "다중 DB"에 있습니다.
+
 ### 대량 쓰기: `bulk_update`, `bulk_insert`
 
 ```python
@@ -552,7 +568,7 @@ bulk_insert(orders, rows, method="copy")
 
 ## 다중 DB
 
-`table_for()`의 테이블은 모델에서 오므로 어느 DB 에도 묶이지 않습니다. 어느 DB 에서 실행할지는 호출마다 `using`(Django DB 별칭)이 정하고, 같은 테이블·같은 문장을 `default`와 다른 DB 에 번갈아 실행해도 됩니다. dialect 는 실행할 때 `connections[using]`의 vendor 로 고르고, 컴파일 캐시는 vendor 별, 결과 컨버터 캐시는 연결 객체별이라 서로 섞이지 않습니다. `execute`·`execute_result`·`stream`·`raw`·`execute_pipeline`·`copy_to`·`bulk_*` 모두 `using`을 받습니다.
+`table_for()`의 테이블은 모델에서 오므로 어느 DB 에도 묶이지 않습니다. 어느 DB 에서 실행할지는 호출마다 `using`(Django DB 별칭)이 정하고, 같은 테이블·같은 문장을 `default`와 다른 DB 에 번갈아 실행해도 됩니다. dialect 는 실행할 때 `connections[using]`의 vendor 로 고르고, 컴파일 캐시는 vendor 별, 결과 컨버터 캐시는 연결 객체별이라 서로 섞이지 않습니다. `execute`·`execute_result`·`stream`·`raw`·`execute_pipeline`·`copy_to`·`execute_in`·`bulk_*` 모두 `using`을 받습니다.
 
 <!-- example:multi-db-using -->
 ```python
@@ -587,24 +603,29 @@ rows = execute(stmt)  # 한 연결 안의 평범한 JOIN: [("SHIRT", 3), ("TEA",
 ```
 <!-- /example:multi-db-attach -->
 
-- **애플리케이션에서 합치기.** 서버 링크가 없으면 Django 의 교차 DB `prefetch_related`처럼 한쪽에서 키를 뽑아 다른 쪽을 `in_()`으로 조회하고 파이썬에서 합칩니다. 문장이 둘이고 트랜잭션도 DB 마다 따로입니다.
+- **애플리케이션에서 합치기: `join_across`.** 서버 링크가 없으면 Django 의 교차 DB `prefetch_related`처럼 한쪽에서 키를 뽑아 다른 쪽을 `IN`으로 조회하고 파이썬에서 합칩니다. Django ORM 은 라우터가 모델마다 DB 를 갈라도 `select_related`·관계 조회(`filter(product__sku=...)`)를 한 연결의 JOIN 으로 써서 에러 없이 빈 결과가 되므로, 이 일은 직접 해야 합니다.
 
 <!-- example:multi-db-in -->
 ```python
 products = table_for(Product)  # default DB 의 상품
 price_changes = table_for(PriceChange)  # other DB 의 가격표
 
-skus = [sku for (sku,) in execute(sa.select(products.c.sku).order_by(products.c.sku))]
-new_prices = dict(
-    execute(
-        sa.select(price_changes.c.sku, price_changes.c.price).where(price_changes.c.sku.in_(skus)),
-        using="other",
-    )
+rows = join_across(
+    sa.select(products.c.sku).order_by(products.c.sku),  # default 에서 한 번
+    sa.select(price_changes.c.sku, price_changes.c.price),  # other 에서 sku IN (...) 로
+    on=(products.c.sku, price_changes.c.sku),
+    inner_using="other",
+    how="left",  # 짝이 없는 상품은 None 으로 남긴다
 )
-rows = [(sku, new_prices.get(sku)) for sku in skus]
-# [("JEANS", None), ("SHIRT", Decimal("27.50")), ("TEA", Decimal("8.50"))]
+# [("JEANS", None, None), ("SHIRT", "SHIRT", Decimal("27.50")), ("TEA", "TEA", Decimal("8.50"))]
 ```
 <!-- /example:multi-db-in -->
+
+- `join_across(outer, inner, on, *, using="default", inner_using=None, how="inner", chunk_size=None)`는 `outer`를 `using`에서 한 번 실행하고, `on=(outer_key, inner_key)`의 outer 키 값으로 `inner`를 `inner_using`(없으면 `using`)에서 `execute_in`으로 조회해 합칩니다. 문장은 `1 + 청크 수`개입니다.
+- 행은 SQL JOIN 처럼 `outer 행 + inner 행`(inner 의 키 컬럼 포함)입니다. outer 행의 순서를 지키고, outer 한 행에 inner 행이 여럿이면 inner 를 가져온 순서대로 그만큼 늘어납니다. `how="inner"`는 짝이 없는 outer 행을 버리고 `how="left"`는 inner 자리를 `None`으로 채워 남깁니다(그 밖의 값은 `ValueError`). outer 키가 `None`인 행은 짝이 없습니다.
+- 키는 각 문장의 `selected_columns`에서 찾습니다. 같은 컬럼 객체, 같은 식(`.compare()`), 라벨을 벗긴 같은 식 순서로 찾고, 문자열이면 결과 키 이름(`label()`의 이름)입니다. 선택 목록에 없으면 실행 전 `ValueError`, 복합 키(`(a, b)`·`sa.tuple_()`)는 `NotImplementedError`, `select()`가 아니면 `TypeError`입니다.
+- **짝은 파이썬 동등성으로 맞춥니다.** 키 값은 outer 컬럼의 Django 필드로 읽은 값이고, inner 의 `IN`은 그 값을 inner 컬럼의 필드로 다시 조회 변환합니다. 그래서 시간대가 다른 aware datetime(같은 순간)·자릿수가 다른 `Decimal`·UUID 도 맞습니다. DB 의 collation 은 따르지 않습니다. MySQL `_ci` collation 은 `IN`에서 `"shirt"`를 `"SHIRT"`에 맞춰 가져오지만 파이썬에서는 다른 값이라 짝이 되지 않습니다.
+- **트랜잭션은 DB 마다 따로입니다.** 두 DB 의 문장 사이에 원자성이 없고, 한쪽을 롤백해도 다른 쪽은 그대로입니다. inner 의 청크도 하나의 시점을 보장하지 않습니다(`execute_in`과 같음).
 
 `arun`에는 `using`이 없습니다. `fn` 안의 호출이 저마다 `using`을 받습니다(아래 "비동기").
 
@@ -631,6 +652,7 @@ rows = [(sku, new_prices.get(sku)) for sku in skus]
   - `SELECT` 목록의 불리언 식(`(price > 2).label("gt")`, `sa.exists()`)은 Oracle 23ai 부터 됩니다. 19c 는 확인하지 않았습니다(아래 "지원 대상").
 - **`bulk_insert(method="copy")`는 `execute_wrapper()`에 보이지 않습니다.** psycopg 의 `Cursor.copy()`는 Django 커서의 `execute()`를 거치지 않기 때문입니다. `connection.queries`에는 배치마다 한 건씩 남깁니다(위 "대량 쓰기"). PostgreSQL + psycopg 3 전용이고, 다른 연결에서는 실행 전 `NotSupportedError`입니다.
 - **`copy_to`는 PostgreSQL + psycopg 3 전용이고 `execute_wrapper()`에 보이지 않습니다.** 값은 Django 변환이 아닌 서버의 텍스트 표현이고, 트랜잭션 안에서 일찍 `close()`하면 남은 데이터를 다 받습니다(위 "CSV 로 내보내기").
+- **`execute_in`·`join_across`는 청크마다 문장 하나입니다.** `ORDER BY`·`LIMIT`·집계는 청크 안에서만 맞고, `join_across`의 짝은 DB collation 이 아니라 파이썬 동등성으로 맞추며, 두 DB 사이에 트랜잭션이 없습니다(위 "긴 `IN` 목록", "다중 DB").
 - **`bulk_insert(returning=...)`의 행 순서는 DB 가 문서로 보장하지 않습니다.** PostgreSQL·SQLite 모두 지금은 입력 순서로 돌려주고 Django `bulk_create`도 같은 가정에 기대지만, 순서가 중요하면 행을 식별할 키(자연 키, `uid` 등)를 함께 `RETURNING`해서 그 값으로 짝지으세요. 예: `bulk_insert(books, rows, returning=["uid", "id"])`.
 
 ## 비동기

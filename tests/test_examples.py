@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from django.db import connection, transaction
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 
-from django_sqlalchemy_bridge import execute, table_for
+from django_sqlalchemy_bridge import execute, join_across, table_for
 from tests.testapp.models import Category, DailyStock, PriceChange, Product, Sale
 
 pytestmark = pytest.mark.django_db
@@ -522,17 +522,16 @@ def test_join_across_databases_in_python(shop):
     products = table_for(Product)  # default DB 의 상품
     price_changes = table_for(PriceChange)  # other DB 의 가격표
 
-    skus = [sku for (sku,) in execute(sa.select(products.c.sku).order_by(products.c.sku))]
-    new_prices = dict(
-        execute(
-            sa.select(price_changes.c.sku, price_changes.c.price).where(price_changes.c.sku.in_(skus)),
-            using="other",
-        )
+    rows = join_across(
+        sa.select(products.c.sku).order_by(products.c.sku),  # default 에서 한 번
+        sa.select(price_changes.c.sku, price_changes.c.price),  # other 에서 sku IN (...) 로
+        on=(products.c.sku, price_changes.c.sku),
+        inner_using="other",
+        how="left",  # 짝이 없는 상품은 None 으로 남긴다
     )
-    rows = [(sku, new_prices.get(sku)) for sku in skus]
-    # [("JEANS", None), ("SHIRT", Decimal("27.50")), ("TEA", Decimal("8.50"))]
+    # [("JEANS", None, None), ("SHIRT", "SHIRT", Decimal("27.50")), ("TEA", "TEA", Decimal("8.50"))]
     # /readme:multi-db-in
-    assert rows == [("JEANS", None), ("SHIRT", Decimal("27.50")), ("TEA", Decimal("8.50"))]
+    assert rows == [("JEANS", None, None), ("SHIRT", "SHIRT", Decimal("27.50")), ("TEA", "TEA", Decimal("8.50"))]
 
 
 # ATTACH and DETACH need autocommit: in a transaction that wrote to the attached
