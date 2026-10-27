@@ -2,7 +2,7 @@
 
 > ⚠️ **실험적 프로젝트입니다 (Experimental).** API·동작·지원 범위가 예고 없이 바뀔 수 있고, 운영 환경에서 쓰는 것을 권하지 않습니다.
 >
-> **상태: 0.2 (알파).** 공개 API 는 모델 → `sa.Table`(`table_for`), `execute`, `execute_result`, `stream`, `bulk_insert`/`bulk_update`, `execute_pipeline`, `raw`, `copy_to`, `execute_in`, `join_across`, `arun`, `compare_table`/`assert_table_matches`이고, SQLite·PostgreSQL·MySQL 8.4·Oracle 23ai 에서 테스트합니다. 0.x 동안은 마이너 버전 사이에도 API가 바뀔 수 있으니 버전을 고정해 쓰세요.
+> **상태: 0.3.0rc2 (알파).** 공개 API 는 모델 → `sa.Table`(`table_for`), `execute`, `execute_result`, `stream`, `bulk_insert`/`bulk_update`, `execute_pipeline`, `raw`, `copy_to`, `execute_in`, `join_across`, `arun`, `compare_table`/`assert_table_matches`이고, SQLite·PostgreSQL·MySQL 8.4·Oracle 23ai 에서 테스트합니다. 0.x 동안은 마이너 버전 사이에도 API가 바뀔 수 있으니 버전을 고정해 쓰세요.
 
 Django가 연 **연결과 트랜잭션 안에서** SQLAlchemy 2.x Core 표현식(대량 DML, CTE, 윈도 함수, 복잡한 조인)을 쓰게 해 주는 라이브러리입니다.
 
@@ -551,8 +551,8 @@ bulk_insert(orders, rows, method="copy")
 - `bulk_update(table, rows, *, key=None, columns=None, batch_size=None, using="default")`, `bulk_insert(table, rows, *, returning=None, batch_size=None, using="default", method="insert")`. `table`은 `table_for()` 테이블이나 모델입니다. `rows`는 컬럼 이름(`db_column`, FK 는 `<이름>_id`)을 키로 한 매핑의 시퀀스입니다.
 - **PostgreSQL에서는 문장 하나입니다.** 컬럼마다 배열 파라미터 하나를 Django 컬럼 타입으로 캐스트하고(`(%s)::jsonb[]`, `(%s)::numeric[]` …) `unnest()`로 행을 만듭니다. UPDATE 는 `UPDATE t SET c = v.c FROM unnest(...) AS v(...) WHERE t.k = v.k`, INSERT 는 `INSERT INTO t (...) SELECT * FROM unnest(...)` 꼴로, Django `bulk_create`가 PostgreSQL에서 쓰는 방식과 같습니다. 캐스트에서는 길이·자릿수를 떼므로(`varchar(50)[]`가 아니라 `varchar[]`) 값이 잘리지 않고, 너무 긴 값은 ORM 쓰기처럼 컬럼에 넣을 때 오류가 납니다. `CaptureQueriesContext`에는 1건으로 잡힙니다.
 - **그 밖의 백엔드(SQLite·MySQL·Oracle)에서는 같은 호출이 `cursor.executemany()`입니다(`atomic()` 안에서, 아래 "원자성").** `returning`이 있는 INSERT 는 executemany 로 행을 받을 수 없어서 다중 `VALUES` 문장을 `connection.ops.bulk_batch_size()`(SQLite 변수 한도) 단위로 나눠 실행합니다. 결과는 PostgreSQL과 같습니다.
-  - MySQL: mysqlclient 는 INSERT 의 executemany 를 다중 행 `INSERT … VALUES (…), (…)`로 바꿔 보내고, UPDATE 의 executemany 는 행마다 문장 하나를 보냅니다(`CaptureQueriesContext`에는 1건). rowcount 는 Django 가 켠 `CLIENT.FOUND_ROWS` 덕에 바뀐 행이 아니라 맞은 행을 셉니다. `bulk_insert(returning=...)`는 MySQL 에 `RETURNING`이 없어 실행 전 `NotSupportedError`이고, MariaDB 에서는 다중 `VALUES … RETURNING`으로 돕니다. `UPDATE … JOIN (VALUES ROW(…))`로 한 문장을 만드는 방식은 MariaDB 에 `VALUES ROW`가 없고 행 값의 타입을 정할 방법이 없어 쓰지 않았습니다. `INSERT … ON DUPLICATE KEY UPDATE`는 없는 키를 새 행으로 넣어 의미가 다릅니다.
-  - Oracle: `bulk_insert(returning=...)`는 실행 전 `NotSupportedError`입니다(아래 "제약"의 `RETURNING`). 너무 긴 값은 ORM 쓰기와 같이 `DataError`가 아니라 `DatabaseError`(`ORA-12899`)입니다.
+  - MySQL: mysqlclient 는 INSERT 의 executemany 를 다중 행 `INSERT … VALUES (…), (…)`로 바꿔 보내고, UPDATE 의 executemany 는 행마다 문장 하나를 보냅니다(`CaptureQueriesContext`에는 1건). rowcount 는 Django 가 켠 `CLIENT.FOUND_ROWS` 덕에 바뀐 행이 아니라 맞은 행을 셉니다. `bulk_insert(returning=...)`는 MySQL 에 `RETURNING`이 없어 행이 있으면 실행 전 `NotSupportedError`이고(빈 `rows`는 아래처럼 `[]`), MariaDB 에서는 다중 `VALUES … RETURNING`으로 돕니다. `UPDATE … JOIN (VALUES ROW(…))`로 한 문장을 만드는 방식은 MariaDB 에 `VALUES ROW`가 없고 행 값의 타입을 정할 방법이 없어 쓰지 않았습니다. `INSERT … ON DUPLICATE KEY UPDATE`는 없는 키를 새 행으로 넣어 의미가 다릅니다.
+  - Oracle: `bulk_insert(returning=...)`는 행이 있으면 실행 전 `NotSupportedError`입니다(아래 "제약"의 `RETURNING`, 빈 `rows`는 `[]`). 너무 긴 값은 ORM 쓰기와 같이 `DataError`가 아니라 `DatabaseError`(`ORA-12899`)입니다.
 - 값 변환은 `execute`와 같습니다. 쓰는 행 값마다 `field.get_db_prep_save()`, `bulk_update`의 `key` 값은 ORM 조회처럼(`None`은 SQL `NULL`), `returning` 컬럼은 ORM 변환기를 거칩니다. 파라미터는 행마다 SQLAlchemy로 만들지 않고 컬럼마다 리스트 하나로 바로 만듭니다.
 - **`key`·`columns`는 실제 컬럼 이름입니다.** `key`를 생략하면 테이블의 PK 컬럼이고, 줄 때는 ORM 별칭 `"pk"`가 아니라 컬럼 이름(`"id"`, FK 는 `"author_id"`, 복합 키는 `("author_id", "title")` 같은 튜플)입니다. `key="pk"`는 그런 컬럼이 없으면 실행 전 `ValueError`입니다.
 - **빠진 값은 오류입니다.** 실행 전에 `ValueError`를 냅니다.
@@ -565,7 +565,7 @@ bulk_insert(orders, rows, method="copy")
 - **`method="copy"`(PostgreSQL + psycopg 3)**: `INSERT` 대신 `COPY t (컬럼…) FROM STDIN`(text 포맷)으로 넣습니다. Django 커서 아래의 psycopg 커서(`cursor.cursor.copy()`)로 실행하므로 Django 연결·트랜잭션 안에서 돕니다. 행 검사와 값 변환(`get_db_prep_save()`)은 `"insert"`와 같고, 탭·개행·백슬래시·`\N` 문자열의 이스케이프는 psycopg 가 맡습니다(테스트로 고정). `batch_size`를 주면 배치마다 `COPY` 하나, 둘 이상이면 같은 `atomic(savepoint=False)`입니다. 트리거·제약·FK 검사는 INSERT 와 같고, 제약 위반은 Django 예외(`IntegrityError`·`DataError`)로 올라옵니다. 반환값은 psycopg 가 COPY 뒤 `cursor.rowcount`로 주는 행 수입니다. **언제 쓰나**: `RETURNING`이 필요 없는 수십만 행 이상의 INSERT. 200,000행(컬럼 6개)에서 `"insert"`(unnest) 3,571 ms 대 1,925 ms 였고, 1,000,000행에서는 시간이 47% 줄고 클라이언트 tracemalloc 피크가 849 MiB → 193 MiB, 서버 백엔드 메모리 증가가 233 MiB → 0.5 MiB 였습니다(아래 "성능과 메모리" 2·7). COPY 는 행을 흘려보내므로 서버 메모리가 행 수를 따라 늘지 않습니다. `batch_size`는 클라이언트 메모리만 조금 줄입니다(1,000,000행에서 `10_000`이면 148 MiB, 시간은 4% 늘어남).
   - `returning`과 함께 쓰면 실행 전 `ValueError`입니다(COPY 에는 `RETURNING`·`ON CONFLICT`가 없음). PostgreSQL 이 아닌 연결이나 psycopg2 에서는 실행 전 `NotSupportedError`입니다. 조용히 `"insert"`로 바꾸지 않습니다. binary 포맷은 쓰지 않습니다(psycopg 의 binary COPY 는 컬럼마다 `set_types()`로 서버 타입을 정해야 하고, text 포맷은 서버가 INSERT 파라미터처럼 텍스트로 받아 컬럼 타입으로 읽습니다).
   - 쿼리 기록: `COPY`는 Django `CursorWrapper.execute()`를 지나지 않습니다. 브리지가 디버그 기록이 켜져 있을 때(`connection.queries_logged`) `COPY … FROM STDIN` 문장을 배치마다 `connection.queries`에 한 건씩 남기므로 `CaptureQueriesContext`·`assertNumQueries`에 잡히지만, **`connection.execute_wrapper()`에는 보이지 않습니다.**
-- 빈 `rows`는 쿼리를 실행하지 않고 `0`(또는 `returning`이면 `[]`)을 돌려줍니다.
+- 빈 `rows`는 쿼리를 실행하지 않고 `0`(또는 `returning`이면 `[]`)을 돌려줍니다. 인자 검사는 그대로 합니다: `method`·`batch_size` 값, `key`·`columns`·`returning`의 컬럼 이름, `columns=[]`("nothing to update")는 `ValueError`이고, `method="copy"`는 PostgreSQL + psycopg 3 가 아니면 빈 `rows`여도 `NotSupportedError`입니다. 백엔드의 `RETURNING` 거부는 실행할 문장이 있을 때만 하므로 MySQL·Oracle 의 `bulk_insert([], returning=[...])`는 `[]`입니다.
 - **`RETURNING` 순서**: 결과는 `rows` 순서입니다(테스트로 고정). 다만 PostgreSQL·SQLite 모두 `RETURNING` 순서를 문서로 보장하지는 않으며, Django `bulk_create`가 PK 를 객체에 채울 때도 같은 동작에 기댑니다. 아래 "제약"을 보세요.
 - signal·`save()`를 거치지 않는 것은 다른 브리지 쓰기와 같습니다(아래).
 
@@ -626,8 +626,8 @@ rows = join_across(
 ```
 <!-- /example:multi-db-in -->
 
-- `join_across(outer, inner, on, *, params=None, inner_params=None, using="default", inner_using=None, how="inner", chunk_size=None)`는 `outer`를 `using`에서 한 번 실행하고, `on=(outer_key, inner_key)`의 outer 키 값으로 `inner`를 `inner_using`(없으면 `using`)에서 `execute_in`으로 조회해 합칩니다. 문장은 `1 + 청크 수`개입니다. `params`는 `outer`의, `inner_params`는 `inner`의 `bindparam()` 값을 채우는 매핑 하나씩입니다(`execute`·`execute_in`과 같음).
-- 행은 SQL JOIN 처럼 `outer 행 + inner 행`(inner 의 키 컬럼 포함)입니다. outer 행의 순서를 지키고, outer 한 행에 inner 행이 여럿이면 inner 를 가져온 순서대로 그만큼 늘어납니다. `how="inner"`는 짝이 없는 outer 행을 버리고 `how="left"`는 inner 자리를 `None`으로 채워 남깁니다(그 밖의 값은 `ValueError`). outer 키가 `None`인 행은 짝이 없습니다. `outer`가 OUTER JOIN 이라 키 컬럼이 `None`이 될 수 있으면, 그 행은 `how="inner"`에서 빠지고 `how="left"`에서도 inner 자리가 `None`입니다(SQL 의 `NULL = NULL`과 같음). 키는 OUTER JOIN 으로 비지 않는 쪽 컬럼에서 고르세요.
+- `join_across(outer, inner, on, *, params=None, inner_params=None, using="default", inner_using=None, how="inner", chunk_size=None)`는 `outer`를 `using`에서 한 번 실행하고, `on=(outer_key, inner_key)`의 outer 키 값으로 `inner`를 `inner_using`(없으면 `using`)에서 `execute_in`으로 조회해 합칩니다. 문장은 `1 + 청크 수`개입니다. outer 결과가 0행이거나 outer 키가 모두 `None`이면 `execute_in`에 넘길 값이 없어 `inner`는 실행하지 않습니다(문장은 outer 하나, `inner_using` 쪽은 0개). 결과는 0행이면 `[]`, 키가 모두 `None`이면 아래 `None` 키 규칙대로입니다. `params`는 `outer`의, `inner_params`는 `inner`의 `bindparam()` 값을 채우는 매핑 하나씩입니다(`execute`·`execute_in`과 같음).
+- 행은 SQL JOIN 처럼 `outer 행 + inner 행`(inner 의 키 컬럼 포함)입니다. outer 행의 순서를 지키고, outer 한 행에 inner 행이 여럿이면 inner 를 가져온 순서대로 그만큼 늘어납니다. `how="inner"`는 짝이 없는 outer 행을 버리고 `how="left"`는 inner 자리를 `None`으로 채워 남깁니다(그 밖의 값은 `ValueError`). outer 키가 `None`인 행(예: `outer`의 OUTER JOIN 이 비운 쪽 컬럼)은 짝이 없어, `how="left"`면 inner 자리가 `None`인 채 남고 `how="inner"`면 빠집니다(SQL 의 `NULL = NULL`과 같음). OUTER JOIN 의 양쪽 키 중 비는 쪽을 고르면 짝이 있어야 할 행도 이렇게 되니, 짝을 원하면 비지 않는 쪽 키를 고르세요.
 - 키는 각 문장의 `selected_columns`에서 찾습니다. 같은 컬럼 객체, 같은 식(`.compare()`), 라벨을 벗긴 같은 식 순서로 찾고, 문자열이면 결과 키 이름(`label()`의 이름)입니다. 선택 목록에 없으면 실행 전 `ValueError`, 복합 키(`(a, b)`·`sa.tuple_()`)는 `NotImplementedError`, `select()`가 아니면 `TypeError`입니다.
 - **짝은 파이썬 동등성으로 맞춥니다.** 키 값은 outer 컬럼의 Django 필드로 읽은 값이고, inner 의 `IN`은 그 값을 inner 컬럼의 필드로 다시 조회 변환합니다. 그래서 시간대가 다른 aware datetime(같은 순간)·자릿수가 다른 `Decimal`·UUID 도 맞습니다. DB 의 collation 은 따르지 않습니다. MySQL `_ci` collation 은 `IN`에서 `"shirt"`를 `"SHIRT"`에 맞춰 가져오지만 파이썬에서는 다른 값이라 짝이 되지 않습니다.
 - 서로 다른 vendor 사이도 됩니다. SQLite·PostgreSQL·MySQL·Oracle 의 모든 순서쌍(12가지)을 문자열·`Decimal`·aware datetime·UUID 키로 테스트합니다.
@@ -640,7 +640,7 @@ rows = join_across(
 
 브리지가 실행 전에 막는 것과, 막지 않거나 막을 수 없는 것들입니다.
 
-- **RETURNING 은 그 DB 가 지원할 때만.** dialect 는 DB 에 연결하지 않고 컴파일하므로 어떤 DB 에도 `RETURNING`을 씁니다. 그래서 `RETURNING`이 있는 SQLAlchemy DML(`execute`·`execute_result`·`stream`, `bulk_insert(returning=...)`)은 문장 종류별로 실행 연결을 보고 **실행 전에** `django.db.NotSupportedError`를 냅니다.
+- **RETURNING 은 그 DB 가 지원할 때만.** dialect 는 DB 에 연결하지 않고 컴파일하므로 어떤 DB 에도 `RETURNING`을 씁니다. 그래서 `RETURNING`이 있는 SQLAlchemy DML(`execute`·`execute_result`·`stream`, `bulk_insert(returning=...)`)은 문장 종류별로 실행 연결을 보고 **실행 전에** `django.db.NotSupportedError`를 냅니다. 빈 `rows`의 `bulk_insert`는 실행할 문장이 없어 거부하지 않고 `[]`입니다.
   - SQLite: 3.35 부터 INSERT·UPDATE·DELETE 모두 지원합니다(Django 5.2 는 3.31 부터 받음). Django feature `can_return_columns_from_insert`가 거짓이면 셋 다 거부합니다.
   - MySQL: `RETURNING`이 없어 모두 거부합니다.
   - MariaDB(Django vendor 는 `"mysql"`): `INSERT … RETURNING`·`DELETE … RETURNING`은 실행하고 `UPDATE … RETURNING`만 거부합니다.

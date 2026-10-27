@@ -270,6 +270,38 @@ def test_outer_rows_with_a_null_key_match_nothing():
     assert len(captured[1][1]) == 1  # the inner IN holds g1 only
 
 
+@pytest.mark.parametrize("how", ["inner", "left"])
+def test_no_outer_keys_run_the_outer_statement_only(how):
+    make_prices({"A": "1"})
+    gadgets = table_for(Gadget)
+    inner = sa.select(gadgets.c.code)
+    empty = sa.select(products.c.sku)
+    no_keys = sa.select(specimens.c.label_text, specimens.c.gadget_id)
+    make_specimen(gadget_id=None)
+
+    with CaptureQueriesContext(connection) as queries:
+        assert join_across(empty, sa.select(price_changes.c.sku), (products.c.sku, price_changes.c.sku), how=how) == []
+    assert len(queries) == 1
+    with CaptureQueriesContext(connection) as queries:
+        rows = join_across(no_keys, inner, (specimens.c.gadget_id, gadgets.c.code), how=how)
+    assert rows == ([("x", None, None)] if how == "left" else [])
+    assert len(queries) == 1
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+@pytest.mark.parametrize("how", ["inner", "left"])
+def test_no_outer_rows_run_nothing_on_the_inner_database(how):
+    make_prices({"A": "1"}, using="other")
+    outer = sa.select(products.c.sku)
+    inner = sa.select(price_changes.c.sku, price_changes.c.price)
+
+    with CaptureQueriesContext(connection) as here, CaptureQueriesContext(connections["other"]) as there:
+        rows = join_across(outer, inner, (products.c.sku, price_changes.c.sku), inner_using="other", how=how)
+
+    assert rows == []
+    assert (len(here), len(there)) == (1, 0)
+
+
 def test_duplicate_outer_keys_go_into_the_in_list_once():
     make_products("A", "B")
     make_prices({"A": "1", "B": "2"})

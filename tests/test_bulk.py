@@ -246,6 +246,21 @@ def test_empty_rows_run_nothing():
     assert ctx.captured_queries == []
 
 
+def test_empty_rows_still_check_the_arguments():
+    with CaptureQueriesContext(connection) as ctx:
+        with pytest.raises(ValueError, match="no column 'nope'"):
+            bulk_update(authors, [], key="nope")
+        with pytest.raises(ValueError, match="no column 'nope'"):
+            bulk_update(authors, [], columns=["nope"])
+        with pytest.raises(ValueError, match="nothing to update"):
+            bulk_update(authors, [], columns=[])
+        with pytest.raises(ValueError, match="no column 'nope'"):
+            bulk_insert(authors, [], returning=["nope"])
+        with pytest.raises(ValueError, match="method"):
+            bulk_insert(authors, [], method="bogus")
+    assert ctx.captured_queries == []
+
+
 # --- rows that leave every column to the database ----------------------------
 
 
