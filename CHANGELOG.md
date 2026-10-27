@@ -4,7 +4,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `execute_in(stmt, column, values, params=None, *, ...)`·`join_across(outer, inner, on, *, params=None, inner_params=None, ...)`: `execute` 와 같은 `bindparam()` 값 매핑 하나를 받는다(`join_across` 는 outer 에 `params`, inner 에 `inner_params`). 전에는 값을 `stmt.params(...)` 로 박아 새 문장 객체를 만들어야 해 호출마다 컴파일했다(컴파일 캐시는 문장 객체 기준). 청크 문장(`column IN` expanding bind 를 붙인 것)을 사용자 문장마다 하나 두어(사용자 문장을 약하게 참조하고, 다른 `column` 이 오면 바꿔 끼움) 같은 문장을 값·params 만 바꿔 다시 불러도 컴파일은 한 번이다. 매핑의 리스트와 브리지의 `IN` bind 이름 `dsb_in_values` 를 쓴 params 는 `ValueError`, 빠진 bindparam 은 `execute` 와 같은 에러. `chunk_size` 기본값의 "문장 자신의 파라미터 수" 에 params 도 든다 (#95).
+
 ### Changed
+
+- README "긴 `IN` 목록"·"다중 DB" 와 `llms.txt` 규칙 9·`execute_in`·`join_across` 문단에 `params`, OUTER JOIN 으로 `None` 이 될 수 있는 outer 키는 아무것에도 맞지 않는다는 것, 교차 DB 집계는 inner 를 키별 `GROUP BY` 로 미리 집계하고 키를 넘는 합은 파이썬에서 한다는 패턴(키는 두 청크에 나뉘지 않음)을 적었다 (#95).
 
 - 테스트 스위트를 경고 에러로 돈다(`pyproject.toml` `filterwarnings = ["error"]`). `-W error` 로 돌리면 실행마다 다른 테스트 두어 개가 `ResourceWarning: unclosed database in <sqlite3.Connection>` 으로 실패하던 것은 테스트가 워커 스레드(`ThreadPoolExecutor`, `asyncio.run` 이 쓰는 asgiref 공용 스레드)에서 연 in-memory SQLite 연결이었다: Django SQLite 의 `close()` 는 in-memory DB 의 연결을 닫지 않으므로 GC 가 아무 테스트 중에나 마무리했다. 두 테스트가 `tests/threads.py` 의 `close_connections()` 로 스레드 연결을 실제로 닫는다. 라이브러리(`arun` 포함)는 그대로 — PostgreSQL 에서는 같은 경로가 연결을 남기지 않는다 (#94).
 
