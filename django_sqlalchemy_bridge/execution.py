@@ -337,9 +337,14 @@ def _json_tuple_comparison(binary: Any, dialect_name: str) -> sa.ColumnElement[b
     return _either(rows, op)
 
 
+def _is_literal_list(bind: sa.BindParameter[Any]) -> bool:
+    """Whether an expanding bind is the anonymous one ``in_([...])`` makes, its values known when compiling."""
+    return bind.unique and bind.callable is None and bind.value is not None
+
+
 def _refuse_expanding(bind: sa.BindParameter[Any], dialect_name: str, what: str, literal: str) -> None:
     """Refuse an expanding ``bindparam`` given by name, whose values are bound only at run time."""
-    if not bind.unique or bind.callable is not None or bind.value is None:
+    if not _is_literal_list(bind):
         raise NotSupportedError(
             f"{dialect_name} cannot compare {what} IN an expanding bindparam: its values are bound at run "
             f"time, where the JSON value would not compare as a document. Pass a literal list ({literal}) "
@@ -375,6 +380,11 @@ def _json_in_comparison(binary: Any, dialect_name: str) -> sa.ColumnElement[bool
     )
 
 
+def _wraps_each_value(type_: sa.types.TypeEngine, dialect: Dialect) -> bool:
+    """Whether ``type_`` writes each bound value inside its ``bind_expression()`` (MySQL's JSON, #37)."""
+    return type_.dialect_impl(dialect).bind_expression(sa.bindparam(None, type_=type_)) is not None
+
+
 def _mysql_dialect(*, mariadb: bool, backslash_escapes: bool) -> Dialect:
     from sqlalchemy.dialects.mysql import mariadb as sa_mariadb
     from sqlalchemy.dialects.mysql import mysqldb
@@ -389,6 +399,24 @@ def _mysql_dialect(*, mariadb: bool, backslash_escapes: bool) -> Dialect:
     class Compiler(
         _TupleValuesCompiler, _JSONTupleCompiler, _LookupCompiler, _ReturningCompiler, dialect.statement_compiler
     ):
+        def visit_binary(self, binary: Any, override_operator: Any = None, **kw: Any) -> str:
+            # SQLAlchemy writes an empty list's "NULL) AND (1 != 1" inside each value's
+            # bind_expression(): meta IN (JSON_EXTRACT(NULL) AND (1 != 1, '$')), which
+            # MySQL refuses. A literal one is known now; an expanding bindparam's
+            # values come at run time, and prepare() refuses an empty list for it.
+            right = binary.right
+            if (
+                override_operator is None
+                and binary.operator in (operators.in_op, operators.not_in_op)
+                and isinstance(right, sa.BindParameter)
+                and right.expanding
+                and _is_literal_list(right)
+                and not right.value
+                and _wraps_each_value(right.type, self.dialect)
+            ):
+                return self.process(_either([], binary.operator), **kw)
+            return super().visit_binary(binary, override_operator=override_operator, **kw)
+
         if not backslash_escapes:
 
             def render_literal_value(self, value: Any, type_: sa.types.TypeEngine) -> str:
@@ -536,7 +564,9 @@ class _Compiled:
     the statement's columns are unknown), and ``direct`` says which of them are
     table columns rather than expressions (see :func:`_is_column`); ``defaults_error`` is why the
     statement is refused, if it is. ``lookups`` names the binds whose values are
-    compared with a column (see :class:`_LookupCompiler`).
+    compared with a column (see :class:`_LookupCompiler`). ``wrapped_lists`` names the
+    MySQL expanding binds whose values each go inside their type's ``bind_expression()``,
+    which cannot take an empty list (see :func:`_refuse_empty_wrapped_lists`).
     """
 
     compiled: Compiled
@@ -546,6 +576,7 @@ class _Compiled:
     names: tuple[str, ...]
     defaults_error: str | None
     lookups: frozenset[str]
+    wrapped_lists: frozenset[str]
 
 
 # Statement -> {(dialect key, params' names): _Compiled}. The entry goes when the
@@ -586,6 +617,11 @@ def _compile(
     names = tuple(name for column in columns if isinstance(name := getattr(column, "name", None), str))
     compared = {id(bind) for bind in compiled.lookup_binds}
     lookups = frozenset(name for name, bind in compiled.binds.items() if id(bind) in compared)
+    wrapped_lists = frozenset(
+        name
+        for name, bind in compiled.binds.items()
+        if dialect.name in ("mysql", "mariadb") and bind.expanding and _wraps_each_value(bind.type, dialect)
+    )
     entry = _Compiled(
         compiled,
         dml,
@@ -594,6 +630,7 @@ def _compile(
         names,
         _python_defaults_error(compiled),
         lookups,
+        wrapped_lists,
     )
     if target is not stmt:
         try:
@@ -646,6 +683,7 @@ def prepare(
     param_rows = []
     for row in rows:
         state = compiled.construct_expanded_state(row, escape_names=False)
+        _refuse_empty_wrapped_lists(entry.wrapped_lists, state, connection)
         if sql is None:
             sql = state.statement
         elif state.statement != sql:
@@ -660,6 +698,18 @@ def prepare(
         rowcount_only=entry.dml and not entry.types,
         names=entry.names,
     )
+
+
+def _refuse_empty_wrapped_lists(names: frozenset[str], state: Any, connection: BaseDatabaseWrapper) -> None:
+    # SQLAlchemy would write its empty set inside each value's bind_expression():
+    # meta IN (JSON_EXTRACT(NULL) AND (1 != 1, '$')), which MySQL refuses (#90).
+    empty = sorted(name for name in names if state.parameter_expansion.get(name) == [])
+    if empty:
+        raise NotSupportedError(
+            f"{connection.display_name} cannot compare a JSON value IN the empty list given for the expanding "
+            f"bindparam {empty[0]!r}: SQLAlchemy writes the empty set inside JSON_EXTRACT(). Pass a literal "
+            "list (meta.in_([]) compiles to 1 != 1) or skip the condition when the list is empty."
+        )
 
 
 def check_returning(connection: BaseDatabaseWrapper, verb: str = "INSERT") -> None:

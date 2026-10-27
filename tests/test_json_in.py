@@ -6,13 +6,15 @@ there. The bridge spells a literal list as the ``OR`` of ``JSON_EQUAL()``
 comparisons, as it compiles ``meta == {...}`` (#38), and refuses an expanding
 ``bindparam``, whose values come only at run time. The other backends keep
 SQLAlchemy's ``IN``. A key (``meta["k"].in_([...])``) is not a document and
-keeps its ``IN`` everywhere.
+keeps its ``IN`` everywhere. An empty list is ``1 != 1`` on MySQL too, where
+SQLAlchemy would write its empty set inside ``JSON_EXTRACT()``, and an expanding
+``bindparam`` given an empty list is refused there before running (#90).
 """
 
 import django
 import pytest
 import sqlalchemy as sa
-from django.db import NotSupportedError, OperationalError, connection
+from django.db import NotSupportedError, connection
 from django.db.models import Q
 from django.test.utils import CaptureQueriesContext
 
@@ -64,15 +66,69 @@ def test_a_json_column_not_in_a_literal_list_leaves_the_other_documents(rows):
     assert bridge_uids(stmt) == uids([rows[1], rows[2], rows[5]])
 
 
-@pytest.mark.xfail(
-    IS_MYSQL,
-    raises=OperationalError,
-    strict=True,
-    reason="SQLAlchemy writes MySQL's empty set inside JSON_EXTRACT(): JSON_EXTRACT(NULL) AND (1 != 1, '$')",
-)
 def test_a_json_column_in_an_empty_list(rows):
-    assert bridge_uids(select_uids().where(data.in_([]))) == []
+    # On MySQL SQLAlchemy would write its empty set inside JSON_EXTRACT() (#90).
+    assert bridge_uids(select_uids().where(data.in_([]))) == orm_in([]) == []
     assert bridge_uids(select_uids().where(data.not_in([]))) == uids(rows)
+
+
+@pytest.mark.skipif(IS_ORACLE and not SA_ORACLE_JSON, reason="SQLAlchemy 2.0 cannot compile JSON keys for Oracle")
+def test_a_key_in_an_empty_list(rows):
+    assert bridge_uids(select_uids().where(data["k"].in_([]))) == []
+    assert bridge_uids(select_uids().where(data["k"].not_in([]))) == uids(rows)
+
+
+def test_only_mysql_spells_an_empty_list_out():
+    sql = prepare(select_uids().where(data.in_([])), None, connection).sql
+    if IS_MYSQL or IS_ORACLE:
+        assert sql.endswith("WHERE 1 != 1")
+    else:
+        assert " IN (" in sql
+
+
+def expanding_values():
+    return sa.bindparam("values", expanding=True)
+
+
+@pytest.mark.skipif(IS_ORACLE, reason="Oracle refuses an expanding bind for a JSON column")
+def test_an_expanding_bindparam_given_an_empty_list(rows):
+    statements = [
+        (select_uids().where(data.in_(expanding_values())), []),
+        (select_uids().where(data.not_in(expanding_values())), uids(rows)),
+        (select_uids().where(data["k"].in_(expanding_values())), []),
+    ]
+    for stmt, expected in statements:
+        if IS_MYSQL:
+            # SQLAlchemy writes the empty set inside each value's JSON_EXTRACT(), and the values come at run time.
+            with CaptureQueriesContext(connection) as queries, pytest.raises(NotSupportedError, match=r"in_\(\[\]\)"):
+                bridge_uids(stmt, {"values": []})
+            assert len(queries) == 0
+        else:
+            assert bridge_uids(stmt, {"values": []}) == expected
+
+
+@pytest.mark.skipif(IS_ORACLE, reason="Oracle refuses an expanding bind for a JSON column")
+def test_an_expanding_bindparam_whose_own_value_is_empty(rows):
+    stmt = select_uids().where(data.in_(sa.bindparam("values", [], expanding=True)))
+    if IS_MYSQL:
+        with pytest.raises(NotSupportedError):
+            bridge_uids(stmt)
+    else:
+        assert bridge_uids(stmt) == []
+
+
+@pytest.mark.skipif(IS_ORACLE, reason="Oracle refuses an expanding bind for a JSON column")
+def test_one_statement_alternates_empty_and_non_empty_lists(rows):
+    stmt = select_uids().where(data.in_(expanding_values()))
+    values = [{"k": 1}, [1, {"a": None}]]
+    for _ in range(2):
+        # The compiled statement is reused: an empty list neither breaks nor changes the next run.
+        assert bridge_uids(stmt, {"values": values}) == orm_in(values) == uids([rows[0], rows[3]])
+        if IS_MYSQL:
+            with pytest.raises(NotSupportedError):
+                bridge_uids(stmt, {"values": []})
+        else:
+            assert bridge_uids(stmt, {"values": []}) == orm_in([]) == []
 
 
 def test_the_rewritten_or_keeps_its_place_among_other_conditions(rows):
