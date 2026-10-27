@@ -193,3 +193,140 @@ def test_other_databases_compile_no_cast():
         sa.func.sum(price) >= 1
     )
     assert "CAST" not in prepare(stmt, None, connection).sql.upper()
+
+
+# One aggregate object used both under a FILTER or window and elsewhere (#72).
+# The ORM casts it outside the FILTER or window and again at every other place;
+# the bridge kept the object out of every cast once it had met it under one.
+title_a = books.c.title.startswith("a")
+
+
+def _needs_filter():
+    if not connection.features.supports_aggregate_filter_clause:
+        pytest.skip(f"{connection.display_name} has no FILTER (WHERE ...)")
+
+
+def _sql(stmt):
+    return prepare(stmt, {"x": Decimal("51")}, connection).sql
+
+
+def _rows(stmt):
+    names = [c.name for c in stmt.selected_columns]
+    return [dict(zip(names, row, strict=True)) for row in execute(stmt)]
+
+
+S = "sum(testapp_book.price)"
+CAST_S = f"(CAST({S} AS NUMERIC))"
+
+
+def test_an_aggregate_under_a_filter_is_cast_again_in_having(shelf):
+    _needs_filter()
+    total = sa.func.sum(price)
+    stmt = _per_author().add_columns(total.filter(title_a).label("r")).having(total >= sa.bindparam("x"))
+    if connection.vendor == "sqlite":
+        sql = _sql(stmt)
+        assert sql.count(f"(CAST({S} FILTER (WHERE") == 1
+        assert f"HAVING {CAST_S} >= %s" in sql
+    orm = Author.objects.annotate(r=Sum("books__price", filter=Q(books__title__startswith="a")), t=Sum("books__price"))
+    expected = sorted(orm.filter(t__gte=51).values_list("id", "r"))
+    assert expected == [(shelf.id, Decimal("60.00"))]
+    assert sorted(execute(stmt, {"x": Decimal("51")})) == expected
+
+
+def _per_price(*columns):
+    """Books grouped by author and price: (a, 30.00) sums to 60.00, (b, 10.00) to 10.00."""
+    return sa.select(books.c.author_id, *columns).group_by(books.c.author_id, price)
+
+
+def test_an_aggregate_under_a_window_is_cast_again_in_having(shelf):
+    total = sa.func.sum(price)
+    stmt = _per_price(total.over().label("w"), total.label("s")).having(total >= sa.bindparam("x"))
+    if connection.vendor == "sqlite":
+        sql = _sql(stmt)
+        assert sql.count(f"(CAST({S} OVER ()") == 1
+        assert f"HAVING {CAST_S} >= %s" in sql
+    # After HAVING one group is left, and the window sums the grouped prices.
+    assert execute(stmt, {"x": Decimal("51")}) == [(shelf.id, Decimal("30.00"), Decimal("60.00"))]
+
+
+@pytest.mark.parametrize("plain_first", [True, False], ids=["plain first", "plain last"])
+def test_an_aggregate_in_one_select_list_twice_is_cast_at_each(shelf, plain_first):
+    _needs_filter()
+    total = sa.func.sum(price)
+    columns = [total.label("s"), total.filter(title_a).label("f")]
+    stmt = sa.select(*(columns if plain_first else columns[::-1]))
+    if connection.vendor == "sqlite":
+        sql = _sql(stmt)
+        assert sql.count(f"(CAST({S} FILTER (WHERE") == 1
+        assert sql.count(f"{CAST_S} AS s") == 1
+    assert _rows(stmt) == [{"s": Decimal("70.00"), "f": Decimal("60.00")}]
+
+
+@pytest.mark.parametrize("plain_first", [True, False], ids=["plain first", "plain last"])
+def test_an_aggregate_in_one_select_list_with_its_window_is_cast_at_each(shelf, plain_first):
+    total = sa.func.sum(price)
+    columns = [total.label("s"), total.over().label("w")]
+    stmt = _per_price(*(columns if plain_first else columns[::-1])).order_by(books.c.author_id)
+    if connection.vendor == "sqlite":
+        sql = _sql(stmt)
+        assert sql.count(f"(CAST({S} OVER ()") == 1
+        assert sql.count(f"{CAST_S} AS s") == 1
+    b = Author.objects.get(name="b").id
+    assert _rows(stmt) == [
+        {"author_id": shelf.id, "s": Decimal("60.00"), "w": Decimal("40.00")},
+        {"author_id": b, "s": Decimal("10.00"), "w": Decimal("40.00")},
+    ]
+
+
+def test_an_aggregate_in_its_own_window_order_is_cast_there(shelf):
+    # The ORM casts SUM() in ORDER BY of SUM() OVER (ORDER BY SUM()), the same object here.
+    total = sa.func.sum(price)
+    stmt = _per_price(total.over(order_by=total).label("w")).order_by(books.c.author_id)
+    if connection.vendor == "sqlite":
+        assert f"(CAST({S} OVER (ORDER BY {CAST_S}) AS NUMERIC))" in _sql(stmt)
+    b = Author.objects.get(name="b").id
+    # The window runs over the grouped prices in the order of the groups' sums: (b, 10.00), then (a, 30.00).
+    assert execute(stmt) == [(shelf.id, Decimal("40.00")), (b, Decimal("10.00"))]
+
+
+def test_an_aggregate_under_a_filter_in_a_subquery_is_cast_in_the_outer_where(shelf):
+    _needs_filter()
+    total = sa.func.sum(price)
+    stmt = sa.select(authors.c.id, _correlated(total.filter(title_a)).label("f")).where(
+        _correlated(total) >= sa.bindparam("x")
+    )
+    if connection.vendor == "sqlite":
+        sql = _sql(stmt)
+        assert sql.count(f"(CAST({S} FILTER (WHERE") == 1
+        assert "WHERE testapp_book.author_id = testapp_author.id) >= %s" in sql
+        assert sql.count(CAST_S) == 1
+    assert execute(stmt, {"x": Decimal("51")}) == [(shelf.id, Decimal("60.00"))]
+
+
+def test_a_function_under_the_filtered_aggregate_keeps_its_cast(shelf):
+    _needs_filter()
+    total = sa.func.sum(sa.func.coalesce(price, 0))
+    stmt = _per_author().add_columns(total.filter(title_a).label("r")).having(total.filter(title_a) >= 1)
+    if connection.vendor == "sqlite":
+        # As the ORM's Sum(Coalesce(...), filter=...): the inner function inside, the aggregate outside.
+        coalesced = "sum((CAST(coalesce(testapp_book.price, %s) AS NUMERIC)))"
+        assert _sql(stmt).count(f"(CAST({coalesced} FILTER (WHERE") == 2
+    orm = Sum(Coalesce(F("books__price"), Value(Decimal("0"))), filter=Q(books__title__startswith="a"))
+    expected = sorted(Author.objects.annotate(r=orm).filter(r__gte=1).values_list("id", "r"))
+    assert expected == [(shelf.id, Decimal("60.00"))]
+    assert sorted(execute(stmt)) == expected
+    # And the same aggregate in HAVING, outside any FILTER.
+    stmt = _per_author().add_columns(total.filter(title_a).label("r")).having(total >= sa.bindparam("x"))
+    assert sorted(execute(stmt, {"x": Decimal("51")})) == expected
+
+
+def test_an_aggregate_compiled_in_two_statements_is_cast_in_each(shelf):
+    _needs_filter()
+    total = sa.func.sum(price)
+    filtered = _per_author().add_columns(total.filter(title_a).label("r"))
+    having = _per_author().having(total >= sa.bindparam("x"))
+    if connection.vendor == "sqlite":
+        assert _sql(filtered).count(f"(CAST({S} FILTER (WHERE") == 1
+        assert f"HAVING {CAST_S} >= %s" in _sql(having)
+    assert dict(execute(filtered))[shelf.id] == Decimal("60.00")
+    assert _ids(having, {"x": Decimal("51")}) == [shelf.id]
