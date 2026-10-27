@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.0rc1] - 2026-10-27
+
 ### Added
 
 - `copy_to(stmt, params=None, *, format="csv", header=True, using="default")`: PostgreSQL + psycopg 3 에서 `COPY (<컴파일한 문장>) TO STDOUT WITH (FORMAT csv|text, HEADER …)` 를 Django 커서 아래 psycopg 커서의 `copy()` 로 실행해 서버가 쓴 CSV/text 바이트를 64 KiB 이상씩 모아 내주는 제너레이터(psycopg 는 행 하나씩 준다). 행을 파이썬 객체로 만들지 않아 `StreamingHttpResponse`·파일 내보내기용. 값은 서버의 텍스트 표현(세션 시간대의 `timestamptz`, `t`/`f`, `\x…`, JSON 텍스트, NULL 은 csv 빈 칸·text `\N`)이고 테스트로 고정했다. `params` 는 `execute` 처럼 변환한 뒤 psycopg `ClientCursor.mogrify()` 로 SQL 리터럴로 써서 파라미터 없이 COPY 한다: COPY 는 프로토콜 파라미터를 받지 않고, psycopg `copy(sql, params)` 는 두 커서 클래스 모두 클라이언트에서 끼워 넣지만 파라미터가 비면 `%%` 를 되돌리지 않는다(함정 B). text 포맷에 `header=True`, 모르는 `format`, DML(`RETURNING` 포함)은 실행 전 `ValueError`, PostgreSQL 이 아니거나 psycopg2 면 `NotSupportedError`. `stream` 처럼 첫 덩어리에서 실행하고 끝·`close()`·예외에 커서를 닫는다. 트랜잭션 안에서 일찍 닫으면 psycopg 의 COPY 취소가 트랜잭션을 깨므로 남은 데이터를 읽어 버린다(autocommit 에서는 취소). 디버그 기록이 켜져 있으면 COPY 문장 한 건을 `connection.queries` 에, `execute_wrapper` 에는 보이지 않음. 에러는 `wrap_database_errors`, 깨진 트랜잭션은 `TransactionManagementError`. 벤치 시나리오 `export`(20,000·200,000행, `copy_to` 대 `values_list`·`execute`·`stream` + `csv.writer`)와 README "CSV 로 내보내기"·"성능과 메모리" 9, `llms.txt` (#62).
