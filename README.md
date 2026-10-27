@@ -521,10 +521,11 @@ stmt = sa.select(orders.c.id, orders.c.status).where(orders.c.status != "void")
 rows = execute_in(stmt, orders.c.id, ids)  # ids 가 수만 개여도 된다
 ```
 
-- `execute_in(stmt, column, values, *, using="default", chunk_size=None)`은 `stmt`(`sa.select()`)에 `column IN (…)`을 붙여 `values`를 청크로 나눠 실행하고 행을 이어 붙인 리스트를 줍니다. DB 마다 한도가 있기 때문입니다. SQLite 는 문장 하나의 파라미터 수(`features.max_query_params`, 보통 32,766)를 넘으면 에러이고, Oracle 은 19c 까지 `IN` 목록 1,000 개 한도(`ORA-01795`)이며 23ai 는 65,535 입니다. Django 의 Oracle 백엔드는 `max_in_list_size()`로 1,000 을 주므로 브리지도 1,000 으로 나눕니다(검증은 23ai 뿐, 아래 "지원 대상"). ORM 의 `__in` 조회는 `ops.max_in_list_size()`로 `OR` 를 나누지만 `col.in_(values)`는 나누지 않습니다.
+- `execute_in(stmt, column, values, params=None, *, using="default", chunk_size=None)`은 `stmt`(`sa.select()`)에 `column IN (…)`을 붙여 `values`를 청크로 나눠 실행하고 행을 이어 붙인 리스트를 줍니다. DB 마다 한도가 있기 때문입니다. SQLite 는 문장 하나의 파라미터 수(`features.max_query_params`, 보통 32,766)를 넘으면 에러이고, Oracle 은 19c 까지 `IN` 목록 1,000 개 한도(`ORA-01795`)이며 23ai 는 65,535 입니다. Django 의 Oracle 백엔드는 `max_in_list_size()`로 1,000 을 주므로 브리지도 1,000 으로 나눕니다(검증은 23ai 뿐, 아래 "지원 대상"). ORM 의 `__in` 조회는 `ops.max_in_list_size()`로 `OR` 를 나누지만 `col.in_(values)`는 나누지 않습니다.
 - `values`는 `None`을 빼고(SQL `IN (NULL)`은 아무것에도 맞지 않음) 처음 나온 순서로 중복을 지웁니다. 남는 것이 없으면 질의 없이 `[]`입니다.
-- `chunk_size` 기본값은 그 연결의 `ops.max_in_list_size()`(Django 의 Oracle 백엔드 1,000)와 `features.max_query_params`에서 문장 자신의 파라미터 수를 뺀 값 중 작은 것이고, 둘 다 없으면(PostgreSQL·MySQL) 1,000 입니다. 주면 그대로 씁니다(양의 정수, 아니면 `ValueError`).
-- 값은 `in_()`과 같이 컬럼의 Django 필드로 조회 값 변환을 하고, 결과는 `execute`와 같이 변환합니다. 모든 청크가 같은 문장(expanding `bindparam`)이라 호출마다 컴파일은 한 번입니다.
+- `params`는 `execute`처럼 문장의 `bindparam()` 값을 채우는 매핑 하나이고, 모든 청크에 같이 갑니다(매핑의 리스트는 `ValueError`). 이름 `dsb_in_values`는 브리지가 `IN` 목록에 쓰므로 `params`에 쓸 수 없습니다(`ValueError`). `stmt.params(...)`로 값을 박은 문장은 호출마다 새 객체라 매번 컴파일되므로, 값이 바뀌는 조건은 `sa.bindparam("이름")`으로 두고 `params`로 넘기세요.
+- `chunk_size` 기본값은 그 연결의 `ops.max_in_list_size()`(Django 의 Oracle 백엔드 1,000)와 `features.max_query_params`에서 문장 자신의 파라미터 수(`params` 포함)를 뺀 값 중 작은 것이고, 둘 다 없으면(PostgreSQL·MySQL) 1,000 입니다. 주면 그대로 씁니다(양의 정수, 아니면 `ValueError`).
+- 값은 `in_()`과 같이 컬럼의 Django 필드로 조회 값 변환을 하고, 결과는 `execute`와 같이 변환합니다. 모든 청크가 같은 문장(expanding `bindparam`)이고 그 문장을 `stmt`마다 하나 두므로(`column`이 같은 객체일 때), 같은 `stmt`를 값·`params`만 바꿔 다시 불러도 컴파일은 한 번입니다.
 - **청크마다 따로 실행하는 문장입니다.** `ORDER BY`·`LIMIT`·`DISTINCT`·집계는 청크 안에서만 맞고 청크를 넘어 정렬·제한·합산되지 않습니다. 순서가 필요하면 받은 뒤 파이썬에서 정렬하세요. 청크 사이를 한 트랜잭션으로 묶지도 않으므로 같은 시점의 결과가 필요하면 `atomic()` 안에서 부르세요.
 - 행을 고르는 `select()`만 받습니다(그 밖은 `TypeError`). 서로 다른 DB 의 테이블을 합치는 `join_across`는 아래 "다중 DB"에 있습니다.
 
@@ -625,11 +626,12 @@ rows = join_across(
 ```
 <!-- /example:multi-db-in -->
 
-- `join_across(outer, inner, on, *, using="default", inner_using=None, how="inner", chunk_size=None)`는 `outer`를 `using`에서 한 번 실행하고, `on=(outer_key, inner_key)`의 outer 키 값으로 `inner`를 `inner_using`(없으면 `using`)에서 `execute_in`으로 조회해 합칩니다. 문장은 `1 + 청크 수`개입니다.
-- 행은 SQL JOIN 처럼 `outer 행 + inner 행`(inner 의 키 컬럼 포함)입니다. outer 행의 순서를 지키고, outer 한 행에 inner 행이 여럿이면 inner 를 가져온 순서대로 그만큼 늘어납니다. `how="inner"`는 짝이 없는 outer 행을 버리고 `how="left"`는 inner 자리를 `None`으로 채워 남깁니다(그 밖의 값은 `ValueError`). outer 키가 `None`인 행은 짝이 없습니다.
+- `join_across(outer, inner, on, *, params=None, inner_params=None, using="default", inner_using=None, how="inner", chunk_size=None)`는 `outer`를 `using`에서 한 번 실행하고, `on=(outer_key, inner_key)`의 outer 키 값으로 `inner`를 `inner_using`(없으면 `using`)에서 `execute_in`으로 조회해 합칩니다. 문장은 `1 + 청크 수`개입니다. `params`는 `outer`의, `inner_params`는 `inner`의 `bindparam()` 값을 채우는 매핑 하나씩입니다(`execute`·`execute_in`과 같음).
+- 행은 SQL JOIN 처럼 `outer 행 + inner 행`(inner 의 키 컬럼 포함)입니다. outer 행의 순서를 지키고, outer 한 행에 inner 행이 여럿이면 inner 를 가져온 순서대로 그만큼 늘어납니다. `how="inner"`는 짝이 없는 outer 행을 버리고 `how="left"`는 inner 자리를 `None`으로 채워 남깁니다(그 밖의 값은 `ValueError`). outer 키가 `None`인 행은 짝이 없습니다. `outer`가 OUTER JOIN 이라 키 컬럼이 `None`이 될 수 있으면, 그 행은 `how="inner"`에서 빠지고 `how="left"`에서도 inner 자리가 `None`입니다(SQL 의 `NULL = NULL`과 같음). 키는 OUTER JOIN 으로 비지 않는 쪽 컬럼에서 고르세요.
 - 키는 각 문장의 `selected_columns`에서 찾습니다. 같은 컬럼 객체, 같은 식(`.compare()`), 라벨을 벗긴 같은 식 순서로 찾고, 문자열이면 결과 키 이름(`label()`의 이름)입니다. 선택 목록에 없으면 실행 전 `ValueError`, 복합 키(`(a, b)`·`sa.tuple_()`)는 `NotImplementedError`, `select()`가 아니면 `TypeError`입니다.
 - **짝은 파이썬 동등성으로 맞춥니다.** 키 값은 outer 컬럼의 Django 필드로 읽은 값이고, inner 의 `IN`은 그 값을 inner 컬럼의 필드로 다시 조회 변환합니다. 그래서 시간대가 다른 aware datetime(같은 순간)·자릿수가 다른 `Decimal`·UUID 도 맞습니다. DB 의 collation 은 따르지 않습니다. MySQL `_ci` collation 은 `IN`에서 `"shirt"`를 `"SHIRT"`에 맞춰 가져오지만 파이썬에서는 다른 값이라 짝이 되지 않습니다.
 - 서로 다른 vendor 사이도 됩니다. SQLite·PostgreSQL·MySQL·Oracle 의 모든 순서쌍(12가지)을 문자열·`Decimal`·aware datetime·UUID 키로 테스트합니다.
+- **교차 DB 집계는 inner 를 키별로 미리 집계하세요.** 합계·개수가 필요하면 `inner`를 `sa.select(key, sa.func.sum(...)).group_by(key)`로 두면 키마다 한 행이 와 outer 행이 늘지 않습니다. 같은 키가 여러 청크에 나뉘지는 않으므로(`IN` 값은 중복을 지움) 키별 합은 청크를 넘어도 맞고, 키를 넘는 합(전체 합계, outer 의 다른 컬럼별 합)은 받은 행으로 파이썬에서 더합니다.
 - **트랜잭션은 DB 마다 따로입니다.** 두 DB 의 문장 사이에 원자성이 없고, 한쪽을 롤백해도 다른 쪽은 그대로입니다. inner 의 청크도 하나의 시점을 보장하지 않습니다(`execute_in`과 같음).
 
 `arun`에는 `using`이 없습니다. `fn` 안의 호출이 저마다 `using`을 받습니다(아래 "비동기").

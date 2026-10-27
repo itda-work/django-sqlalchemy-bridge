@@ -8,8 +8,10 @@ equality of the converted key values.
 
 import contextlib
 import datetime
+import gc
 import math
 import uuid
+import weakref
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -18,7 +20,7 @@ import sqlalchemy as sa
 from django.db import connection, connections
 from django.test.utils import CaptureQueriesContext
 
-from django_sqlalchemy_bridge import execute, execute_in, join_across, table_for
+from django_sqlalchemy_bridge import execute, execute_in, join_across, joins, table_for
 from tests.testapp.models import Author, Book, Category, Gadget, PriceChange, Product, Specimen
 
 pytestmark = pytest.mark.django_db
@@ -490,3 +492,167 @@ def test_keys_pair_by_python_equality_not_by_collation():
     assert execute_in(inner, sku, ["shirt"]) == [("SHIRT",)]
     assert join_across(outer, inner, (gadgets.c.code, sku)) == []
     assert join_across(outer, inner, (gadgets.c.code, sku), how="left") == [("shirt", None)]
+
+
+# params (#95)
+
+
+@pytest.fixture
+def compiles(monkeypatch):
+    """The statements compiled so far, one entry per compilation."""
+    compiled = []
+    compile_ = sa.Select.compile
+
+    def counting(self, *args, **kwargs):
+        compiled.append(self)
+        return compile_(self, *args, **kwargs)
+
+    monkeypatch.setattr(sa.Select, "compile", counting)
+    return compiled
+
+
+def test_execute_in_fills_the_statements_bindparams_from_params(compiles):
+    """Only the values change between calls: the statement compiles once, not once per call or chunk."""
+    make_prices({"A": "1", "B": "2", "C": "3", "D": "4"})
+    stmt = sa.select(price_changes.c.sku).where(price_changes.c.price > sa.bindparam("floor"))
+
+    rows = [
+        sorted(execute_in(stmt, price_changes.c.sku, ["A", "B", "C", "D"], {"floor": Decimal(floor)}, chunk_size=3))
+        for floor in ("1.5", "2.5", "0")
+    ]
+
+    assert rows == [[("B",), ("C",), ("D",)], [("C",), ("D",)], [("A",), ("B",), ("C",), ("D",)]]
+    assert len(compiles) == 1
+
+
+def test_execute_in_converts_params_through_the_fields():
+    """A params value converts as in execute(): an aware datetime compared with a DateTimeField."""
+    first = Author.objects.create(name="a", joined_at=AT)
+    later = Author.objects.create(name="b", joined_at=AT + datetime.timedelta(hours=1))
+    stmt = sa.select(authors.c.name).where(authors.c.joined_at > sa.bindparam("since"))
+    since = AT.astimezone(ZoneInfo("UTC"))
+
+    assert execute_in(stmt, authors.c.id, [first.pk, later.pk], {"since": since}) == [("b",)]
+
+
+def test_execute_in_counts_params_toward_the_default_chunk():
+    """features.max_query_params less the statement's own parameters, params included."""
+    in_list = connection.ops.max_in_list_size()
+    params = connection.features.max_query_params
+    limits = [limit for limit in (in_list, params - 2 if params else None) if limit]
+    size = min(limits, default=1000)
+    make_prices({"SHIRT": "1"})
+    stmt = sa.select(price_changes.c.sku).where(
+        price_changes.c.price > sa.bindparam("low"), price_changes.c.price < sa.bindparam("high")
+    )
+    values = [f"X{i}" for i in range(size)] + ["SHIRT"]
+
+    with statements() as captured:
+        rows = execute_in(stmt, price_changes.c.sku, values, {"low": Decimal("0"), "high": Decimal("9")})
+
+    assert rows == [("SHIRT",)]
+    assert [len(params) for _, params in captured] == [size + 2, 3]
+
+
+def test_execute_in_refuses_params_it_cannot_take():
+    stmt = sa.select(price_changes.c.sku).where(price_changes.c.price > sa.bindparam("floor"))
+    with pytest.raises(ValueError, match="mapping"):
+        execute_in(stmt, price_changes.c.sku, ["A"], [{"floor": 1}, {"floor": 2}])
+    with pytest.raises(ValueError, match="dsb_in_values"):
+        execute_in(stmt, price_changes.c.sku, ["A"], {"floor": 1, "dsb_in_values": ["B"]})
+
+
+def test_a_missing_param_raises_as_execute_does():
+    stmt = sa.select(price_changes.c.sku).where(price_changes.c.price > sa.bindparam("floor"))
+    with pytest.raises(Exception) as expected:
+        execute(stmt.where(price_changes.c.sku.in_(["A"])))
+    for params in (None, {"other": 1}):
+        with pytest.raises(type(expected.value), match="floor"):
+            execute_in(stmt, price_changes.c.sku, ["A"], params)
+
+
+def test_the_chunked_statement_goes_with_the_statement():
+    """execute_in keeps its chunked statement for the caller's statement, not past it."""
+    stmt = sa.select(price_changes.c.sku).where(price_changes.c.price > sa.bindparam("floor"))
+    execute_in(stmt, price_changes.c.sku, ["A"], {"floor": 1})
+    gone = weakref.ref(stmt)
+    del stmt
+    gc.collect()
+    assert gone() is None
+
+
+def test_join_across_fills_each_sides_bindparams(compiles):
+    make_products("JEANS", "SHIRT", "TEA")  # prices 1.50, 2.50, 3.50
+    make_prices({"JEANS": "5", "SHIRT": "27.50", "TEA": "8.50"})
+    outer = sa.select(products.c.sku).where(products.c.price > sa.bindparam("floor")).order_by(products.c.sku)
+    inner = sa.select(price_changes.c.sku, price_changes.c.price).where(price_changes.c.price < sa.bindparam("cap"))
+    on = (products.c.sku, price_changes.c.sku)
+
+    first = join_across(outer, inner, on, params={"floor": Decimal("2")}, inner_params={"cap": Decimal("10")})
+    second = join_across(
+        outer, inner, on, params={"floor": Decimal("1")}, inner_params={"cap": Decimal("30")}, how="left"
+    )
+
+    assert first == [("TEA", "TEA", Decimal("8.50"))]
+    assert second == [
+        ("JEANS", "JEANS", Decimal("5.00")),
+        ("SHIRT", "SHIRT", Decimal("27.50")),
+        ("TEA", "TEA", Decimal("8.50")),
+    ]
+    assert len(compiles) == 2  # the outer statement and the inner one, once each
+
+
+def test_join_across_refuses_params_it_cannot_take():
+    outer = sa.select(products.c.sku)
+    inner = sa.select(price_changes.c.sku)
+    on = (products.c.sku, price_changes.c.sku)
+    with pytest.raises(ValueError, match="mapping"):
+        join_across(outer, inner, on, params=[{"floor": 1}])
+    with pytest.raises(ValueError, match="mapping"):
+        join_across(outer, inner, on, inner_params=[{"cap": 1}])
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_join_across_params_across_two_databases():
+    make_products("SHIRT", "TEA")
+    make_prices({"SHIRT": "27.50", "TEA": "8.50"}, using="other")
+    outer = sa.select(products.c.sku).order_by(products.c.sku)
+    inner = sa.select(price_changes.c.sku, price_changes.c.price).where(price_changes.c.price < sa.bindparam("cap"))
+
+    rows = join_across(
+        outer, inner, (products.c.sku, price_changes.c.sku), inner_params={"cap": Decimal("10")}, inner_using="other"
+    )
+
+    assert rows == [("TEA", "TEA", Decimal("8.50"))]
+
+
+def test_aggregating_the_inner_statement_per_key_holds_across_chunks():
+    """The guide's pattern for totals across databases: a key never spans two chunks, so its total is whole."""
+    author_a = Author.objects.create(name="a", joined_at=AT)
+    author_b = Author.objects.create(name="b", joined_at=AT)
+    Author.objects.create(name="c", joined_at=AT)  # no books
+    for author, title, price in [(author_a, "a1", "1.25"), (author_b, "b1", "2"), (author_a, "a2", "3.50")]:
+        Book.objects.create(author=author, title=title, price=Decimal(price))
+    outer = sa.select(authors.c.name, authors.c.id).order_by(authors.c.name)
+    total = sa.func.sum(books.c.price, type_=books.c.price.type).label("total")
+    inner = sa.select(books.c.author_id, total).group_by(books.c.author_id)
+
+    rows = join_across(outer, inner, (authors.c.id, books.c.author_id), how="left", chunk_size=1)
+
+    assert [(name, total) for name, _, _, total in rows] == [
+        ("a", Decimal("4.75")),
+        ("b", Decimal("2.00")),
+        ("c", None),
+    ]
+    assert sum(total for *_, total in rows if total is not None) == Decimal("6.75")
+
+
+def test_a_column_built_per_call_replaces_the_last_chunked_statement():
+    """One chunked statement per statement: a column expression built per call does not pile them up."""
+    make_prices({"SHIRT": "1"})
+    stmt = sa.select(price_changes.c.sku)
+    assert execute_in(stmt, sa.func.lower(price_changes.c.sku), ["shirt"]) == [("SHIRT",)]
+    first = weakref.ref(joins._chunked[stmt][1])
+    assert execute_in(stmt, sa.func.lower(price_changes.c.sku), ["shirt"]) == [("SHIRT",)]
+    gc.collect()
+    assert first() is None
