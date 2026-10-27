@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- 문서의 빈 곳(0.3.0rc2 인수 테스트에서 짚인 것, 동작은 그대로). README "대량 쓰기"·`llms.txt` `bulk_*` 문단: 빈 `rows` 는 쿼리 없이 `0`(`returning` 이면 `[]`)이고, 인자 검사(`method`·`batch_size`·컬럼 이름·`columns=[]`)와 `method="copy"` 의 백엔드 검사는 그대로 하며, MySQL·Oracle 의 `RETURNING` 거부는 실행할 행이 있을 때만이라 `bulk_insert([], returning=[...])` 는 `[]`. README "다중 DB"·`llms.txt` `join_across` 문단: outer 결과가 0행이거나 키가 모두 `None` 이면 `inner` 를 실행하지 않는다(쿼리는 outer 하나). `None` 키 문구는 피하라는 권고 대신 결과(`how="left"` 면 inner 자리가 `None` 으로 남고 `how="inner"` 면 빠짐)로 고쳤다. `llms.txt` 규칙 9: 키 짝짓기는 라이브러리가, 짝지은 뒤의 산술·합계는 파이썬이 한다. README 상태 줄을 0.3.0rc2 로. 빈 `rows` 의 인자 검사와 `join_across` 의 outer 0행(두 DB 포함)을 테스트로 고정 (#99).
+
 ## [0.3.0rc2] - 2026-10-27
 
 ### Added
