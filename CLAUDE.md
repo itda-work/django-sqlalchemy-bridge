@@ -1,6 +1,6 @@
 # django-sqlalchemy-bridge AI Guide
 
-> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.1.0 (알파, 2026-10-26 릴리스)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun` (+Unreleased `execute_pipeline`·`raw`·`copy_to`). v0.1 이후 후보는 #17. Unreleased: 컴파일 캐시(#28), MySQL(#37), Oracle(#38), `execute_pipeline`(#50), `bulk_insert(method="copy")`(#54), `raw`(#57), `copy_to`(#62), `table_for(using=)` 제거(#67).
+> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.2.0rc1 (알파, 2026-10-27 릴리스. 0.2.0 정식은 rc 검증 뒤, #41)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`·`execute_pipeline`·`raw`·`copy_to`. 0.2.0rc1 에 들어간 것: 컴파일 캐시(#28), MySQL(#37), Oracle(#38), `execute_pipeline`(#50), `bulk_insert(method="copy")`(#54), `raw`(#57), `copy_to`(#62), `table_for(using=)` 제거(#67). v0.1 이후 후보 #17 은 모두 끝났고 남은 관찰은 #68.
 
 ## 정본
 
@@ -43,7 +43,7 @@
   DSB_DB=oracle DSB_ORACLE_HOST=127.0.0.1 DSB_ORACLE_PORT=51521 DSB_ORACLE_USER=system DSB_ORACLE_PASSWORD=dsb DSB_ORACLE_NAME=FREEPDB1 REQUIRE_ORACLE=1 uv run --no-sync pytest
   ```
 - 테스트 모델을 바꾸면 `uv run django-admin makemigrations testapp --settings tests.settings --pythonpath .` (스모크 테스트가 누락을 잡는다).
-- CI(`.github/workflows/ci.yml`)는 lint + Python 3.12/3.14 × Django 5.2/6.1 × SQLAlchemy 2.0/2.1 매트릭스. 잡마다 PG 18·MySQL 8.4·Oracle 23ai Free 서비스로 SQLite·PG·PG(서버측 바인딩)·MySQL·Oracle 을 각각 돈다(MariaDB 는 CI 에 없다). 매트릭스 버전은 `uv sync --locked` 뒤 `uv pip install` 로 덮어쓴다.
+- CI(`.github/workflows/ci.yml`)는 lint + Python 3.12/3.14 × Django 5.2/6.1 × SQLAlchemy 2.0/2.1 매트릭스. 잡마다 PG 18·MySQL 8.4·Oracle 23ai Free 서비스로 SQLite·PG·PG(서버측 바인딩)·MySQL·Oracle 을 각각 돈다(MariaDB 는 CI 에 없다). 매트릭스 버전은 `uv sync --locked` 뒤 `uv pip install` 로 덮어쓴다. 로컬에서 같은 식으로 버전을 바꿔 돌릴 때는 `uv run --no-sync` 로 실행한다(그냥 `uv run` 은 lock 버전으로 되돌린다, #34).
 
 ## 작업 방식
 
