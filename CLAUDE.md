@@ -1,6 +1,6 @@
 # django-sqlalchemy-bridge AI Guide
 
-> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.2.0rc2 (알파, 2026-10-27 릴리스. 0.2.0 정식은 rc2 검증 뒤, #41)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`·`execute_pipeline`·`raw`·`copy_to`. 0.2.0rc1 에 들어간 것: 컴파일 캐시(#28), MySQL(#37), Oracle(#38), `execute_pipeline`(#50), `bulk_insert(method="copy")`(#54), `raw`(#57), `copy_to`(#62), `table_for(using=)` 제거(#67). rc2 는 rc1 외부 리뷰의 블로커 수정(#73 튜플 IN 변환, #68 식 읽기 변환, #72 SQLite CAST 범위, #74 전부 기본값 행)과 문서 정정(#71). v0.1 이후 후보 #17 은 모두 끝났고 남은 것은 #76(튜플 안 JSON)·#79.
+> Django 연결·트랜잭션 안에서 SQLAlchemy 2.x Core 표현식을 쓰게 하는 라이브러리. **0.2.0 (알파, 2026-10-27 릴리스)** — API: `table_for`·`execute`·`stream`·`bulk_*`·`arun`·`execute_pipeline`·`raw`·`copy_to`·`execute_in`·`join_across`(#79, 미릴리스). 0.2.0 에 들어간 것: 컴파일 캐시(#28), MySQL(#37), Oracle(#38), `execute_pipeline`(#50), `bulk_insert(method="copy")`(#54), `raw`(#57), `copy_to`(#62), `table_for(using=)` 제거(#67). rc1 외부 리뷰(gpt-6-astra)의 블로커 수정 #73·#68·#72·#74 와 문서 정정 #71 은 rc2 에서. v0.1 이후 후보 #17 은 모두 끝났고 남은 것은 #76(튜플 안 JSON)·#79.
 
 ## 정본
 
