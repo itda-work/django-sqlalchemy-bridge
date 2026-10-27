@@ -13,6 +13,7 @@ import uuid
 import pytest
 import sqlalchemy as sa
 from django.db import NotSupportedError, connection
+from django.db.models import Q
 from django.test.utils import CaptureQueriesContext
 
 from django_sqlalchemy_bridge.execution import prepare
@@ -21,6 +22,13 @@ from tests.test_tuple_in import bridge_uids, make_specimens, orm_in, select_uids
 from tests.testapp.models import Specimen
 
 pytestmark = pytest.mark.django_db
+
+try:  # Django 6.1+; there None as the value of an exact lookup on a JSONField is deprecated
+    from django.db.models import JSONNull
+
+    JSON_NULL = JSONNull()
+except ImportError:  # Django 5.2: None is the JSON scalar null there
+    JSON_NULL = None
 
 REWRITES = connection.vendor in ("mysql", "oracle")
 # MySQL normalizes a stored document ({"a": 2, "b": 1}); Django binds json.dumps() text.
@@ -73,10 +81,16 @@ def test_the_rewritten_or_keeps_its_place_among_other_conditions(rows):
 
 
 def test_a_json_none_matches_no_row(rows):
+    # The bridge binds None as SQL NULL, which "=" matches with no row. rows[4] holds
+    # SQL NULL, so the ORM's JSON null lookup does not match it either.
     keys = [(rows[4].uid, None), (rows[0].uid, {"k": 1})]
-    attnames = ("uid", "data")
-    assert bridge_uids(select_uids().where(sa.tuple_(uid, data).in_(keys))) == orm_in(keys, attnames)
-    assert orm_in(keys, attnames) == [rows[0].uid]
+    expected = sorted(
+        Specimen.objects.filter(Q(uid=rows[4].uid, data=JSON_NULL) | Q(uid=rows[0].uid, data={"k": 1})).values_list(
+            "uid", flat=True
+        )
+    )
+    assert bridge_uids(select_uids().where(sa.tuple_(uid, data).in_(keys))) == expected == [rows[0].uid]
+    assert list(Specimen.objects.filter(data__isnull=True).values_list("uid", flat=True)) == [rows[4].uid]
 
 
 def test_an_empty_tuple_in_list_with_a_json_member_matches_nothing(rows):
