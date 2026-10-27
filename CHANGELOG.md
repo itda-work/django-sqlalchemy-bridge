@@ -31,6 +31,11 @@ All notable changes to this project are documented here. The format follows [Kee
 - 문장을 둘 이상 실행하는 `bulk_update`·`bulk_insert`(배치가 여럿이거나 SQLite `executemany()`)는 Django `bulk_create`처럼 `transaction.atomic(using, savepoint=False)` 안에서 돈다. 전에는 autocommit 의 SQLite 에서 중간 행이 제약을 어기면 앞 행이 남았다(4행 INSERT 의 4번째 행이 3번째와 unique 키가 겹치면 앞 3행이 남음). 그래서 바깥 `atomic()` 안에서 이 에러를 잡고 계속하려면 호출을 `atomic()`(savepoint)으로 감싸야 한다. 감싸지 않고 잡으면 바깥 트랜잭션이 롤백으로 표시된다(Django `bulk_create`와 같음) (#35).
 - README "왜 만드나"를 "왜 쓰나"로 다시 씀: 목적은 표현력이고 성능은 대량 쓰기에서만 따라온다는 것, 언제 ORM 을 쓰는지, 예제 3개(재귀 CTE, 업서트 RETURNING, `UPDATE … FROM`). 예제 코드는 테스트 코드에서 `python -m tests.readme_examples --write` 로 옮기고 어긋나면 테스트가 실패한다. "AI 코딩 에이전트에게" 절에 `AGENTS.md`/`CLAUDE.md` 에 붙일 스니펫 (#30).
 - `INSERT … SELECT` 의 SELECT 목록 값에는 대상 컬럼 타입을 직접 줘야 한다는 안내를 README "실행하기"·`llms.txt` 규칙 6에 근거(SQLAlchemy 가 `from_select()` 컬럼 이름을 공개 API 로 내주지 않아 브리지가 메우지 않음)와 타입이 없을 때의 증상(UUID·dict 는 드라이버 에러, SQLite aware datetime 은 오프셋 문자열로 저장)과 함께 적음. 타입을 준 `sa.literal()`·`sa.bindparam()` 이 ORM 과 같은 값을 저장하는지 테스트로 고정 (#34).
+- README 에 "다중 DB" 절(`llms.txt` 에 같은 요지): 테이블은 모델에서 오고 DB 에 묶이지 않으며 호출마다 `using` 으로 DB 를 고른다는 것, 교차 DB JOIN 은 ORM·SQLAlchemy 처럼 불가하고 서버 링크(`sa.table()` 로 만든 원격 테이블과 평범한 JOIN, SQLite `ATTACH` 예시)나 `in_()` 으로 애플리케이션에서 합치는 길. 예시는 `tests/test_examples.py` 에서 돈다(#67).
+
+### Removed
+
+- `table_for(model, *, using="default")` 의 `using` 인자. 테이블은 모델에서 만들고 어느 DB 에도 묶이지 않으므로 할 일이 없었다(0.1.0 에서 `"default"` 외에는 `NotImplementedError` 라 쓰던 코드가 없다). 이제 넘기면 `TypeError`. 실행할 DB 는 `execute(..., using=...)` 등 호출이 정한다(#67).
 
 ### Fixed
 

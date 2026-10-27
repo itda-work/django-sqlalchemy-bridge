@@ -273,11 +273,6 @@ def test_abstract_model_is_rejected():
         table_for(Base)
 
 
-def test_only_the_default_database_for_now():
-    with pytest.raises(NotImplementedError):
-        table_for(Author, using="other")
-
-
 @pytest.mark.parametrize("dialect", DIALECTS.values(), ids=DIALECTS.keys())
 def test_tables_compile_on_every_dialect(dialect):
     # SQLAlchemy 2.0's Oracle dialect has no JSON column DDL (Django makes the schema anyway).

@@ -8,6 +8,7 @@ against the ORM or against values worked out by hand. The code between
 """
 
 import datetime
+import sqlite3
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -493,3 +494,81 @@ def test_update_from_an_aggregate_subquery(shop):
         "JEANS": Decimal("50.00"),
         "TEA": Decimal("6.75"),
     }
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_one_table_runs_on_either_database():
+    PriceChange.objects.create(sku="SHIRT", price=Decimal("27.50"))
+    PriceChange.objects.using("other").create(sku="TEA", price=Decimal("8.50"))
+
+    # readme:multi-db-using
+    price_changes = table_for(PriceChange)  # 모델에서 만든 테이블은 어느 DB 에도 묶이지 않는다
+
+    stmt = sa.select(price_changes.c.sku, price_changes.c.price)
+    here = execute(stmt)  # default: [("SHIRT", Decimal("27.50"))]
+    there = execute(stmt, using="other")  # 같은 문장을 other 에서: [("TEA", Decimal("8.50"))]
+    # /readme:multi-db-using
+    assert here == [("SHIRT", Decimal("27.50"))]
+    assert there == [("TEA", Decimal("8.50"))]
+
+
+@pytest.mark.django_db(databases=["default", "other"])
+def test_join_across_databases_in_python(shop):
+    PriceChange.objects.using("other").create(sku="SHIRT", price=Decimal("27.50"))
+    PriceChange.objects.using("other").create(sku="TEA", price=Decimal("8.50"))
+    PriceChange.objects.using("other").create(sku="GONE", price=Decimal("1.00"))
+
+    # readme:multi-db-in
+    products = table_for(Product)  # default DB 의 상품
+    price_changes = table_for(PriceChange)  # other DB 의 가격표
+
+    skus = [sku for (sku,) in execute(sa.select(products.c.sku).order_by(products.c.sku))]
+    new_prices = dict(
+        execute(
+            sa.select(price_changes.c.sku, price_changes.c.price).where(price_changes.c.sku.in_(skus)),
+            using="other",
+        )
+    )
+    rows = [(sku, new_prices.get(sku)) for sku in skus]
+    # [("JEANS", None), ("SHIRT", Decimal("27.50")), ("TEA", Decimal("8.50"))]
+    # /readme:multi-db-in
+    assert rows == [("JEANS", None), ("SHIRT", Decimal("27.50")), ("TEA", Decimal("8.50"))]
+
+
+# ATTACH and DETACH need autocommit: in a transaction that wrote to the attached
+# file, DETACH fails with "database linked is locked". The "other" alias is an
+# in-memory database, which ATTACH by name cannot reach, so the linked database is a file.
+@only_on("sqlite", syntax="ATTACH DATABASE")
+@pytest.mark.django_db(transaction=True)
+def test_join_through_a_server_link(shop, tmp_path):
+    path = str(tmp_path / "linked.sqlite3")
+    by_sku = dict(Product.objects.values_list("sku", "pk"))
+    with sqlite3.connect(path) as linked:
+        linked.execute("CREATE TABLE remote_sale (product_id integer, quantity integer)")
+        linked.executemany(
+            "INSERT INTO remote_sale VALUES (?, ?)",
+            [(by_sku["SHIRT"], 1), (by_sku["SHIRT"], 2), (by_sku["TEA"], 5)],
+        )
+    linked.close()
+
+    try:
+        # readme:multi-db-attach
+        # 다른 SQLite 파일을 이 연결의 linked 스키마로 붙인다(연결 상태라 연결마다 한 번)
+        with connection.cursor() as cursor:
+            cursor.execute("ATTACH DATABASE %s AS linked", [path])
+
+        products = table_for(Product)
+        remote_sales = sa.table("remote_sale", sa.column("product_id"), sa.column("quantity"), schema="linked")
+
+        stmt = (
+            sa.select(products.c.sku, sa.func.sum(remote_sales.c.quantity))
+            .join(remote_sales, remote_sales.c.product_id == products.c.id)
+            .group_by(products.c.sku)
+            .order_by(products.c.sku)
+        )
+        rows = execute(stmt)  # 한 연결 안의 평범한 JOIN: [("SHIRT", 3), ("TEA", 5)]
+        # /readme:multi-db-attach
+        assert rows == [("SHIRT", 3), ("TEA", 5)]
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute("DETACH DATABASE linked")

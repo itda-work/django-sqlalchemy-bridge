@@ -232,7 +232,7 @@ def _check_model(model: Any) -> type[models.Model]:
     return model._meta.concrete_model
 
 
-def table_for(model: type[models.Model], *, using: str = "default") -> sa.Table:
+def table_for(model: type[models.Model]) -> sa.Table:
     """Return the ``sa.Table`` for ``model``, building and caching it on first use.
 
     The table lives in the shared :data:`metadata`; calling this again with the
@@ -240,11 +240,9 @@ def table_for(model: type[models.Model], *, using: str = "default") -> sa.Table:
     foreign keys point at are built too, so the foreign keys resolve. Column
     types follow ``settings.USE_TZ`` as it was when the table was first built.
 
-    ``using`` is reserved for multiple databases; only ``"default"`` is accepted
-    for now.
+    The table comes from the model and belongs to no database; the ``using`` of
+    ``execute()`` and the other calls picks the database it runs on.
     """
-    if using != "default":
-        raise NotImplementedError("only the 'default' database is supported for now")
     model = _check_model(model)
     with _lock:
         table = _tables.get(model)
